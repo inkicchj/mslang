@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mslang-js — 浏览器端演示</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8f9fa; color: #333; }
+header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; padding: 40px 20px; text-align: center; }
+header h1 { font-size: 2rem; margin-bottom: 8px; }
+header p { opacity: 0.85; font-size: 1rem; }
+.container { max-width: 1100px; margin: 0 auto; padding: 30px 20px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+@media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+.panel { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); overflow: hidden; }
+.panel-header { padding: 14px 20px; font-weight: 600; font-size: 0.9rem; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 8px; }
+.panel-header .dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot.input { background: #667eea; }
+.dot.output { background: #27ae60; }
+textarea { width: 100%; height: 520px; border: none; padding: 20px; font-family: "Cascadia Code", "Fira Code", monospace; font-size: 14px; line-height: 1.7; resize: vertical; outline: none; }
+#output { padding: 20px; min-height: 520px; overflow-y: auto; }
+#output .mslang { font-size: 15px; line-height: 1.8; }
+#output .mslang h1 { font-size: 1.8em; margin: 0.5em 0 0.3em; border-bottom: 2px solid #eee; padding-bottom: 0.2em; }
+#output .mslang h2 { font-size: 1.5em; margin: 0.5em 0 0.3em; }
+#output .mslang h3 { font-size: 1.25em; margin: 0.5em 0 0.3em; }
+#output .mslang p { margin: 0.5em 0; }
+#output .mslang ul, #output .mslang ol { padding-left: 1.5em; margin: 0.5em 0; }
+#output .mslang blockquote { border-left: 3px solid #667eea; padding: 0.2em 1em; margin: 0.5em 0; background: #f0f2ff; }
+#output .mslang pre { background: #1e1e2e; color: #cdd6f4; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 0.5em 0; font-size: 0.9em; }
+#output .mslang code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+#output .mslang pre code { background: none; padding: 0; }
+#output .mslang table { border-collapse: collapse; margin: 0.5em 0; width: 100%; }
+#output .mslang th, #output .mslang td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+#output .mslang th { background: #f8f9fa; font-weight: 600; }
+#output .mslang hr { border: none; border-top: 2px solid #eee; margin: 1em 0; }
+#output .mslang a { color: #667eea; }
+#output .mslang img { max-width: 100%; border-radius: 8px; }
+#output .mslang sup { font-size: 0.75em; }
+#output .mslang sub { font-size: 0.75em; }
+#output .mslang input[type=checkbox] { margin-right: 6px; }
+.toolbar { display: flex; gap: 8px; padding: 12px 20px; border-top: 1px solid #eee; }
+.toolbar button { padding: 6px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 500; }
+.btn-primary { background: #667eea; color: #fff; }
+.btn-primary:hover { background: #5a6fd6; }
+.status { padding: 4px 20px 12px; font-size: 0.8rem; color: #999; min-height: 20px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>mslang-js</h1>
+  <p>轻量级排版语言 — 浏览器端实时渲染演示</p>
+</header>
+
+<div class="container">
+  <div class="grid">
+    <!-- 输入 -->
+    <div class="panel">
+      <div class="panel-header"><span class="dot input"></span> mslang 源代码</div>
+      <textarea id="source" spellcheck="false"># mslang-js 演示
+
+## 标题与格式
+
+这是一段 **加粗文本** 和 *斜体文本*，还有 ~~删除线~~。
+
+也支持 `行内代码`、^上标^ 和 ~下标~。
+
+## 链接与图片
+
+这是 [mslang 官网](https://github.com) 的链接。
+
+裸链接: https://www.example.com
+
+## 列表
+
+无序列表:
+- 项目一
+- 项目二
+  - 嵌套项 A
+  - 嵌套项 B
+
+有序列表:
+1. 第一步
+2. 第二步
+
+任务列表:
+- [x] 已完成
+- [ ] 未完成
+
+## 引用块
+
+> 这是一段引用文本。
+> 可以跨多行。
+
+## 代码块
+
+```javascript
+function hello() {
+  console.log("Hello, mslang!");
+}
+```
+
+## 表格
+
+| 名称 | 类型 | 描述 |
+|------|------|------|
+| HTML | 标记语言 | 网页结构 |
+| CSS  | 样式语言 | 视觉效果 |
+
+## 对齐
+
+-><- 居中对齐文本
+
+>> 右对齐文本
+
+## 颜色文本
+
+这是一段 /#f00:红色:/
+以及 /#00f:蓝色:/ 文本。
+
+## 分割线
+
+---
+
+## 脚注
+
+这是一段带脚注的文本。[^note]
+
+[^note]: 这是脚注的详细说明。</textarea>
+      <div class="toolbar">
+        <button class="btn-primary" onclick="renderMSL()">渲染 HTML</button>
+        <button onclick="showTokens()">查看 Token 流</button>
+        <button onclick="showAST()">查看 AST</button>
+        <button onclick="loadExample()">加载示例</button>
+      </div>
+      <div class="status" id="status">就绪 &mdash; 在左侧编辑或点击"渲染 HTML"</div>
+    </div>
+
+    <!-- 输出 -->
+    <div class="panel">
+      <div class="panel-header"><span class="dot output"></span> 渲染结果 (<span id="mode-label">HTML</span>)</div>
+      <div id="output"><div class="mslang"><p style="color:#999">点击「渲染 HTML」查看结果</p></div></div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { mslangToHTML, HTMLRenderer, Parser, Lexer } from './src/index.js';
+
+// 暴露到 window 供 onclick 使用
+window.mslangToHTML = mslangToHTML;
+window.HTMLRenderer = HTMLRenderer;
+window.Parser = Parser;
+window.Lexer = Lexer;
+
+// 注册自定义函数
+const renderer = new HTMLRenderer();
+renderer.addFunction('greet', (name, kwargs) => {
+  const style = kwargs.style || '';
+  return `<span style="${style}">👋 你好, ${name}!</span>`;
+});
+
+window._renderer = renderer;
+
+// 实时渲染
+const textarea = document.getElementById('source');
+const output = document.getElementById('output');
+const status = document.getElementById('status');
+const modeLabel = document.getElementById('mode-label');
+
+let debounceTimer;
+textarea.addEventListener('input', () => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(renderMSL, 400);
+});
+
+window.renderMSL = function() {
+  try {
+    const source = textarea.value;
+    const start = performance.now();
+    const html = renderer.render(source);
+    const elapsed = (performance.now() - start).toFixed(1);
+    output.innerHTML = html;
+    modeLabel.textContent = 'HTML';
+    status.innerHTML = `✅ 渲染成功 &mdash; 耗时 ${elapsed}ms`;
+  } catch (err) {
+    output.innerHTML = `<div style="color:#c0392b;padding:20px"><strong>错误:</strong> ${err.message}</div>`;
+    status.textContent = '❌ ' + err.message;
+  }
+};
+
+window.showTokens = function() {
+  try {
+    const source = textarea.value;
+    const lexer = new Lexer(source);
+    const tokens = lexer.tokenize();
+    output.innerHTML = `<pre style="font-size:13px;line-height:1.5;white-space:pre-wrap">${escapeHTML(lexer.dumpTokens(tokens))}</pre>`;
+    modeLabel.textContent = 'Token 流';
+    status.innerHTML = `✅ 解析出 ${tokens.length} 个 Token（含 EOF）`;
+  } catch (err) {
+    output.innerHTML = `<div style="color:#c0392b">错误: ${err.message}</div>`;
+    status.textContent = '❌ ' + err.message;
+  }
+};
+
+window.showAST = function() {
+  try {
+    const source = textarea.value;
+    const parser = new Parser();
+    const ast = parser.parseText(source);
+    output.innerHTML = `<pre style="font-size:13px;line-height:1.5;white-space:pre-wrap">${escapeHTML(parser.dumpAST(ast))}</pre>`;
+    modeLabel.textContent = 'AST';
+    status.innerHTML = `✅ AST 构建成功 &mdash; ${ast.blocks.length} 个块级节点`;
+  } catch (err) {
+    output.innerHTML = `<div style="color:#c0392b">错误: ${err.message}</div>`;
+    status.textContent = '❌ ' + err.message;
+  }
+};
+
+window.loadExample = function() {
+  renderMSL();
+};
+
+// HTML 转义工具
+function escapeHTML(text) {
+  return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+window.escapeHTML = escapeHTML;
+
+// 初始渲染
+renderMSL();
+</script>
+
+</body>
+</html>
