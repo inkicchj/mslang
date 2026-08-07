@@ -23,6 +23,15 @@ import {
   Table, AlignBlock,
 } from './nodes.js';
 
+// 会终止段落/引用的块级 Token 类型
+const BLOCK_BOUNDARY_TYPES = new Set([
+  TokenType.HEADING, TokenType.HORIZONTAL_RULE, TokenType.BLOCKQUOTE,
+  TokenType.UNORDERED_LIST, TokenType.ORDERED_LIST,
+  TokenType.TABLE_ROW, TokenType.TABLE_SEP,
+  TokenType.ALIGN_RIGHT, TokenType.ALIGN_CENTER,
+  TokenType.BLANK_LINE, TokenType.EOF,
+]);
+
 // ================================================================
 // ParserError
 // ================================================================
@@ -246,8 +255,6 @@ class Parser {
         }
         break;
       }
-
-      if (token.type === TokenType.BLANK_LINE) break;
 
       break;
     }
@@ -613,23 +620,17 @@ class Parser {
   }
 
   _isBlockBoundary(token) {
-    return [
-      TokenType.HEADING, TokenType.HORIZONTAL_RULE, TokenType.BLOCKQUOTE,
-      TokenType.UNORDERED_LIST, TokenType.ORDERED_LIST,
-      TokenType.TABLE_ROW, TokenType.TABLE_SEP,
-      TokenType.ALIGN_RIGHT, TokenType.ALIGN_CENTER,
-      TokenType.BLANK_LINE, TokenType.EOF,
-    ].includes(token.type) || (
-      token.type === TokenType.CODE_BLOCK &&
+    if (BLOCK_BOUNDARY_TYPES.has(token.type)) return true;
+    return token.type === TokenType.CODE_BLOCK &&
       token.metadata &&
-      ['start', 'end'].includes(token.metadata.fence_type)
-    );
+      ['start', 'end'].includes(token.metadata.fence_type);
   }
 
   // ================================================================
   // 调试 — AST 打印
   // ================================================================
 
+  /** 委托给模块级 dumpAST（下方定义，供调试打印 AST） */
   dumpAST(node) {
     return dumpAST(node);
   }

@@ -455,16 +455,15 @@ var mslang = (() => {
           "",
           { fence_type: "end" }
         );
-      } else {
-        this._inCodeBlock = true;
-        const language = fenceLine.slice(3).trim();
-        return new Token(
-          TokenType.CODE_BLOCK,
-          startPos,
-          "",
-          { fence_type: "start", language }
-        );
       }
+      this._inCodeBlock = true;
+      const language = fenceLine.slice(3).trim();
+      return new Token(
+        TokenType.CODE_BLOCK,
+        startPos,
+        "",
+        { fence_type: "start", language }
+      );
     }
     _scanCodeBlockLine() {
       const start = this.pos;
@@ -1475,6 +1474,19 @@ var mslang = (() => {
   };
 
   // src/parser.js
+  var BLOCK_BOUNDARY_TYPES = /* @__PURE__ */ new Set([
+    TokenType.HEADING,
+    TokenType.HORIZONTAL_RULE,
+    TokenType.BLOCKQUOTE,
+    TokenType.UNORDERED_LIST,
+    TokenType.ORDERED_LIST,
+    TokenType.TABLE_ROW,
+    TokenType.TABLE_SEP,
+    TokenType.ALIGN_RIGHT,
+    TokenType.ALIGN_CENTER,
+    TokenType.BLANK_LINE,
+    TokenType.EOF
+  ]);
   var ParserError = class extends Error {
     constructor(message, token = null) {
       const loc = token ? ` [${token.position}]` : "";
@@ -1638,7 +1650,6 @@ var mslang = (() => {
           }
           break;
         }
-        if (token.type === TokenType.BLANK_LINE) break;
         break;
       }
       return new BlockQuote(this._mergeAdjacentText(inlines));
@@ -1936,23 +1947,13 @@ var mslang = (() => {
       return this._tokens[this._pos].type === TokenType.EOF;
     }
     _isBlockBoundary(token) {
-      return [
-        TokenType.HEADING,
-        TokenType.HORIZONTAL_RULE,
-        TokenType.BLOCKQUOTE,
-        TokenType.UNORDERED_LIST,
-        TokenType.ORDERED_LIST,
-        TokenType.TABLE_ROW,
-        TokenType.TABLE_SEP,
-        TokenType.ALIGN_RIGHT,
-        TokenType.ALIGN_CENTER,
-        TokenType.BLANK_LINE,
-        TokenType.EOF
-      ].includes(token.type) || token.type === TokenType.CODE_BLOCK && token.metadata && ["start", "end"].includes(token.metadata.fence_type);
+      if (BLOCK_BOUNDARY_TYPES.has(token.type)) return true;
+      return token.type === TokenType.CODE_BLOCK && token.metadata && ["start", "end"].includes(token.metadata.fence_type);
     }
     // ================================================================
     // 调试 — AST 打印
     // ================================================================
+    /** 委托给模块级 dumpAST（下方定义，供调试打印 AST） */
     dumpAST(node) {
       return dumpAST(node);
     }
@@ -2277,18 +2278,35 @@ ${body}
      * 必须在 _collectRefs 之前执行，使编号计算使用最终配置。
      * @set 全文档生效（建议放文档开头），仅识别块级内容中的顶层调用。
      */
-    _applySets(doc) {
-      const scan = (inlines) => {
+    /**
+     * 遍历文档全部行内节点（块 → 列表项 → 子项，递归穿过行内容器）。
+     * _applySets / _collectRefs 共用，遍历顺序与渲染顺序一致。
+     */
+    _eachInline(doc, fn) {
+      const walk = (inlines) => {
         for (const n of inlines) {
-          if (n instanceof FunctionCall && n.name === "set") this._applySet(n);
+          fn(n);
+          if (n.content) walk(n.content);
         }
       };
       for (const block of doc.blocks) {
-        if (block.content) scan(block.content);
+        if (block.content) walk(block.content);
         if (block.items) {
-          for (const item of block.items) scan(item.content);
+          for (const item of block.items) {
+            walk(item.content);
+            if (item.children) {
+              for (const child of item.children) {
+                if (child.content) walk(child.content);
+              }
+            }
+          }
         }
       }
+    }
+    _applySets(doc) {
+      this._eachInline(doc, (n) => {
+        if (n instanceof FunctionCall && n.name === "set") this._applySet(n);
+      });
     }
     _applySet(node) {
       if (node.error || !node.args[0]) return;
@@ -2381,19 +2399,16 @@ ${body}
           node.items.forEach(walkExpr);
         }
       };
-      const walkInlines = (inlines) => {
-        for (const n of inlines) {
-          if (n instanceof Image && n.label) {
-            counters.fig++;
-            this._refs[n.label] = { kind: "fig", number: counters.fig };
+      const walkInlines = (n) => {
+        if (n instanceof Image && n.label) {
+          counters.fig++;
+          this._refs[n.label] = { kind: "fig", number: counters.fig };
+        }
+        if (n instanceof FunctionCall) {
+          if (n.name === "cite" && n.args[0] && n.args[0].type === "string") {
+            collectCite(n.args[0].value);
           }
-          if (n instanceof FunctionCall) {
-            if (n.name === "cite" && n.args[0] && n.args[0].type === "string") {
-              collectCite(n.args[0].value);
-            }
-            n.args.forEach(walkExpr);
-          }
-          if (n.content) walkInlines(n.content);
+          n.args.forEach(walkExpr);
         }
       };
       const headingText = (nodes) => {
@@ -2404,6 +2419,7 @@ ${body}
         }
         return out;
       };
+      this._eachInline(doc, walkInlines);
       for (const block of doc.blocks) {
         if (block instanceof Heading) {
           const autoNum = this._headingNumbering ? nextSecNumber(block.level) : "";
@@ -2423,17 +2439,6 @@ ${body}
         if (block instanceof Table && block.label) {
           counters.tbl++;
           this._refs[block.label] = { kind: "tbl", number: counters.tbl };
-        }
-        if (block.content) walkInlines(block.content);
-        if (block.items) {
-          for (const item of block.items) {
-            walkInlines(item.content);
-            if (item.children) {
-              for (const child of item.children) {
-                if (child.content) walkInlines(child.content);
-              }
-            }
-          }
         }
       }
     }
@@ -2633,7 +2638,7 @@ ${body}
         for (const [k, v] of Object.entries(node.kwargs)) kwargs[k] = evaluate(v, this._evalCtx);
         result = func(...args, kwargs);
       } catch (e) {
-        this._write(`<!-- mslang: function @${node.name} error: ${this._esc(String(e))} -->`);
+        this._write(this._functionError(node.name, e));
         return;
       }
       if (result instanceof Promise) {
@@ -2645,7 +2650,7 @@ ${body}
               slot.html = this._renderValue(value);
             },
             (err) => {
-              slot.html = `<!-- mslang: async function @${node.name} error: ${this._esc(String(err && err.message || err))} -->`;
+              slot.html = this._functionError(node.name, err, true);
             }
           );
           this._asyncSlots.push(slot);
@@ -2656,6 +2661,12 @@ ${body}
         return;
       }
       this._write(this._renderValue(result));
+    }
+    /** 函数调用错误注释（同步/异步共用） */
+    _functionError(name, err, isAsync) {
+      const prefix = isAsync ? "async function" : "function";
+      const msg = isAsync ? String(err && err.message || err) : String(err);
+      return `<!-- mslang: ${prefix} @${name} error: ${this._esc(msg)} -->`;
     }
     /**
      * 将函数返回值渲染为 HTML 字符串：
@@ -2726,26 +2737,22 @@ ${body}
   // src/index.js
   function mslangToHTML(source, options = {}) {
     const renderer = new HTMLRenderer({ functions: options.functions });
-    return renderer.render(source, {
-      wrapperClass: options.wrapperClass || "mslang",
-      wrapperId: options.wrapperId || "",
-      data: options.data,
-      variables: options.variables,
-      headingNumbering: options.headingNumbering,
-      refNumbering: options.refNumbering
-    });
+    return renderer.render(source, _renderOptions(options));
   }
   async function mslangToHTMLAsync(source, options = {}) {
     const renderer = new HTMLRenderer({ functions: options.functions });
-    return renderer.renderAsync(source, {
+    return renderer.renderAsync(source, _renderOptions(options));
+  }
+  function _renderOptions(options) {
+    return {
       wrapperClass: options.wrapperClass || "mslang",
       wrapperId: options.wrapperId || "",
       data: options.data,
       variables: options.variables,
       headingNumbering: options.headingNumbering,
       refNumbering: options.refNumbering
-    });
+    };
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-07T19:13:38.405Z */
+/*! built: 2026-08-07T19:21:54.946Z */

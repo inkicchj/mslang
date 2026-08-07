@@ -280,7 +280,8 @@ class ExpressionParser {
     }
   }
 
-  _parseString(quote) {    this.pos++; // skip quote
+  _parseString(quote) {
+    this.pos++; // skip quote
     let out = '';
     while (this.pos < this.source.length) {
       const ch = this.source[this.pos];

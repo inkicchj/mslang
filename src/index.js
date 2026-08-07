@@ -62,25 +62,23 @@ export {
 // 便捷函数: 将 mslang 文本直接渲染为 HTML
 export function mslangToHTML(source, options = {}) {
   const renderer = new HTMLRenderer({ functions: options.functions });
-  return renderer.render(source, {
-    wrapperClass: options.wrapperClass || 'mslang',
-    wrapperId: options.wrapperId || '',
-    data: options.data,
-    variables: options.variables,
-    headingNumbering: options.headingNumbering,
-    refNumbering: options.refNumbering,
-  });
+  return renderer.render(source, _renderOptions(options));
 }
 
 // 异步版: 支持返回 Promise 的自定义函数（如网络请求），其余语义与 mslangToHTML 相同
 export async function mslangToHTMLAsync(source, options = {}) {
   const renderer = new HTMLRenderer({ functions: options.functions });
-  return renderer.renderAsync(source, {
+  return renderer.renderAsync(source, _renderOptions(options));
+}
+
+/** mslangToHTML / mslangToHTMLAsync 共用选项透传 */
+function _renderOptions(options) {
+  return {
     wrapperClass: options.wrapperClass || 'mslang',
     wrapperId: options.wrapperId || '',
     data: options.data,
     variables: options.variables,
     headingNumbering: options.headingNumbering,
     refNumbering: options.refNumbering,
-  });
+  };
 }

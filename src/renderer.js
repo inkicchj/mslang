@@ -167,18 +167,36 @@ class HTMLRenderer {
    * 必须在 _collectRefs 之前执行，使编号计算使用最终配置。
    * @set 全文档生效（建议放文档开头），仅识别块级内容中的顶层调用。
    */
-  _applySets(doc) {
-    const scan = (inlines) => {
+  /**
+   * 遍历文档全部行内节点（块 → 列表项 → 子项，递归穿过行内容器）。
+   * _applySets / _collectRefs 共用，遍历顺序与渲染顺序一致。
+   */
+  _eachInline(doc, fn) {
+    const walk = (inlines) => {
       for (const n of inlines) {
-        if (n instanceof FunctionCall && n.name === 'set') this._applySet(n);
+        fn(n);
+        if (n.content) walk(n.content);
       }
     };
     for (const block of doc.blocks) {
-      if (block.content) scan(block.content);
+      if (block.content) walk(block.content);
       if (block.items) {
-        for (const item of block.items) scan(item.content);
+        for (const item of block.items) {
+          walk(item.content);
+          if (item.children) {
+            for (const child of item.children) {
+              if (child.content) walk(child.content);
+            }
+          }
+        }
       }
     }
+  }
+
+  _applySets(doc) {
+    this._eachInline(doc, (n) => {
+      if (n instanceof FunctionCall && n.name === 'set') this._applySet(n);
+    });
   }
 
   _applySet(node) {
@@ -283,21 +301,18 @@ class HTMLRenderer {
       }
     };
 
-    const walkInlines = (inlines) => {
-      for (const n of inlines) {
-        if (n instanceof Image && n.label) {
-          counters.fig++;
-          this._refs[n.label] = { kind: 'fig', number: counters.fig };
+    const walkInlines = (n) => {
+      if (n instanceof Image && n.label) {
+        counters.fig++;
+        this._refs[n.label] = { kind: 'fig', number: counters.fig };
+      }
+      if (n instanceof FunctionCall) {
+        // 顶层 @cite("key") 调用
+        if (n.name === 'cite' && n.args[0] && n.args[0].type === 'string') {
+          collectCite(n.args[0].value);
         }
-        if (n instanceof FunctionCall) {
-          // 顶层 @cite("key") 调用
-          if (n.name === 'cite' && n.args[0] && n.args[0].type === 'string') {
-            collectCite(n.args[0].value);
-          }
-          // 嵌套在参数表达式中的 cite
-          n.args.forEach(walkExpr);
-        }
-        if (n.content) walkInlines(n.content);
+        // 嵌套在参数表达式中的 cite
+        n.args.forEach(walkExpr);
       }
     };
 
@@ -311,6 +326,9 @@ class HTMLRenderer {
       return out;
     };
 
+    this._eachInline(doc, walkInlines);
+
+    // 标题/表格的引用编号（计数器相互独立，顺序与渲染一致）
     for (const block of doc.blocks) {
       if (block instanceof Heading) {
         const autoNum = this._headingNumbering ? nextSecNumber(block.level) : '';
@@ -331,17 +349,6 @@ class HTMLRenderer {
       if (block instanceof Table && block.label) {
         counters.tbl++;
         this._refs[block.label] = { kind: 'tbl', number: counters.tbl };
-      }
-      if (block.content) walkInlines(block.content);
-      if (block.items) {
-        for (const item of block.items) {
-          walkInlines(item.content);
-          if (item.children) {
-            for (const child of item.children) {
-              if (child.content) walkInlines(child.content);
-            }
-          }
-        }
       }
     }
   }
@@ -564,7 +571,7 @@ class HTMLRenderer {
       for (const [k, v] of Object.entries(node.kwargs)) kwargs[k] = evaluate(v, this._evalCtx);
       result = func(...args, kwargs);
     } catch (e) {
-      this._write(`<!-- mslang: function @${node.name} error: ${this._esc(String(e))} -->`);
+      this._write(this._functionError(node.name, e));
       return;
     }
 
@@ -575,7 +582,7 @@ class HTMLRenderer {
         const slot = { token: `\u0000ASYNC${id}\u0000`, html: '' };
         slot.promise = Promise.resolve(result).then(
           (value) => { slot.html = this._renderValue(value); },
-          (err) => { slot.html = `<!-- mslang: async function @${node.name} error: ${this._esc(String(err && err.message || err))} -->`; },
+          (err) => { slot.html = this._functionError(node.name, err, true); },
         );
         this._asyncSlots.push(slot);
         this._output.push(slot.token);
@@ -586,6 +593,13 @@ class HTMLRenderer {
     }
 
     this._write(this._renderValue(result));
+  }
+
+  /** 函数调用错误注释（同步/异步共用） */
+  _functionError(name, err, isAsync) {
+    const prefix = isAsync ? 'async function' : 'function';
+    const msg = isAsync ? String((err && err.message) || err) : String(err);
+    return `<!-- mslang: ${prefix} @${name} error: ${this._esc(msg)} -->`;
   }
 
   /**

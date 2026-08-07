@@ -373,15 +373,14 @@ class Lexer {
         startPos, '',
         { fence_type: 'end' }
       );
-    } else {
-      this._inCodeBlock = true;
-      const language = fenceLine.slice(3).trim();
-      return new Token(
-        TokenType.CODE_BLOCK,
-        startPos, '',
-        { fence_type: 'start', language }
-      );
     }
+    this._inCodeBlock = true;
+    const language = fenceLine.slice(3).trim();
+    return new Token(
+      TokenType.CODE_BLOCK,
+      startPos, '',
+      { fence_type: 'start', language }
+    );
   }
 
   _scanCodeBlockLine() {
@@ -571,8 +570,7 @@ class Lexer {
     this._advance(1); // skip @
 
     const nameStart = this.pos;
-    while (this.pos < this.source.length &&
-           (/[a-zA-Z0-9_]/.test(this.source[this.pos]))) {
+    while (this.pos < this.source.length && /[a-zA-Z0-9_]/.test(this.source[this.pos])) {
       this._advance(1);
     }
 
