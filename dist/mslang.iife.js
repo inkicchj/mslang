@@ -4,6 +4,7 @@ var mslang = (() => {
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
   var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
   var __export = (target, all) => {
     for (var name in all)
       __defProp(target, name, { get: all[name], enumerable: true });
@@ -17,6 +18,7 @@ var mslang = (() => {
     return to;
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+  var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
   // src/index.js
   var index_exports = {};
@@ -968,6 +970,7 @@ var mslang = (() => {
         this.pos++;
         return node;
       }
+      if (ch === "{") return this._parseObject();
       if (ch === '"' || ch === "'") return this._parseString(ch);
       if (ch >= "0" && ch <= "9") return this._parseNumber();
       const name = this._readIdentifier();
@@ -987,6 +990,39 @@ var mslang = (() => {
         return { type: "var", name };
       }
       this._error(`\u610F\u5916\u7684\u5B57\u7B26 '${ch}'`);
+    }
+    /** 对象字面量：{ key: expr, ... }，键为任意字符（冒号前），支持中文 */
+    _parseObject() {
+      this.pos++;
+      const obj = {};
+      while (true) {
+        this._skipWs();
+        if (this._peek() === "}") {
+          this.pos++;
+          return { type: "object", value: obj };
+        }
+        let key = "";
+        while (this.pos < this.source.length && this.source[this.pos] !== ":") {
+          key += this.source[this.pos];
+          this.pos++;
+        }
+        key = key.trim();
+        if (!key) this._error("\u5BF9\u8C61\u952E\u4E0D\u80FD\u4E3A\u7A7A");
+        this.pos++;
+        this._skipWs();
+        obj[key] = this._parseOr();
+        this._skipWs();
+        const c = this._peek();
+        if (c === ",") {
+          this.pos++;
+          continue;
+        }
+        if (c === "}") {
+          this.pos++;
+          return { type: "object", value: obj };
+        }
+        this._error("\u5BF9\u8C61\u5B57\u9762\u91CF\u7F3A\u5C11 '}'");
+      }
     }
     _parseString(quote) {
       this.pos++;
@@ -1031,6 +1067,11 @@ var mslang = (() => {
         return node.value;
       case "null":
         return null;
+      case "object": {
+        const obj = {};
+        for (const [k, v] of Object.entries(node.value)) obj[k] = evaluate(v, ctx);
+        return obj;
+      }
       case "var": {
         if (!(node.name in variables)) {
           throw new EvalError(`\u672A\u5B9A\u4E49\u7684\u53D8\u91CF '${node.name}'`);
@@ -2030,7 +2071,7 @@ var mslang = (() => {
   function escapeAttr(text) {
     return text.replace(/[&<>"']/g, (ch) => ESC_ATTR_MAP[ch] || ch);
   }
-  var HTMLRenderer = class {
+  var _HTMLRenderer = class _HTMLRenderer {
     /**
      * @param {object} [opts]
      * @param {boolean} [opts.pretty=true]
@@ -2084,6 +2125,7 @@ var mslang = (() => {
       this._output = [];
       let body;
       if (source instanceof Document) {
+        this._applySets(source);
         this._collectRefs(source);
         source.accept(this);
         body = this._output.join("");
@@ -2091,6 +2133,7 @@ var mslang = (() => {
         const lexer = new Lexer(source);
         const tokens = lexer.tokenize();
         const ast = new Parser().parse(tokens);
+        this._applySets(ast);
         this._collectRefs(ast);
         ast.accept(this);
         body = this._output.join("");
@@ -2100,6 +2143,50 @@ var mslang = (() => {
       return `<div${cls}${id}>
 ${body}
 </div>`;
+    }
+    /**
+     * 预扫描文档顶层的 @set({...}) 调用并应用配置。
+     * 必须在 _collectRefs 之前执行，使编号计算使用最终配置。
+     * @set 全文档生效（建议放文档开头），仅识别块级内容中的顶层调用。
+     */
+    _applySets(doc) {
+      const scan = (inlines) => {
+        for (const n of inlines) {
+          if (n instanceof FunctionCall && n.name === "set") this._applySet(n);
+        }
+      };
+      for (const block of doc.blocks) {
+        if (block.content) scan(block.content);
+        if (block.items) {
+          for (const item of block.items) scan(item.content);
+        }
+      }
+    }
+    _applySet(node) {
+      if (node.error || !node.args[0]) return;
+      try {
+        const ctx = { functions: this._functions, variables: this._variables };
+        const config = evaluate(node.args[0], ctx);
+        if (config && typeof config === "object") this._mergeSet(config);
+      } catch (e) {
+      }
+    }
+    /** 白名单合并：@set 覆盖同名选项 */
+    _mergeSet(config) {
+      for (const key of _HTMLRenderer.SET_KEYS) {
+        if (!(key in config)) continue;
+        if (key === "headingNumbering") {
+          this._headingNumbering = config[key] === true ? "1.1" : config[key] || "";
+        } else if (key === "refNumbering") {
+          this._refNumbering = config[key] || "";
+        } else if (key === "data") {
+          this._data = config[key] || {};
+        } else if (key === "variables") {
+          this._variables = config[key] || {};
+        } else {
+          this[key] = config[key];
+        }
+      }
     }
     // ================================================================
     // 编号收集（渲染前对 AST 遍历一遍）
@@ -2145,6 +2232,8 @@ ${body}
         } else if (node.type === "binary") {
           walkExpr(node.left);
           walkExpr(node.right);
+        } else if (node.type === "object") {
+          Object.values(node.value).forEach(walkExpr);
         }
       };
       const walkInlines = (inlines) => {
@@ -2449,6 +2538,12 @@ ${body}
       return text;
     }
   };
+  // ================================================================
+  // 文档内配置（@set）
+  // ================================================================
+  // @set 白名单：仅这些键可被文档内配置覆盖
+  __publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables"]);
+  var HTMLRenderer = _HTMLRenderer;
   var RE_NUM_ARABIC = /^(\d+(?:\.\d+)*)/;
   var RE_NUM_CN = /^(第[一二三四五六七八九十百]+[章节篇]|[一二三四五六七八九十百]+[、．.]|（[一二三四五六七八九十百]+）|\([一二三四五六七八九十百]+\))/;
   function extractHeadingNumber(text, mode) {
@@ -2468,6 +2563,11 @@ ${body}
       not: (x) => !x,
       and: (...xs) => xs.every(Boolean),
       or: (...xs) => xs.some(Boolean),
+      /** 文档内配置：@set({ headingNumbering: '1.1', ... })，无输出 */
+      set: (config) => {
+        if (config && typeof config === "object") renderer._mergeSet(config);
+        return "";
+      },
       /** 文献键是否存在（供 if 条件使用） */
       has_cite: (key) => !!(renderer._data.bibliography && renderer._data.bibliography[key]),
       /** 术语是否存在（供 if 条件使用） */
@@ -2530,4 +2630,4 @@ ${items.join("\n")}
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-07T18:36:04.076Z */
+/*! built: 2026-08-07T18:45:48.230Z */

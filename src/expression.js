@@ -210,6 +210,8 @@ class ExpressionParser {
       return node;
     }
 
+    if (ch === '{') return this._parseObject();
+
     if (ch === '"' || ch === "'") return this._parseString(ch);
 
     if (ch >= '0' && ch <= '9') return this._parseNumber();
@@ -234,8 +236,33 @@ class ExpressionParser {
     this._error(`意外的字符 '${ch}'`);
   }
 
-  _parseString(quote) {
-    this.pos++; // skip quote
+  /** 对象字面量：{ key: expr, ... }，键为任意字符（冒号前），支持中文 */
+  _parseObject() {
+    this.pos++; // skip {
+    const obj = {};
+    while (true) {
+      this._skipWs();
+      if (this._peek() === '}') { this.pos++; return { type: 'object', value: obj }; }
+      // 键：读直到 ':' 的字符（trim 后），支持中文等任意键名
+      let key = '';
+      while (this.pos < this.source.length && this.source[this.pos] !== ':') {
+        key += this.source[this.pos];
+        this.pos++;
+      }
+      key = key.trim();
+      if (!key) this._error('对象键不能为空');
+      this.pos++; // skip :
+      this._skipWs();
+      obj[key] = this._parseOr();
+      this._skipWs();
+      const c = this._peek();
+      if (c === ',') { this.pos++; continue; }
+      if (c === '}') { this.pos++; return { type: 'object', value: obj }; }
+      this._error("对象字面量缺少 '}'");
+    }
+  }
+
+  _parseString(quote) {    this.pos++; // skip quote
     let out = '';
     while (this.pos < this.source.length) {
       const ch = this.source[this.pos];
@@ -290,6 +317,11 @@ export function evaluate(node, ctx = {}) {
       return node.value;
     case 'null':
       return null;
+    case 'object': {
+      const obj = {};
+      for (const [k, v] of Object.entries(node.value)) obj[k] = evaluate(v, ctx);
+      return obj;
+    }
     case 'var': {
       if (!(node.name in variables)) {
         throw new EvalError(`未定义的变量 '${node.name}'`);

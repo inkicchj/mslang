@@ -88,6 +88,11 @@ const withRefs = mslangToHTML(
   { headingNumbering: '1.1' }, // 输出 "如 1 所述"
 );
 
+// 文档内配置 @set：设置可写在 md 里（覆盖 API 同名选项，全文档生效，建议放开头）
+const withSet = mslangToHTML(
+  '@set({ headingNumbering: "1.1", refNumbering: "1" })\n\n# 引言 {#sec:intro}\n\n如 @ref("sec:intro") 所述',
+);
+
 // 仅解析 AST
 const parser = new Parser();
 const ast = parser.parseText('# Hello');

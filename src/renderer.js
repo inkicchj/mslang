@@ -104,6 +104,7 @@ class HTMLRenderer {
 
     let body;
     if (source instanceof Document) {
+      this._applySets(source);
       this._collectRefs(source);
       source.accept(this);
       body = this._output.join('');
@@ -111,6 +112,7 @@ class HTMLRenderer {
       const lexer = new Lexer(source);
       const tokens = lexer.tokenize();
       const ast = new Parser().parse(tokens);
+      this._applySets(ast);
       this._collectRefs(ast);
       ast.accept(this);
       body = this._output.join('');
@@ -119,6 +121,61 @@ class HTMLRenderer {
     const cls = wrapperClass ? ` class="${wrapperClass}"` : '';
     const id = wrapperId ? ` id="${wrapperId}"` : '';
     return `<div${cls}${id}>\n${body}\n</div>`;
+  }
+
+  // ================================================================
+  // 文档内配置（@set）
+  // ================================================================
+
+  // @set 白名单：仅这些键可被文档内配置覆盖
+  static SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables'];
+
+  /**
+   * 预扫描文档顶层的 @set({...}) 调用并应用配置。
+   * 必须在 _collectRefs 之前执行，使编号计算使用最终配置。
+   * @set 全文档生效（建议放文档开头），仅识别块级内容中的顶层调用。
+   */
+  _applySets(doc) {
+    const scan = (inlines) => {
+      for (const n of inlines) {
+        if (n instanceof FunctionCall && n.name === 'set') this._applySet(n);
+      }
+    };
+    for (const block of doc.blocks) {
+      if (block.content) scan(block.content);
+      if (block.items) {
+        for (const item of block.items) scan(item.content);
+      }
+    }
+  }
+
+  _applySet(node) {
+    if (node.error || !node.args[0]) return;
+    try {
+      const ctx = { functions: this._functions, variables: this._variables };
+      const config = evaluate(node.args[0], ctx);
+      if (config && typeof config === 'object') this._mergeSet(config);
+    } catch (e) {
+      // 配置求值失败时忽略，渲染阶段由 set 函数输出错误注释
+    }
+  }
+
+  /** 白名单合并：@set 覆盖同名选项 */
+  _mergeSet(config) {
+    for (const key of HTMLRenderer.SET_KEYS) {
+      if (!(key in config)) continue;
+      if (key === 'headingNumbering') {
+        this._headingNumbering = config[key] === true ? '1.1' : (config[key] || '');
+      } else if (key === 'refNumbering') {
+        this._refNumbering = config[key] || '';
+      } else if (key === 'data') {
+        this._data = config[key] || {};
+      } else if (key === 'variables') {
+        this._variables = config[key] || {};
+      } else {
+        this[key] = config[key];
+      }
+    }
   }
 
   // ================================================================
@@ -171,6 +228,8 @@ class HTMLRenderer {
       } else if (node.type === 'binary') {
         walkExpr(node.left);
         walkExpr(node.right);
+      } else if (node.type === 'object') {
+        Object.values(node.value).forEach(walkExpr);
       }
     };
 
@@ -551,6 +610,12 @@ function builtinFunctions(renderer) {
     not: (x) => !x,
     and: (...xs) => xs.every(Boolean),
     or: (...xs) => xs.some(Boolean),
+
+    /** 文档内配置：@set({ headingNumbering: '1.1', ... })，无输出 */
+    set: (config) => {
+      if (config && typeof config === 'object') renderer._mergeSet(config);
+      return '';
+    },
 
     /** 文献键是否存在（供 if 条件使用） */
     has_cite: (key) => !!(renderer._data.bibliography && renderer._data.bibliography[key]),
