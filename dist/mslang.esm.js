@@ -907,6 +907,7 @@ var ExpressionParser = class {
       return node;
     }
     if (ch === "{") return this._parseObject();
+    if (ch === "[") return this._parseArray();
     if (ch === '"' || ch === "'") return this._parseString(ch);
     if (ch >= "0" && ch <= "9") return this._parseNumber();
     const name = this._readIdentifier();
@@ -926,6 +927,30 @@ var ExpressionParser = class {
       return { type: "var", name };
     }
     this._error(`\u610F\u5916\u7684\u5B57\u7B26 '${ch}'`);
+  }
+  /** 数组字面量：[expr, expr, ...] */
+  _parseArray() {
+    this.pos++;
+    const items = [];
+    while (true) {
+      this._skipWs();
+      if (this._peek() === "]") {
+        this.pos++;
+        return { type: "array", items };
+      }
+      items.push(this._parseOr());
+      this._skipWs();
+      const c = this._peek();
+      if (c === ",") {
+        this.pos++;
+        continue;
+      }
+      if (c === "]") {
+        this.pos++;
+        return { type: "array", items };
+      }
+      this._error("\u6570\u7EC4\u5B57\u9762\u91CF\u7F3A\u5C11 ']'");
+    }
   }
   /** 对象字面量：{ key: expr, ... }，键为任意字符（冒号前），支持中文 */
   _parseObject() {
@@ -1008,6 +1033,8 @@ function evaluate(node, ctx = {}) {
       for (const [k, v] of Object.entries(node.value)) obj[k] = evaluate(v, ctx);
       return obj;
     }
+    case "array":
+      return node.items.map((item) => evaluate(item, ctx));
     case "var": {
       if (!(node.name in variables)) {
         throw new EvalError(`\u672A\u5B9A\u4E49\u7684\u53D8\u91CF '${node.name}'`);
@@ -2249,6 +2276,8 @@ ${body}
         walkExpr(node.right);
       } else if (node.type === "object") {
         Object.values(node.value).forEach(walkExpr);
+      } else if (node.type === "array") {
+        node.items.forEach(walkExpr);
       }
     };
     const walkInlines = (inlines) => {
@@ -2615,4 +2644,4 @@ export {
   parseFunctionArgs,
   unquote
 };
-/*! built: 2026-08-07T19:02:12.025Z */
+/*! built: 2026-08-07T19:06:40.188Z */

@@ -241,6 +241,8 @@ class HTMLRenderer {
         walkExpr(node.right);
       } else if (node.type === 'object') {
         Object.values(node.value).forEach(walkExpr);
+      } else if (node.type === 'array') {
+        node.items.forEach(walkExpr);
       }
     };
 

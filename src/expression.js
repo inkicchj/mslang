@@ -212,6 +212,8 @@ class ExpressionParser {
 
     if (ch === '{') return this._parseObject();
 
+    if (ch === '[') return this._parseArray();
+
     if (ch === '"' || ch === "'") return this._parseString(ch);
 
     if (ch >= '0' && ch <= '9') return this._parseNumber();
@@ -234,6 +236,22 @@ class ExpressionParser {
     }
 
     this._error(`意外的字符 '${ch}'`);
+  }
+
+  /** 数组字面量：[expr, expr, ...] */
+  _parseArray() {
+    this.pos++; // skip [
+    const items = [];
+    while (true) {
+      this._skipWs();
+      if (this._peek() === ']') { this.pos++; return { type: 'array', items }; }
+      items.push(this._parseOr());
+      this._skipWs();
+      const c = this._peek();
+      if (c === ',') { this.pos++; continue; }
+      if (c === ']') { this.pos++; return { type: 'array', items }; }
+      this._error("数组字面量缺少 ']'");
+    }
   }
 
   /** 对象字面量：{ key: expr, ... }，键为任意字符（冒号前），支持中文 */
@@ -322,6 +340,8 @@ export function evaluate(node, ctx = {}) {
       for (const [k, v] of Object.entries(node.value)) obj[k] = evaluate(v, ctx);
       return obj;
     }
+    case 'array':
+      return node.items.map(item => evaluate(item, ctx));
     case 'var': {
       if (!(node.name in variables)) {
         throw new EvalError(`未定义的变量 '${node.name}'`);
