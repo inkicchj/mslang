@@ -30,7 +30,7 @@
  */
 
 import { Lexer, LexerError, parseFunctionArgs, unquote } from './lexer.js';
-import { Parser, ParserError, dumpAST } from './parser.js';
+import { Parser, ParserError, dumpAST, mergeDocuments } from './parser.js';
 import { HTMLRenderer } from './renderer.js';
 import { TokenType, Position, Token, CHAR } from './tokens.js';
 import { parseExpression, parseArgs, evaluate, EvalError } from './expression.js';
@@ -46,7 +46,7 @@ import {
 
 export {
   Lexer, LexerError, parseFunctionArgs, unquote,
-  Parser, ParserError, dumpAST,
+  Parser, ParserError, dumpAST, mergeDocuments,
   HTMLRenderer,
   parseExpression, parseArgs, evaluate, EvalError,
   TokenType, Position, Token, CHAR,
@@ -69,6 +69,18 @@ export function mslangToHTML(source, options = {}) {
 export async function mslangToHTMLAsync(source, options = {}) {
   const renderer = new HTMLRenderer({ functions: options.functions });
   return renderer.renderAsync(source, _renderOptions(options));
+}
+
+// 多文档合并渲染：跨文档连续编号、交叉引用、全局 @set（文档顺序即编号顺序）
+export function mslangToHTMLAll(sources, options = {}) {
+  const renderer = new HTMLRenderer({ functions: options.functions });
+  return renderer.renderAll(sources, _renderOptions(options));
+}
+
+// 异步版 mslangToHTMLAll，语义与 mslangToHTMLAsync 相同
+export async function mslangToHTMLAllAsync(sources, options = {}) {
+  const renderer = new HTMLRenderer({ functions: options.functions });
+  return renderer.renderAllAsync(sources, _renderOptions(options));
 }
 
 /** mslangToHTML / mslangToHTMLAsync 共用选项透传 */

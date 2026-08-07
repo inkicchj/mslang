@@ -1707,19 +1707,14 @@ var Parser = class {
   }
   _numberFootnotes(doc) {
     let counter = 0;
-    const walk = (node) => {
-      if (node instanceof FootnoteRef) {
-        counter++;
-        node.number = counter;
-      }
-      for (const attr of ["content", "children", "blocks", "items"]) {
-        const children = node[attr];
-        if (Array.isArray(children)) {
-          for (const child of children) walk(child);
+    for (const block of doc.blocks) {
+      _walkNodes(block, (node) => {
+        if (node instanceof FootnoteRef) {
+          counter++;
+          node.number = counter;
         }
-      }
-    };
-    for (const block of doc.blocks) walk(block);
+      });
+    }
   }
   _parseFootnoteDef() {
     const token = this._advance();
@@ -1895,6 +1890,38 @@ var Parser = class {
 };
 function _isSpacer(node) {
   return node instanceof Paragraph && node.content.length > 0 && node.content.every((n) => n instanceof LineBreak);
+}
+function _walkNodes(node, fn) {
+  fn(node);
+  for (const attr of ["content", "children", "blocks", "items"]) {
+    const children = node[attr];
+    if (Array.isArray(children)) {
+      for (const child of children) _walkNodes(child, fn);
+    }
+  }
+}
+function mergeDocuments(...docs) {
+  const blocks = [];
+  const footnotes = {};
+  for (const doc of docs) {
+    blocks.push(...doc.blocks);
+    Object.assign(footnotes, doc.footnotes);
+  }
+  const ordered = {};
+  let counter = 0;
+  for (const block of blocks) {
+    _walkNodes(block, (node) => {
+      if (node instanceof FootnoteRef && footnotes[node.label] !== void 0) {
+        counter++;
+        node.number = counter;
+        ordered[node.label] = footnotes[node.label];
+      }
+    });
+  }
+  for (const [label, text] of Object.entries(footnotes)) {
+    if (!(label in ordered)) ordered[label] = text;
+  }
+  return new Document(blocks, ordered);
 }
 function _dumpInlines(nodes, indent, prefix) {
   const lines = [];
@@ -2177,6 +2204,21 @@ var _HTMLRenderer = class _HTMLRenderer {
       body = body.split(slot.token).join(slot.html);
     }
     return this._wrap(body, opts);
+  }
+  /**
+   * 渲染多个文档的合并结果：跨文档连续编号、交叉引用、全局 @set。
+   * @param {(string|Document)[]} sources - mslang 文本或 Document，顺序即编号顺序
+   * @param {object} [opts] - 与 render() 相同
+   * @returns {string}
+   */
+  renderAll(sources, opts = {}) {
+    const docs = sources.map((s) => this._parseDoc(s));
+    return this.render(mergeDocuments(...docs), opts);
+  }
+  /** 异步版 renderAll，语义与 renderAsync 相同 */
+  async renderAllAsync(sources, opts = {}) {
+    const docs = sources.map((s) => this._parseDoc(s));
+    return this.renderAsync(mergeDocuments(...docs), opts);
   }
   /** 应用渲染选项（render / renderAsync 共用） */
   _applyOpts(opts) {
@@ -2678,6 +2720,14 @@ async function mslangToHTMLAsync(source, options = {}) {
   const renderer = new HTMLRenderer({ functions: options.functions });
   return renderer.renderAsync(source, _renderOptions(options));
 }
+function mslangToHTMLAll(sources, options = {}) {
+  const renderer = new HTMLRenderer({ functions: options.functions });
+  return renderer.renderAll(sources, _renderOptions(options));
+}
+async function mslangToHTMLAllAsync(sources, options = {}) {
+  const renderer = new HTMLRenderer({ functions: options.functions });
+  return renderer.renderAllAsync(sources, _renderOptions(options));
+}
 function _renderOptions(options) {
   return {
     wrapperClass: options.wrapperClass || "mslang",
@@ -2726,11 +2776,14 @@ export {
   UnorderedList,
   dumpAST,
   evaluate,
+  mergeDocuments,
   mslangToHTML,
+  mslangToHTMLAll,
+  mslangToHTMLAllAsync,
   mslangToHTMLAsync,
   parseArgs,
   parseExpression,
   parseFunctionArgs,
   unquote
 };
-/*! built: 2026-08-07T19:21:54.946Z */
+/*! built: 2026-08-07T19:27:21.429Z */

@@ -418,19 +418,14 @@ class Parser {
 
   _numberFootnotes(doc) {
     let counter = 0;
-    const walk = (node) => {
-      if (node instanceof FootnoteRef) {
-        counter++;
-        node.number = counter;
-      }
-      for (const attr of ['content', 'children', 'blocks', 'items']) {
-        const children = node[attr];
-        if (Array.isArray(children)) {
-          for (const child of children) walk(child);
+    for (const block of doc.blocks) {
+      _walkNodes(block, (node) => {
+        if (node instanceof FootnoteRef) {
+          counter++;
+          node.number = counter;
         }
-      }
-    };
-    for (const block of doc.blocks) walk(block);
+      });
+    }
   }
 
   _parseFootnoteDef() {
@@ -646,6 +641,51 @@ function _isSpacer(node) {
     node.content.every(n => n instanceof LineBreak);
 }
 
+/**
+ * 深度遍历 AST 节点（递归穿过 content/children/blocks/items 数组属性）。
+ * _numberFootnotes 与 mergeDocuments 共用。
+ */
+function _walkNodes(node, fn) {
+  fn(node);
+  for (const attr of ['content', 'children', 'blocks', 'items']) {
+    const children = node[attr];
+    if (Array.isArray(children)) {
+      for (const child of children) _walkNodes(child, fn);
+    }
+  }
+}
+
+/**
+ * 合并多个 Document 为一个，供跨文档连续编号 / 交叉引用 / 全局 @set：
+ *   - blocks 按传入顺序拼接（顺序即编号顺序）
+ *   - 脚注跨文档重编号：引用按出现顺序编号，footnotes 字典同步重排
+ *   - 同名脚注 label 后者覆盖
+ */
+function mergeDocuments(...docs) {
+  const blocks = [];
+  const footnotes = {};
+  for (const doc of docs) {
+    blocks.push(...doc.blocks);
+    Object.assign(footnotes, doc.footnotes);
+  }
+  const ordered = {};
+  let counter = 0;
+  for (const block of blocks) {
+    _walkNodes(block, (node) => {
+      if (node instanceof FootnoteRef && footnotes[node.label] !== undefined) {
+        counter++;
+        node.number = counter;
+        ordered[node.label] = footnotes[node.label];
+      }
+    });
+  }
+  // 未被引用的脚注定义追加到末尾
+  for (const [label, text] of Object.entries(footnotes)) {
+    if (!(label in ordered)) ordered[label] = text;
+  }
+  return new Document(blocks, ordered);
+}
+
 function _dumpInlines(nodes, indent, prefix) {
   const lines = [];
   nodes.forEach((n, i) => {
@@ -783,4 +823,4 @@ function dumpAST(node, indent = 0, prefix = '', isLast = true) {
   return `${linePrefix}${name}`;
 }
 
-export { Parser, ParserError, dumpAST };
+export { Parser, ParserError, dumpAST, mergeDocuments };

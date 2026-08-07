@@ -14,7 +14,7 @@ import {
 } from './nodes.js';
 
 import { Lexer } from './lexer.js';
-import { Parser } from './parser.js';
+import { Parser, mergeDocuments } from './parser.js';
 import { evaluate } from './expression.js';
 import { builtinFunctions, extractHeadingNumber } from './builtin.js';
 
@@ -120,6 +120,23 @@ class HTMLRenderer {
       body = body.split(slot.token).join(slot.html);
     }
     return this._wrap(body, opts);
+  }
+
+  /**
+   * 渲染多个文档的合并结果：跨文档连续编号、交叉引用、全局 @set。
+   * @param {(string|Document)[]} sources - mslang 文本或 Document，顺序即编号顺序
+   * @param {object} [opts] - 与 render() 相同
+   * @returns {string}
+   */
+  renderAll(sources, opts = {}) {
+    const docs = sources.map(s => this._parseDoc(s));
+    return this.render(mergeDocuments(...docs), opts);
+  }
+
+  /** 异步版 renderAll，语义与 renderAsync 相同 */
+  async renderAllAsync(sources, opts = {}) {
+    const docs = sources.map(s => this._parseDoc(s));
+    return this.renderAsync(mergeDocuments(...docs), opts);
   }
 
   /** 应用渲染选项（render / renderAsync 共用） */
