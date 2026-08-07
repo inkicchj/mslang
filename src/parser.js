@@ -20,7 +20,7 @@ import {
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, LineBreak, FunctionCall, Color,
   Superscript, Subscript, RawHtml, FootnoteRef,
-  Table, AlignBlock,
+  Table, AlignBlock, Caption,
 } from './nodes.js';
 
 // 会终止段落/引用的块级 Token 类型
@@ -76,7 +76,22 @@ class Parser {
 
     while (!this._isAtEnd()) {
       const block = this._parseBlock();
-      if (block !== null) document.blocks.push(block);
+      if (block === null) continue;
+      // 图表 caption：归并到前一块（表格/单图片段落），孤立时降级为普通段落
+      if (block instanceof Caption) {
+        const target = this._captionTarget(document.blocks[document.blocks.length - 1], block.label);
+        if (target) {
+          target.caption = block.content;
+          continue;
+        }
+        // 孤立 caption 降级为普通段落：{#label} 前缀保留原文，
+        // 剩余部分走行内解析（避免 {# 被重新识别为 CAPTION token）
+        const prefix = `{#${block.label}}`;
+        const rest = block.raw.startsWith(prefix) ? block.raw.slice(prefix.length) : block.raw;
+        const inlines = [new RawText(prefix), ...this._parseInline(rest)];
+        document.blocks.push(new Paragraph(this._mergeAdjacentText(inlines)));
+        continue;      }
+      document.blocks.push(block);
     }
 
     if (Object.keys(this._footnoteDefs).length > 0) {
@@ -176,6 +191,9 @@ class Parser {
     if (token.type === TokenType.ALIGN_RIGHT || token.type === TokenType.ALIGN_CENTER) {
       return this._parseAlign(token);
     }
+
+    // 图表 caption（{#label} 说明，归并到前一块或降级为段落）
+    if (token.type === TokenType.CAPTION) return this._parseCaption(token);
 
     // 默认为段落
     if (token.type === TokenType.RAW_TEXT || token.type.value >= TokenType.BOLD.value) {
@@ -426,6 +444,27 @@ class Parser {
         }
       });
     }
+  }
+
+  /**
+   * 查找 caption 的归并目标：前一 block 是 label 匹配的表格，
+   * 或仅含单个 label 匹配图片的段落（图片需单独成段）。
+   */
+  _captionTarget(prev, label) {
+    if (!prev) return null;
+    if (prev instanceof Table && prev.label === label) return prev;
+    if (prev instanceof Paragraph && prev.content.length === 1 &&
+        prev.content[0] instanceof Image && prev.content[0].label === label) {
+      return prev.content[0];
+    }
+    return null;
+  }
+
+  _parseCaption(token) {
+    this._advance();
+    const label = token.metadata.label || '';
+    const content = this._mergeAdjacentText(this._parseInline(token.value));
+    return new Caption(label, content, token.metadata.raw || '');
   }
 
   _parseFootnoteDef() {

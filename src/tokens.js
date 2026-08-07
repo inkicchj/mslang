@@ -36,6 +36,7 @@ const _types = [
   'FOOTNOTE_DEF',
   'ALIGN_RIGHT',
   'ALIGN_CENTER',
+  'CAPTION',
 
   // 文本与空白
   'RAW_TEXT',

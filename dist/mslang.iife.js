@@ -98,6 +98,7 @@ var mslang = (() => {
     "FOOTNOTE_DEF",
     "ALIGN_RIGHT",
     "ALIGN_CENTER",
+    "CAPTION",
     // 文本与空白
     "RAW_TEXT",
     "LINE_BREAK",
@@ -245,6 +246,7 @@ var mslang = (() => {
   var RE_TABLE = /^\|(.+)\|$/;
   var RE_ALIGN_RIGHT = /^>>\s+(.+)$/;
   var RE_ALIGN_CENTER = /^-><-\s+(.+)$/;
+  var RE_CAPTION = /^\{#([^}]+)\}\s?(.*)$/;
   var ESCAPABLE = /* @__PURE__ */ new Set(["*", "_", "~", "`", "[", "!", "@", "/", "\\"]);
   var RAW_TEXT_SPECIALS = /* @__PURE__ */ new Set([
     CHAR.STAR,
@@ -326,6 +328,8 @@ var mslang = (() => {
       if (m) return this._scanOrderedList(m);
       m = remaining.match(RE_TABLE);
       if (m) return this._scanTableRow(m);
+      m = remaining.match(RE_CAPTION);
+      if (m) return this._scanCaption(m);
       return this._scanInline();
     }
     // ================================================================
@@ -558,6 +562,17 @@ var mslang = (() => {
         new Position(this.line, this.col - length, start),
         content,
         { label }
+      );
+    }
+    _scanCaption(match) {
+      const length = match[0].length;
+      const start = this.pos;
+      this._advance(length);
+      return new Token(
+        TokenType.CAPTION,
+        new Position(this.line, this.col - length, start),
+        match[2] || "",
+        { label: match[1], raw: match[0] }
       );
     }
     _scanAlign(match, tokenType) {
@@ -1292,6 +1307,17 @@ var mslang = (() => {
       return visitor.visit_AlignBlock(this);
     }
   };
+  var Caption = class extends BlockNode {
+    constructor(label = "", content = [], raw = "") {
+      super();
+      this.label = label;
+      this.content = content;
+      this.raw = raw;
+    }
+    accept(visitor) {
+      return visitor.visit_Caption(this);
+    }
+  };
   var Table = class extends BlockNode {
     /**
      * @param {string[]} [headers]
@@ -1303,6 +1329,7 @@ var mslang = (() => {
       this.headers = headers;
       this.rows = rows;
       this.label = label;
+      this.caption = [];
     }
     accept(visitor) {
       return visitor.visit_Table(this);
@@ -1387,6 +1414,7 @@ var mslang = (() => {
       this.url = url;
       this.width = width;
       this.label = label;
+      this.caption = [];
     }
     accept(visitor) {
       return visitor.visit_Image(this);
@@ -1520,7 +1548,20 @@ var mslang = (() => {
       const document = new Document();
       while (!this._isAtEnd()) {
         const block = this._parseBlock();
-        if (block !== null) document.blocks.push(block);
+        if (block === null) continue;
+        if (block instanceof Caption) {
+          const target = this._captionTarget(document.blocks[document.blocks.length - 1], block.label);
+          if (target) {
+            target.caption = block.content;
+            continue;
+          }
+          const prefix = `{#${block.label}}`;
+          const rest = block.raw.startsWith(prefix) ? block.raw.slice(prefix.length) : block.raw;
+          const inlines = [new RawText(prefix), ...this._parseInline(rest)];
+          document.blocks.push(new Paragraph(this._mergeAdjacentText(inlines)));
+          continue;
+        }
+        document.blocks.push(block);
       }
       if (Object.keys(this._footnoteDefs).length > 0) {
         document.footnotes = { ...this._footnoteDefs };
@@ -1590,6 +1631,7 @@ var mslang = (() => {
       if (token.type === TokenType.ALIGN_RIGHT || token.type === TokenType.ALIGN_CENTER) {
         return this._parseAlign(token);
       }
+      if (token.type === TokenType.CAPTION) return this._parseCaption(token);
       if (token.type === TokenType.RAW_TEXT || token.type.value >= TokenType.BOLD.value) {
         return this._parseParagraph();
       }
@@ -1783,6 +1825,24 @@ var mslang = (() => {
           }
         });
       }
+    }
+    /**
+     * 查找 caption 的归并目标：前一 block 是 label 匹配的表格，
+     * 或仅含单个 label 匹配图片的段落（图片需单独成段）。
+     */
+    _captionTarget(prev, label) {
+      if (!prev) return null;
+      if (prev instanceof Table && prev.label === label) return prev;
+      if (prev instanceof Paragraph && prev.content.length === 1 && prev.content[0] instanceof Image && prev.content[0].label === label) {
+        return prev.content[0];
+      }
+      return null;
+    }
+    _parseCaption(token) {
+      this._advance();
+      const label = token.metadata.label || "";
+      const content = this._mergeAdjacentText(this._parseInline(token.value));
+      return new Caption(label, content, token.metadata.raw || "");
     }
     _parseFootnoteDef() {
       const token = this._advance();
@@ -2294,12 +2354,14 @@ ${items.join("\n")}
         data = {},
         variables = {},
         headingNumbering = "",
-        refNumbering = ""
+        refNumbering = "",
+        captionPrefix = {}
       } = opts;
       this._data = data || {};
       this._variables = variables || {};
       this._headingNumbering = headingNumbering === true ? "1.1" : headingNumbering || "";
       this._refNumbering = refNumbering || "";
+      this._captionPrefix = { ..._HTMLRenderer.DEFAULT_CAPTION_PREFIX, ...captionPrefix };
       this._evalCtx = { functions: this._functions, variables: this._variables };
       this._output = [];
       this._asyncSlots = null;
@@ -2332,6 +2394,7 @@ ${body}
         for (const n of inlines) {
           fn(n);
           if (n.content) walk(n.content);
+          if (n.caption) walk(n.caption);
         }
       };
       for (const block of doc.blocks) {
@@ -2375,6 +2438,8 @@ ${body}
           this._data = this._mergeData(this._data, { [key]: config[key] });
         } else if (key === "variables") {
           this._variables = config[key] || {};
+        } else if (key === "captionPrefix") {
+          this._captionPrefix = { ...this._captionPrefix, ...config[key] };
         } else {
           this[key] = config[key];
         }
@@ -2541,6 +2606,10 @@ ${body}
       if (this.pretty) this._write("\n");
     }
     visit_Paragraph(node) {
+      if (node.content.length === 1 && node.content[0] instanceof Image && node.content[0].caption.length) {
+        this._visitFigure(node.content[0]);
+        return;
+      }
       if (node.content.length && node.content.every((n) => n instanceof LineBreak)) {
         node.content.forEach(() => {
           this._write("<br>");
@@ -2559,6 +2628,23 @@ ${body}
       node.content.forEach((n) => n.accept(this));
       if (this.pretty) this._write("\n");
       this._write("</blockquote>");
+      if (this.pretty) this._write("\n");
+    }
+    /** 带 caption 的图片渲染为 <figure>（图下方 figcaption） */
+    _visitFigure(image) {
+      const ref = this._refs[image.label];
+      const num = ref ? ref.number : "";
+      const id = image.label ? ` id="${this._escAttr(image.label)}"` : "";
+      const width = image.width ? ` width="${image.width}"` : "";
+      this._write(`<figure${id}>`);
+      if (this.pretty) this._write("\n");
+      this._write(`<img src="${this._escAttr(image.url)}" alt="${this._escAttr(image.alt)}"${width} referrerpolicy="no-referrer">`);
+      if (this.pretty) this._write("\n");
+      this._write(`<figcaption>${this._esc(this._captionPrefix.fig)} ${num}\uFF1A`);
+      image.caption.forEach((n) => n.accept(this));
+      this._write("</figcaption>");
+      if (this.pretty) this._write("\n");
+      this._write("</figure>");
       if (this.pretty) this._write("\n");
     }
     visit_CodeBlock(node) {
@@ -2610,6 +2696,14 @@ ${body}
       const id = node.label ? ` id="${this._escAttr(node.label)}"` : "";
       this._write(`<table${id}>`);
       if (this.pretty) this._write("\n");
+      if (node.caption.length) {
+        const ref = this._refs[node.label];
+        const num = ref ? ref.number : "";
+        this._write(`<caption>${this._esc(this._captionPrefix.tbl)} ${num}\uFF1A`);
+        node.caption.forEach((n) => n.accept(this));
+        this._write("</caption>");
+        if (this.pretty) this._write("\n");
+      }
       if (node.headers.length) {
         this._write("<thead><tr>");
         node.headers.forEach((h) => this._write(`<th>${this._esc(h)}</th>`));
@@ -2776,7 +2870,9 @@ ${body}
   // 文档内配置（@set）
   // ================================================================
   // @set 白名单：仅这些键可被文档内配置覆盖
-  __publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables", "terms", "bibliography"]);
+  __publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables", "terms", "bibliography", "captionPrefix"]);
+  // caption 前缀（默认中文，可用 @set 覆盖）
+  __publicField(_HTMLRenderer, "DEFAULT_CAPTION_PREFIX", { fig: "\u56FE", tbl: "\u8868" });
   var HTMLRenderer = _HTMLRenderer;
 
   // src/index.js
@@ -2803,9 +2899,10 @@ ${body}
       data: options.data,
       variables: options.variables,
       headingNumbering: options.headingNumbering,
-      refNumbering: options.refNumbering
+      refNumbering: options.refNumbering,
+      captionPrefix: options.captionPrefix
     };
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-07T19:27:21.429Z */
+/*! built: 2026-08-07T19:35:02.769Z */

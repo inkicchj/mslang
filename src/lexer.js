@@ -102,6 +102,7 @@ const RE_FOOTNOTE_DEF    = /^\[\^([^\]]+)\]:\s+(.+)$/;
 const RE_TABLE           = /^\|(.+)\|$/;
 const RE_ALIGN_RIGHT     = /^>>\s+(.+)$/;
 const RE_ALIGN_CENTER    = /^-><-\s+(.+)$/;
+const RE_CAPTION         = /^\{#([^}]+)\}\s?(.*)$/;
 
 // 可被反斜杠转义的字符（与行内语法起始符一致）
 const ESCAPABLE = new Set(['*', '_', '~', '`', '[', '!', '@', '/', '\\']);
@@ -216,6 +217,10 @@ class Lexer {
     // 表格
     m = remaining.match(RE_TABLE);
     if (m) return this._scanTableRow(m);
+
+    // 图表 caption（{#label} 说明，行首显式声明）
+    m = remaining.match(RE_CAPTION);
+    if (m) return this._scanCaption(m);
 
     // 默认为行内文本
     return this._scanInline();
@@ -488,12 +493,23 @@ class Lexer {
     );
   }
 
-  _scanAlign(match, tokenType) {
-    const content = match[1];
+  _scanCaption(match) {
     const length = match[0].length;
     const start = this.pos;
     this._advance(length);
     return new Token(
+      TokenType.CAPTION,
+      new Position(this.line, this.col - length, start),
+      match[2] || '',
+      { label: match[1], raw: match[0] },
+    );
+  }
+
+  _scanAlign(match, tokenType) {
+    const content = match[1];
+    const length = match[0].length;
+    const start = this.pos;
+    this._advance(length);    return new Token(
       tokenType,
       new Position(this.line, this.col - length, start),
       content,

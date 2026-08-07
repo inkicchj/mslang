@@ -147,6 +147,21 @@ class AlignBlock extends BlockNode {
   accept(visitor) { return visitor.visit_AlignBlock(this); }
 }
 
+/**
+ * 图表 caption 行（内部节点，parse 阶段归并到前一块 Image/Table，
+ * 孤立时降级为普通段落，不会出现在最终 AST）。
+ */
+class Caption extends BlockNode {
+  constructor(label = '', content = [], raw = '') {
+    super();
+    this.label = label;
+    this.content = content;
+    this.raw = raw; // 原始整行文本（孤立降级时还原）
+  }
+
+  accept(visitor) { return visitor.visit_Caption(this); }
+}
+
 class Table extends BlockNode {
   /**
    * @param {string[]} [headers]
@@ -158,6 +173,8 @@ class Table extends BlockNode {
     this.headers = headers;
     this.rows = rows;
     this.label = label;
+    /** @type {InlineNode[]} - 表格说明（caption 行归并），渲染在表头上方 */
+    this.caption = [];
   }
 
   accept(visitor) { return visitor.visit_Table(this); }
@@ -246,6 +263,8 @@ class Image extends InlineNode {
     this.url = url;
     this.width = width;
     this.label = label;
+    /** @type {InlineNode[]} - 图片说明（caption 行归并），渲染在图下方 */
+    this.caption = [];
   }
 
   accept(visitor) { return visitor.visit_Image(this); }
@@ -339,7 +358,7 @@ export {
   BlockNode, InlineNode,
   Heading, Paragraph, BlockQuote, CodeBlock,
   UnorderedList, OrderedList, ListItem, HorizontalRule,
-  AlignBlock, Table,
+  AlignBlock, Table, Caption,
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, FunctionCall, Color,
   Superscript, Subscript, RawHtml, FootnoteRef,

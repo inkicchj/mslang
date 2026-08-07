@@ -146,11 +146,13 @@ class HTMLRenderer {
       variables = {},
       headingNumbering = '',
       refNumbering = '',
+      captionPrefix = {},
     } = opts;
     this._data = data || {};
     this._variables = variables || {};
     this._headingNumbering = headingNumbering === true ? '1.1' : (headingNumbering || '');
     this._refNumbering = refNumbering || '';
+    this._captionPrefix = { ...HTMLRenderer.DEFAULT_CAPTION_PREFIX, ...captionPrefix };
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
@@ -177,7 +179,10 @@ class HTMLRenderer {
   // ================================================================
 
   // @set 白名单：仅这些键可被文档内配置覆盖
-  static SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables', 'terms', 'bibliography'];
+  static SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables', 'terms', 'bibliography', 'captionPrefix'];
+
+  // caption 前缀（默认中文，可用 @set 覆盖）
+  static DEFAULT_CAPTION_PREFIX = { fig: '图', tbl: '表' };
 
   /**
    * 预扫描文档顶层的 @set({...}) 调用并应用配置。
@@ -193,6 +198,7 @@ class HTMLRenderer {
       for (const n of inlines) {
         fn(n);
         if (n.content) walk(n.content);
+        if (n.caption) walk(n.caption);
       }
     };
     for (const block of doc.blocks) {
@@ -240,6 +246,8 @@ class HTMLRenderer {
         this._data = this._mergeData(this._data, { [key]: config[key] });
       } else if (key === 'variables') {
         this._variables = config[key] || {};
+      } else if (key === 'captionPrefix') {
+        this._captionPrefix = { ...this._captionPrefix, ...config[key] };
       } else {
         this[key] = config[key];
       }
@@ -432,6 +440,12 @@ class HTMLRenderer {
   }
 
   visit_Paragraph(node) {
+    // 单图片段落且带 caption：渲染为 <figure>（id 上移到 figure）
+    if (node.content.length === 1 &&
+        node.content[0] instanceof Image && node.content[0].caption.length) {
+      this._visitFigure(node.content[0]);
+      return;
+    }
     if (node.content.length && node.content.every(n => n instanceof LineBreak)) {
       node.content.forEach(() => {
         this._write('<br>');
@@ -451,6 +465,24 @@ class HTMLRenderer {
     node.content.forEach(n => n.accept(this));
     if (this.pretty) this._write('\n');
     this._write('</blockquote>');
+    if (this.pretty) this._write('\n');
+  }
+
+  /** 带 caption 的图片渲染为 <figure>（图下方 figcaption） */
+  _visitFigure(image) {
+    const ref = this._refs[image.label];
+    const num = ref ? ref.number : '';
+    const id = image.label ? ` id="${this._escAttr(image.label)}"` : '';
+    const width = image.width ? ` width="${image.width}"` : '';
+    this._write(`<figure${id}>`);
+    if (this.pretty) this._write('\n');
+    this._write(`<img src="${this._escAttr(image.url)}" alt="${this._escAttr(image.alt)}"${width} referrerpolicy="no-referrer">`);
+    if (this.pretty) this._write('\n');
+    this._write(`<figcaption>${this._esc(this._captionPrefix.fig)} ${num}：`);
+    image.caption.forEach(n => n.accept(this));
+    this._write('</figcaption>');
+    if (this.pretty) this._write('\n');
+    this._write('</figure>');
     if (this.pretty) this._write('\n');
   }
 
@@ -509,6 +541,15 @@ class HTMLRenderer {
     const id = node.label ? ` id="${this._escAttr(node.label)}"` : '';
     this._write(`<table${id}>`);
     if (this.pretty) this._write('\n');
+    // caption 必须位于 table 首个子元素（表头上方）
+    if (node.caption.length) {
+      const ref = this._refs[node.label];
+      const num = ref ? ref.number : '';
+      this._write(`<caption>${this._esc(this._captionPrefix.tbl)} ${num}：`);
+      node.caption.forEach(n => n.accept(this));
+      this._write('</caption>');
+      if (this.pretty) this._write('\n');
+    }
     if (node.headers.length) {
       this._write('<thead><tr>');
       node.headers.forEach(h => this._write(`<th>${this._esc(h)}</th>`));

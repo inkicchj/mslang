@@ -92,5 +92,6 @@ function _renderOptions(options) {
     variables: options.variables,
     headingNumbering: options.headingNumbering,
     refNumbering: options.refNumbering,
+    captionPrefix: options.captionPrefix,
   };
 }
