@@ -2062,12 +2062,25 @@ var mslang = (() => {
      * @param {string} [opts.wrapperId='']
      * @param {object} [opts.data] - 注入数据（{ bibliography, terms, ... }）
      * @param {object} [opts.variables] - 注入变量（表达式裸词引用）
+     * @param {string|boolean} [opts.headingNumbering] - 标题自动编号格式（如 '1.1'），
+     *   开启后标题显示层级编号，@ref 显示编号；不配置则不编号
+     * @param {string} [opts.refNumbering] - 从标题文本提取显式编号的模式
+     *   （'1' 数字 / '一' 中文），提取到则 @ref 显示编号，否则显示标题全文
      * @returns {string}
      */
     render(source, opts = {}) {
-      const { wrapperClass = "mslang", wrapperId = "", data = {}, variables = {} } = opts;
+      const {
+        wrapperClass = "mslang",
+        wrapperId = "",
+        data = {},
+        variables = {},
+        headingNumbering = "",
+        refNumbering = ""
+      } = opts;
       this._data = data || {};
       this._variables = variables || {};
+      this._headingNumbering = headingNumbering === true ? "1.1" : headingNumbering || "";
+      this._refNumbering = refNumbering || "";
       this._output = [];
       let body;
       if (source instanceof Document) {
@@ -2101,7 +2114,18 @@ ${body}
       this._citeNumbers = {};
       this._citeOrder = [];
       this._refs = {};
+      this._headingSeq = [];
+      this._headingIdx = 0;
       const counters = { fig: 0, tbl: 0, sec: 0 };
+      const sep = this._headingNumbering.match(/[^\d1]/)?.[0] || ".";
+      const levelCounts = [0, 0, 0, 0, 0, 0];
+      const nextSecNumber = (level) => {
+        levelCounts[level - 1]++;
+        for (let i = level; i < 6; i++) levelCounts[i] = 0;
+        const parts = [];
+        for (let i = 0; i < level; i++) parts.push(levelCounts[i]);
+        return parts.join(sep);
+      };
       const collectCite = (key) => {
         if (!(key in this._citeNumbers)) {
           this._citeNumbers[key] = this._citeOrder.length + 1;
@@ -2138,14 +2162,33 @@ ${body}
           if (n.content) walkInlines(n.content);
         }
       };
+      const headingText = (nodes) => {
+        let out = "";
+        for (const n of nodes) {
+          if (n instanceof RawText) out += n.text;
+          else if (n.content) out += headingText(n.content);
+        }
+        return out;
+      };
       for (const block of doc.blocks) {
+        if (block instanceof Heading) {
+          const autoNum = this._headingNumbering ? nextSecNumber(block.level) : "";
+          this._headingSeq.push(autoNum);
+          if (block.id) {
+            counters.sec++;
+            const text = headingText(block.content);
+            let display;
+            if (this._refNumbering) {
+              display = extractHeadingNumber(text, this._refNumbering);
+            }
+            if (display === void 0 && autoNum) display = autoNum;
+            if (display === void 0) display = text || `\u7B2C ${counters.sec} \u8282`;
+            this._refs[block.id] = { kind: "sec", display };
+          }
+        }
         if (block instanceof Table && block.label) {
           counters.tbl++;
           this._refs[block.label] = { kind: "tbl", number: counters.tbl };
-        }
-        if (block instanceof Heading && block.id) {
-          counters.sec++;
-          this._refs[block.id] = { kind: "sec", number: counters.sec };
         }
         if (block.content) walkInlines(block.content);
         if (block.items) {
@@ -2204,6 +2247,11 @@ ${body}
       const tag = `h${Math.min(node.level, 6)}`;
       const idAttr = node.id ? ` id="${node.id}"` : "";
       this._write(`<${tag}${idAttr}>`);
+      if (this._headingNumbering) {
+        const num = this._headingSeq[this._headingIdx] || "";
+        this._headingIdx++;
+        if (num) this._write(`${num} `);
+      }
       node.content.forEach((n) => n.accept(this));
       this._write(`</${tag}>`);
       if (this.pretty) this._write("\n");
@@ -2401,6 +2449,17 @@ ${body}
       return text;
     }
   };
+  var RE_NUM_ARABIC = /^(\d+(?:\.\d+)*)/;
+  var RE_NUM_CN = /^(第[一二三四五六七八九十百]+[章节篇]|[一二三四五六七八九十百]+[、．.]|（[一二三四五六七八九十百]+）|\([一二三四五六七八九十百]+\))/;
+  function extractHeadingNumber(text, mode) {
+    if (mode !== "1" && mode !== "\u4E00") return void 0;
+    const re = mode === "1" ? RE_NUM_ARABIC : RE_NUM_CN;
+    const m = text.match(re);
+    if (!m) return void 0;
+    let num = m[1];
+    if (mode === "\u4E00") num = num.replace(/[、．.]+$/, "");
+    return num;
+  }
   function builtinFunctions(renderer) {
     const esc = (t) => renderer._esc(t);
     const escAttr = (t) => renderer._escAttr(t);
@@ -2424,11 +2483,14 @@ ${body}
         const num = renderer._citeNumbers[key];
         return `<sup><a href="#cite-${num}" id="ref-cite-${num}">[${esc(String(num))}]</a></sup>`;
       },
-      /** 交叉引用：@ref("fig:1") → 图 1，@ref("tbl:1") → 表 1，@ref("sec:x") → 第 N 节 */
+      /** 交叉引用：图/表显示"图 N/表 N"；章节显示 显式编号 → 自动编号 → 标题全文 */
       ref: (label) => {
         const r = renderer._refs[label];
         if (!r) return `<a href="#${escAttr(String(label))}">[${esc(String(label))}?]</a>`;
-        const text = r.kind === "sec" ? `\u7B2C ${r.number} \u8282` : r.kind === "fig" ? `\u56FE ${r.number}` : `\u8868 ${r.number}`;
+        let text;
+        if (r.kind === "fig") text = `\u56FE ${r.number}`;
+        else if (r.kind === "tbl") text = `\u8868 ${r.number}`;
+        else text = r.display;
         return `<a href="#${escAttr(String(label))}">${esc(text)}</a>`;
       },
       /** 文献表：列出全部被引用文献（按编号顺序），生成 <ol> 锚点与 cite 对应 */
@@ -2461,9 +2523,11 @@ ${items.join("\n")}
       wrapperClass: options.wrapperClass || "mslang",
       wrapperId: options.wrapperId || "",
       data: options.data,
-      variables: options.variables
+      variables: options.variables,
+      headingNumbering: options.headingNumbering,
+      refNumbering: options.refNumbering
     });
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-07T18:20:37.113Z */
+/*! built: 2026-08-07T18:36:04.076Z */

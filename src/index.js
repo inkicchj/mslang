@@ -67,5 +67,7 @@ export function mslangToHTML(source, options = {}) {
     wrapperId: options.wrapperId || '',
     data: options.data,
     variables: options.variables,
+    headingNumbering: options.headingNumbering,
+    refNumbering: options.refNumbering,
   });
 }

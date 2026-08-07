@@ -80,6 +80,14 @@ const paper = mslangToHTML(
   { data: { bibliography: { doe2020: { authors: 'Doe, J.', year: 2020, title: 'A Study' } } } },
 );
 
+// 章节引用：默认 @ref 显示标题全文（"如引言所述"）；可选两种编号模式
+//  - refNumbering: '1'（或 '一'）：提取标题文本中的显式编号（如 # 1.1.2 引言 → 1.1.2）
+//  - headingNumbering: '1.1'：标题自动层级编号（1 / 1.1 / 1.1.1），@ref 显示编号
+const withRefs = mslangToHTML(
+  '# 引言 {#sec:intro}\n\n如 @ref("sec:intro") 所述',
+  { headingNumbering: '1.1' }, // 输出 "如 1 所述"
+);
+
 // 仅解析 AST
 const parser = new Parser();
 const ast = parser.parseText('# Hello');

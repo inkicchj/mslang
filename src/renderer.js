@@ -81,12 +81,25 @@ class HTMLRenderer {
    * @param {string} [opts.wrapperId='']
    * @param {object} [opts.data] - 注入数据（{ bibliography, terms, ... }）
    * @param {object} [opts.variables] - 注入变量（表达式裸词引用）
+   * @param {string|boolean} [opts.headingNumbering] - 标题自动编号格式（如 '1.1'），
+   *   开启后标题显示层级编号，@ref 显示编号；不配置则不编号
+   * @param {string} [opts.refNumbering] - 从标题文本提取显式编号的模式
+   *   （'1' 数字 / '一' 中文），提取到则 @ref 显示编号，否则显示标题全文
    * @returns {string}
    */
   render(source, opts = {}) {
-    const { wrapperClass = 'mslang', wrapperId = '', data = {}, variables = {} } = opts;
+    const {
+      wrapperClass = 'mslang',
+      wrapperId = '',
+      data = {},
+      variables = {},
+      headingNumbering = '',
+      refNumbering = '',
+    } = opts;
     this._data = data || {};
     this._variables = variables || {};
+    this._headingNumbering = headingNumbering === true ? '1.1' : (headingNumbering || '');
+    this._refNumbering = refNumbering || '';
     this._output = [];
 
     let body;
@@ -122,7 +135,20 @@ class HTMLRenderer {
     this._citeNumbers = {};
     this._citeOrder = [];
     this._refs = {};
+    this._headingSeq = [];
+    this._headingIdx = 0;
     const counters = { fig: 0, tbl: 0, sec: 0 };
+
+    // 标题自动编号：按文档顺序对全部 Heading 计算层级编号（如 1 / 1.1 / 1.1.1）
+    const sep = this._headingNumbering.match(/[^\d1]/)?.[0] || '.';
+    const levelCounts = [0, 0, 0, 0, 0, 0];
+    const nextSecNumber = (level) => {
+      levelCounts[level - 1]++;
+      for (let i = level; i < 6; i++) levelCounts[i] = 0;
+      const parts = [];
+      for (let i = 0; i < level; i++) parts.push(levelCounts[i]);
+      return parts.join(sep);
+    };
 
     const collectCite = (key) => {
       if (!(key in this._citeNumbers)) {
@@ -166,14 +192,36 @@ class HTMLRenderer {
       }
     };
 
+    // 提取标题纯文本（递归穿过 Bold/Italic 等行内容器）
+    const headingText = (nodes) => {
+      let out = '';
+      for (const n of nodes) {
+        if (n instanceof RawText) out += n.text;
+        else if (n.content) out += headingText(n.content);
+      }
+      return out;
+    };
+
     for (const block of doc.blocks) {
+      if (block instanceof Heading) {
+        const autoNum = this._headingNumbering ? nextSecNumber(block.level) : '';
+        this._headingSeq.push(autoNum);
+        if (block.id) {
+          counters.sec++;
+          const text = headingText(block.content);
+          // 统一优先级：显式提取编号 > 自动编号 > 标题全文
+          let display;
+          if (this._refNumbering) {
+            display = extractHeadingNumber(text, this._refNumbering);
+          }
+          if (display === undefined && autoNum) display = autoNum;
+          if (display === undefined) display = text || `第 ${counters.sec} 节`;
+          this._refs[block.id] = { kind: 'sec', display };
+        }
+      }
       if (block instanceof Table && block.label) {
         counters.tbl++;
         this._refs[block.label] = { kind: 'tbl', number: counters.tbl };
-      }
-      if (block instanceof Heading && block.id) {
-        counters.sec++;
-        this._refs[block.id] = { kind: 'sec', number: counters.sec };
       }
       if (block.content) walkInlines(block.content);
       if (block.items) {
@@ -240,6 +288,11 @@ class HTMLRenderer {
     const tag = `h${Math.min(node.level, 6)}`;
     const idAttr = node.id ? ` id="${node.id}"` : '';
     this._write(`<${tag}${idAttr}>`);
+    if (this._headingNumbering) {
+      const num = this._headingSeq[this._headingIdx] || '';
+      this._headingIdx++;
+      if (num) this._write(`${num} `);
+    }
     node.content.forEach(n => n.accept(this));
     this._write(`</${tag}>`);
     if (this.pretty) this._write('\n');
@@ -465,6 +518,26 @@ class HTMLRenderer {
 // 内置函数
 // ================================================================
 
+// 显式编号提取正则：数字层级（1.1.2）与中文编号（第一章 / 一、 / （一））
+const RE_NUM_ARABIC = /^(\d+(?:\.\d+)*)/;
+const RE_NUM_CN = /^(第[一二三四五六七八九十百]+[章节篇]|[一二三四五六七八九十百]+[、．.]|（[一二三四五六七八九十百]+）|\([一二三四五六七八九十百]+\))/;
+
+/**
+ * 从标题文本开头提取显式编号。
+ * @param {string} text
+ * @param {string} mode - '1' 数字编号 / '一' 中文编号
+ * @returns {string|undefined} 提取到的编号（剥离尾随顿号/点），未匹配返回 undefined
+ */
+function extractHeadingNumber(text, mode) {
+  if (mode !== '1' && mode !== '一') return undefined;
+  const re = mode === '1' ? RE_NUM_ARABIC : RE_NUM_CN;
+  const m = text.match(re);
+  if (!m) return undefined;
+  let num = m[1];
+  if (mode === '一') num = num.replace(/[、．.]+$/, '');
+  return num;
+}
+
 /**
  * 论文写作常用内置函数：逻辑运算、文献引用、术语引用。
  * 通过 renderer.render(source, { data, variables }) 注入数据。
@@ -498,11 +571,14 @@ function builtinFunctions(renderer) {
       return `<sup><a href="#cite-${num}" id="ref-cite-${num}">[${esc(String(num))}]</a></sup>`;
     },
 
-    /** 交叉引用：@ref("fig:1") → 图 1，@ref("tbl:1") → 表 1，@ref("sec:x") → 第 N 节 */
+    /** 交叉引用：图/表显示"图 N/表 N"；章节显示 显式编号 → 自动编号 → 标题全文 */
     ref: (label) => {
       const r = renderer._refs[label];
       if (!r) return `<a href="#${escAttr(String(label))}">[${esc(String(label))}?]</a>`;
-      const text = r.kind === 'sec' ? `第 ${r.number} 节` : (r.kind === 'fig' ? `图 ${r.number}` : `表 ${r.number}`);
+      let text;
+      if (r.kind === 'fig') text = `图 ${r.number}`;
+      else if (r.kind === 'tbl') text = `表 ${r.number}`;
+      else text = r.display;
       return `<a href="#${escAttr(String(label))}">${esc(text)}</a>`;
     },
 
