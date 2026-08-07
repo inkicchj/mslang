@@ -2332,7 +2332,7 @@ ${body}
     visit_Image(node) {
       const w = node.width ? ` width="${node.width}"` : "";
       const id = node.label ? ` id="${this._escAttr(node.label)}"` : "";
-      this._write(`<img src="${this._escAttr(node.url)}" alt="${this._escAttr(node.alt)}"${w}${id}>`);
+      this._write(`<img src="${this._escAttr(node.url)}" alt="${this._escAttr(node.alt)}"${w}${id} referrerpolicy="no-referrer">`);
     }
     visit_FunctionCall(node) {
       if (node.error) {
@@ -2466,4 +2466,4 @@ ${items.join("\n")}
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-07T18:09:49.790Z */
+/*! built: 2026-08-07T18:20:37.113Z */

@@ -381,7 +381,8 @@ class HTMLRenderer {
   visit_Image(node) {
     const w = node.width ? ` width="${node.width}"` : '';
     const id = node.label ? ` id="${this._escAttr(node.label)}"` : '';
-    this._write(`<img src="${this._escAttr(node.url)}" alt="${this._escAttr(node.alt)}"${w}${id}>`);
+    // referrerpolicy="no-referrer": 绕过源站 Referer 防盗链
+    this._write(`<img src="${this._escAttr(node.url)}" alt="${this._escAttr(node.alt)}"${w}${id} referrerpolicy="no-referrer">`);
   }
 
   visit_FunctionCall(node) {
