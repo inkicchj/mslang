@@ -242,6 +242,17 @@ var mslang = (() => {
   var RE_ALIGN_RIGHT = /^>>\s+(.+)$/;
   var RE_ALIGN_CENTER = /^-><-\s+(.+)$/;
   var ESCAPABLE = /* @__PURE__ */ new Set(["*", "_", "~", "`", "[", "!", "@", "/", "\\"]);
+  var RAW_TEXT_SPECIALS = /* @__PURE__ */ new Set([
+    CHAR.STAR,
+    CHAR.UNDERSCORE,
+    CHAR.TILDE,
+    CHAR.BACKTICK,
+    CHAR.BANG,
+    CHAR.LBRACKET,
+    CHAR.AT,
+    "^",
+    "<"
+  ]);
   var Lexer = class {
     /**
      * @param {string} source - mslang 格式文本
@@ -691,17 +702,6 @@ var mslang = (() => {
     }
     _scanRawText() {
       const start = this.pos;
-      const specials = /* @__PURE__ */ new Set([
-        CHAR.STAR,
-        CHAR.UNDERSCORE,
-        CHAR.TILDE,
-        CHAR.BACKTICK,
-        CHAR.BANG,
-        CHAR.LBRACKET,
-        CHAR.AT,
-        "^",
-        "<"
-      ]);
       const end = this._lineEnd();
       while (this.pos < end) {
         const ch = this.source[this.pos];
@@ -709,7 +709,7 @@ var mslang = (() => {
           this._advance(2);
           continue;
         }
-        if (specials.has(ch)) break;
+        if (RAW_TEXT_SPECIALS.has(ch)) break;
         if (ch === "/" && this._isColorStart(this.pos)) break;
         this._advance(1);
       }
@@ -2052,6 +2052,79 @@ var mslang = (() => {
     return `${linePrefix}${name}`;
   }
 
+  // src/builtin.js
+  var RE_NUM_ARABIC = /^(\d+(?:\.\d+)*)/;
+  var RE_NUM_CN = /^(第[一二三四五六七八九十百]+[章节篇]|[一二三四五六七八九十百]+[、．.]|（[一二三四五六七八九十百]+）|\([一二三四五六七八九十百]+\))/;
+  function extractHeadingNumber(text, mode) {
+    if (mode !== "1" && mode !== "\u4E00") return void 0;
+    const re = mode === "1" ? RE_NUM_ARABIC : RE_NUM_CN;
+    const m = text.match(re);
+    if (!m) return void 0;
+    let num = m[1];
+    if (mode === "\u4E00") num = num.replace(/[、．.]+$/, "");
+    return num;
+  }
+  function builtinFunctions(renderer) {
+    const esc = (t) => renderer._esc(t);
+    const escAttr = (t) => renderer._escAttr(t);
+    return {
+      if: (cond, then, els) => cond ? then : els === void 0 ? "" : els,
+      not: (x) => !x,
+      and: (...xs) => xs.every(Boolean),
+      or: (...xs) => xs.some(Boolean),
+      /** 文档内配置：@set({ headingNumbering: '1.1', ... })，无输出 */
+      set: (config) => {
+        if (config && typeof config === "object") renderer._mergeSet(config);
+        return "";
+      },
+      /** 文献键是否存在（供 if 条件使用） */
+      has_cite: (key) => !!(renderer._data.bibliography && renderer._data.bibliography[key]),
+      /** 术语是否存在（供 if 条件使用） */
+      has_term: (name) => !!(renderer._data.terms && renderer._data.terms[name]),
+      /** 文献引用：按文档出现顺序自动编号，输出上标链接 [n]，缺失时输出 [key?] 占位 */
+      cite: (key) => {
+        const entry = renderer._data.bibliography && renderer._data.bibliography[key];
+        if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
+        if (!(key in renderer._citeNumbers)) {
+          renderer._citeNumbers[key] = renderer._citeOrder.length + 1;
+          renderer._citeOrder.push(key);
+        }
+        const num = renderer._citeNumbers[key];
+        return `<sup><a href="#cite-${num}" id="ref-cite-${num}">[${esc(String(num))}]</a></sup>`;
+      },
+      /** 交叉引用：图/表显示"图 N/表 N"；章节显示 显式编号 → 自动编号 → 标题全文 */
+      ref: (label) => {
+        const r = renderer._refs[label];
+        if (!r) return `<a href="#${escAttr(String(label))}">[${esc(String(label))}?]</a>`;
+        let text;
+        if (r.kind === "fig") text = `\u56FE ${r.number}`;
+        else if (r.kind === "tbl") text = `\u8868 ${r.number}`;
+        else text = r.display;
+        return `<a href="#${escAttr(String(label))}">${esc(text)}</a>`;
+      },
+      /** 文献表：列出全部被引用文献（按编号顺序），生成 <ol> 锚点与 cite 对应 */
+      bibliography: () => {
+        const items = renderer._citeOrder.map((key, i) => {
+          const entry = renderer._data.bibliography && renderer._data.bibliography[key];
+          if (entry === void 0) return null;
+          return `<li id="cite-${i + 1}">${renderer._formatBibEntry(entry)}</li>`;
+        }).filter(Boolean);
+        if (!items.length) return "";
+        return `<ol class="bibliography">
+${items.join("\n")}
+</ol>`;
+      },
+      /** 术语引用：字符串值为 label 简写；对象可带 label / url */
+      term: (name, kwargs) => {
+        const entry = renderer._data.terms && renderer._data.terms[name];
+        const label = typeof entry === "string" ? entry : entry && entry.label ? entry.label : name;
+        const inner = `<span class="term">${esc(String(label))}</span>`;
+        const url = entry && typeof entry === "object" && entry.url ? entry.url : "";
+        return url ? `<a href="${escAttr(String(url))}">${inner}</a>` : inner;
+      }
+    };
+  }
+
   // src/renderer.js
   var ESC_MAP = {
     "&": "&amp;",
@@ -2122,22 +2195,13 @@ var mslang = (() => {
       this._variables = variables || {};
       this._headingNumbering = headingNumbering === true ? "1.1" : headingNumbering || "";
       this._refNumbering = refNumbering || "";
+      this._evalCtx = { functions: this._functions, variables: this._variables };
       this._output = [];
-      let body;
-      if (source instanceof Document) {
-        this._applySets(source);
-        this._collectRefs(source);
-        source.accept(this);
-        body = this._output.join("");
-      } else {
-        const lexer = new Lexer(source);
-        const tokens = lexer.tokenize();
-        const ast = new Parser().parse(tokens);
-        this._applySets(ast);
-        this._collectRefs(ast);
-        ast.accept(this);
-        body = this._output.join("");
-      }
+      const doc = source instanceof Document ? source : new Parser().parse(new Lexer(source).tokenize());
+      this._applySets(doc);
+      this._collectRefs(doc);
+      doc.accept(this);
+      const body = this._output.join("");
       const cls = wrapperClass ? ` class="${wrapperClass}"` : "";
       const id = wrapperId ? ` id="${wrapperId}"` : "";
       return `<div${cls}${id}>
@@ -2165,8 +2229,7 @@ ${body}
     _applySet(node) {
       if (node.error || !node.args[0]) return;
       try {
-        const ctx = { functions: this._functions, variables: this._variables };
-        const config = evaluate(node.args[0], ctx);
+        const config = evaluate(node.args[0], this._evalCtx);
         if (config && typeof config === "object") this._mergeSet(config);
       } catch (e) {
       }
@@ -2498,10 +2561,9 @@ ${body}
         return;
       }
       try {
-        const ctx = { functions: this._functions, variables: this._variables };
-        const args = node.args.map((a) => evaluate(a, ctx));
+        const args = node.args.map((a) => evaluate(a, this._evalCtx));
         const kwargs = {};
-        for (const [k, v] of Object.entries(node.kwargs)) kwargs[k] = evaluate(v, ctx);
+        for (const [k, v] of Object.entries(node.kwargs)) kwargs[k] = evaluate(v, this._evalCtx);
         const result = func(...args, kwargs);
         if (typeof result === "string") {
           this._write(result);
@@ -2560,77 +2622,6 @@ ${body}
   // @set 白名单：仅这些键可被文档内配置覆盖
   __publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables", "terms", "bibliography"]);
   var HTMLRenderer = _HTMLRenderer;
-  var RE_NUM_ARABIC = /^(\d+(?:\.\d+)*)/;
-  var RE_NUM_CN = /^(第[一二三四五六七八九十百]+[章节篇]|[一二三四五六七八九十百]+[、．.]|（[一二三四五六七八九十百]+）|\([一二三四五六七八九十百]+\))/;
-  function extractHeadingNumber(text, mode) {
-    if (mode !== "1" && mode !== "\u4E00") return void 0;
-    const re = mode === "1" ? RE_NUM_ARABIC : RE_NUM_CN;
-    const m = text.match(re);
-    if (!m) return void 0;
-    let num = m[1];
-    if (mode === "\u4E00") num = num.replace(/[、．.]+$/, "");
-    return num;
-  }
-  function builtinFunctions(renderer) {
-    const esc = (t) => renderer._esc(t);
-    const escAttr = (t) => renderer._escAttr(t);
-    return {
-      if: (cond, then, els) => cond ? then : els === void 0 ? "" : els,
-      not: (x) => !x,
-      and: (...xs) => xs.every(Boolean),
-      or: (...xs) => xs.some(Boolean),
-      /** 文档内配置：@set({ headingNumbering: '1.1', ... })，无输出 */
-      set: (config) => {
-        if (config && typeof config === "object") renderer._mergeSet(config);
-        return "";
-      },
-      /** 文献键是否存在（供 if 条件使用） */
-      has_cite: (key) => !!(renderer._data.bibliography && renderer._data.bibliography[key]),
-      /** 术语是否存在（供 if 条件使用） */
-      has_term: (name) => !!(renderer._data.terms && renderer._data.terms[name]),
-      /** 文献引用：按文档出现顺序自动编号，输出上标链接 [n]，缺失时输出 [key?] 占位 */
-      cite: (key) => {
-        const entry = renderer._data.bibliography && renderer._data.bibliography[key];
-        if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
-        if (!(key in renderer._citeNumbers)) {
-          renderer._citeNumbers[key] = renderer._citeOrder.length + 1;
-          renderer._citeOrder.push(key);
-        }
-        const num = renderer._citeNumbers[key];
-        return `<sup><a href="#cite-${num}" id="ref-cite-${num}">[${esc(String(num))}]</a></sup>`;
-      },
-      /** 交叉引用：图/表显示"图 N/表 N"；章节显示 显式编号 → 自动编号 → 标题全文 */
-      ref: (label) => {
-        const r = renderer._refs[label];
-        if (!r) return `<a href="#${escAttr(String(label))}">[${esc(String(label))}?]</a>`;
-        let text;
-        if (r.kind === "fig") text = `\u56FE ${r.number}`;
-        else if (r.kind === "tbl") text = `\u8868 ${r.number}`;
-        else text = r.display;
-        return `<a href="#${escAttr(String(label))}">${esc(text)}</a>`;
-      },
-      /** 文献表：列出全部被引用文献（按编号顺序），生成 <ol> 锚点与 cite 对应 */
-      bibliography: () => {
-        const items = renderer._citeOrder.map((key, i) => {
-          const entry = renderer._data.bibliography && renderer._data.bibliography[key];
-          if (entry === void 0) return null;
-          return `<li id="cite-${i + 1}">${renderer._formatBibEntry(entry)}</li>`;
-        }).filter(Boolean);
-        if (!items.length) return "";
-        return `<ol class="bibliography">
-${items.join("\n")}
-</ol>`;
-      },
-      /** 术语引用：字符串值为 label 简写；对象可带 label / url */
-      term: (name, kwargs) => {
-        const entry = renderer._data.terms && renderer._data.terms[name];
-        const label = typeof entry === "string" ? entry : entry && entry.label ? entry.label : name;
-        const inner = `<span class="term">${esc(String(label))}</span>`;
-        const url = entry && typeof entry === "object" && entry.url ? entry.url : "";
-        return url ? `<a href="${escAttr(String(url))}">${inner}</a>` : inner;
-      }
-    };
-  }
 
   // src/index.js
   function mslangToHTML(source, options = {}) {
@@ -2646,4 +2637,4 @@ ${items.join("\n")}
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-07T18:56:06.616Z */
+/*! built: 2026-08-07T19:02:12.025Z */

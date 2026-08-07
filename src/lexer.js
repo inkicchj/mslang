@@ -106,6 +106,10 @@ const RE_ALIGN_CENTER    = /^-><-\s+(.+)$/;
 // 可被反斜杠转义的字符（与行内语法起始符一致）
 const ESCAPABLE = new Set(['*', '_', '~', '`', '[', '!', '@', '/', '\\']);
 
+// RAW_TEXT 扫描的终止符（行内语法起始符 + HTML 透传检查）
+const RAW_TEXT_SPECIALS = new Set([CHAR.STAR, CHAR.UNDERSCORE, CHAR.TILDE, CHAR.BACKTICK,
+                                   CHAR.BANG, CHAR.LBRACKET, CHAR.AT, '^', '<']);
+
 class Lexer {
   /**
    * @param {string} source - mslang 格式文本
@@ -656,8 +660,6 @@ class Lexer {
 
   _scanRawText() {
     const start = this.pos;
-    const specials = new Set([CHAR.STAR, CHAR.UNDERSCORE, CHAR.TILDE, CHAR.BACKTICK,
-                              CHAR.BANG, CHAR.LBRACKET, CHAR.AT, '^', '<']);
     const end = this._lineEnd();
 
     while (this.pos < end) {
@@ -667,7 +669,7 @@ class Lexer {
         this._advance(2);
         continue;
       }
-      if (specials.has(ch)) break;
+      if (RAW_TEXT_SPECIALS.has(ch)) break;
       // /#hex: 颜色语法 — 仅在匹配时停止，普通 / 继续（如 URL）
       if (ch === '/' && this._isColorStart(this.pos)) break;
       this._advance(1);
