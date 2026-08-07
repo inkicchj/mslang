@@ -99,6 +99,11 @@ const withTerms = mslangToHTML(
   '@set({ terms: { 词干提取: "词干提取 (Stemming)" } })\n\n@term("词干提取")',
 );
 
+// 异步渲染：自定义函数可返回 Promise（如网络请求），用 mslangToHTMLAsync 渲染
+const renderer2 = new HTMLRenderer();
+renderer2.addFunction('fetch_title', async (key) => `<b>${key}</b>`);
+const asyncHtml = await mslangToHTMLAsync('标题：@fetch_title("paper1")');
+
 // 仅解析 AST
 const parser = new Parser();
 const ast = parser.parseText('# Hello');

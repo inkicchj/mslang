@@ -71,3 +71,16 @@ export function mslangToHTML(source, options = {}) {
     refNumbering: options.refNumbering,
   });
 }
+
+// 异步版: 支持返回 Promise 的自定义函数（如网络请求），其余语义与 mslangToHTML 相同
+export async function mslangToHTMLAsync(source, options = {}) {
+  const renderer = new HTMLRenderer({ functions: options.functions });
+  return renderer.renderAsync(source, {
+    wrapperClass: options.wrapperClass || 'mslang',
+    wrapperId: options.wrapperId || '',
+    data: options.data,
+    variables: options.variables,
+    headingNumbering: options.headingNumbering,
+    refNumbering: options.refNumbering,
+  });
+}

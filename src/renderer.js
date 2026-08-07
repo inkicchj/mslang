@@ -89,9 +89,42 @@ class HTMLRenderer {
    * @returns {string}
    */
   render(source, opts = {}) {
+    this._applyOpts(opts);
+    const doc = this._parseDoc(source);
+    this._applySets(doc);
+    this._collectRefs(doc);
+    doc.accept(this);
+    const body = this._output.join('');
+    return this._wrap(body, opts);
+  }
+
+  /**
+   * 异步渲染：支持返回 Promise 的自定义函数（如网络请求）。
+   * 与 render() 语义一致，仅异步函数结果会真正渲染进 HTML；
+   * 多个异步函数并行等待，reject 时输出错误注释而非抛错。
+   * @param {string|Document} source
+   * @param {object} [opts] - 与 render() 相同
+   * @returns {Promise<string>}
+   */
+  async renderAsync(source, opts = {}) {
+    this._applyOpts(opts);
+    this._asyncSlots = [];
+    this._asyncId = 0;
+    const doc = this._parseDoc(source);
+    this._applySets(doc);
+    this._collectRefs(doc);
+    doc.accept(this);
+    await Promise.all(this._asyncSlots.map(s => s.promise));
+    let body = this._output.join('');
+    for (const slot of this._asyncSlots) {
+      body = body.split(slot.token).join(slot.html);
+    }
+    return this._wrap(body, opts);
+  }
+
+  /** 应用渲染选项（render / renderAsync 共用） */
+  _applyOpts(opts) {
     const {
-      wrapperClass = 'mslang',
-      wrapperId = '',
       data = {},
       variables = {},
       headingNumbering = '',
@@ -103,16 +136,20 @@ class HTMLRenderer {
     this._refNumbering = refNumbering || '';
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
+    this._asyncSlots = null;
+  }
 
-    const doc = source instanceof Document
+  /** 解析输入为 Document（render / renderAsync 共用） */
+  _parseDoc(source) {
+    return source instanceof Document
       ? source
       : new Parser().parse(new Lexer(source).tokenize());
+  }
 
-    this._applySets(doc);
-    this._collectRefs(doc);
-    doc.accept(this);
-    const body = this._output.join('');
-
+  /** 包一层 wrapper div */
+  _wrap(body, opts) {
+    const wrapperClass = opts.wrapperClass || 'mslang';
+    const wrapperId = opts.wrapperId || '';
     const cls = wrapperClass ? ` class="${wrapperClass}"` : '';
     const id = wrapperId ? ` id="${wrapperId}"` : '';
     return `<div${cls}${id}>\n${body}\n</div>`;
@@ -520,27 +557,62 @@ class HTMLRenderer {
       this._write(`<!-- mslang: unknown function @${node.name} -->`);
       return;
     }
+    let result;
     try {
       const args = node.args.map(a => evaluate(a, this._evalCtx));
       const kwargs = {};
       for (const [k, v] of Object.entries(node.kwargs)) kwargs[k] = evaluate(v, this._evalCtx);
-      const result = func(...args, kwargs);
-      if (typeof result === 'string') {
-        this._write(result);
-      } else if (Array.isArray(result)) {
-        result.forEach(item => {
-          if (typeof item === 'string') {
-            this._write(this._esc(item));
-          } else if (item.accept) {
-            item.accept(this);
-          }
-        });
-      } else {
-        this._write(this._esc(String(result)));
-      }
+      result = func(...args, kwargs);
     } catch (e) {
       this._write(`<!-- mslang: function @${node.name} error: ${this._esc(String(e))} -->`);
+      return;
     }
+
+    if (result instanceof Promise) {
+      if (this._asyncSlots) {
+        // 异步模式：占位符 + 结果回填
+        const id = ++this._asyncId;
+        const slot = { token: `\u0000ASYNC${id}\u0000`, html: '' };
+        slot.promise = Promise.resolve(result).then(
+          (value) => { slot.html = this._renderValue(value); },
+          (err) => { slot.html = `<!-- mslang: async function @${node.name} error: ${this._esc(String(err && err.message || err))} -->`; },
+        );
+        this._asyncSlots.push(slot);
+        this._output.push(slot.token);
+      } else {
+        this._write(`<!-- mslang: async function @${node.name} 需使用 renderAsync() -->`);
+      }
+      return;
+    }
+
+    this._write(this._renderValue(result));
+  }
+
+  /**
+   * 将函数返回值渲染为 HTML 字符串：
+   * 字符串原样输出（视为 HTML）；数组逐项处理（字符串转义、AST 节点递归渲染）；
+   * 其他值转义后输出。
+   */
+  _renderValue(result) {
+    if (typeof result === 'string') return result;
+    if (Array.isArray(result)) {
+      return result.map(item => {
+        if (typeof item === 'string') return this._esc(item);
+        if (item && item.accept) return this._renderSubtree(item);
+        return '';
+      }).join('');
+    }
+    return this._esc(String(result));
+  }
+
+  /** 在独立输出缓冲中渲染子树，返回 HTML 字符串 */
+  _renderSubtree(node) {
+    const saved = this._output;
+    this._output = [];
+    node.accept(this);
+    const html = this._output.join('');
+    this._output = saved;
+    return html;
   }
 
   visit_Color(node) {
