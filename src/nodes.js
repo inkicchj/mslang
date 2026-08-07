@@ -151,11 +151,13 @@ class Table extends BlockNode {
   /**
    * @param {string[]} [headers]
    * @param {string[][]} [rows]
+   * @param {string} [label] - 交叉引用标签，如 "tbl:1"
    */
-  constructor(headers = [], rows = []) {
+  constructor(headers = [], rows = [], label = '') {
     super();
     this.headers = headers;
     this.rows = rows;
+    this.label = label;
   }
 
   accept(visitor) { return visitor.visit_Table(this); }
@@ -236,12 +238,14 @@ class Image extends InlineNode {
    * @param {string} [alt]
    * @param {string} [url]
    * @param {string} [width] - 如 "80%"
+   * @param {string} [label] - 交叉引用标签，如 "fig:1"
    */
-  constructor(alt = '', url = '', width = '') {
+  constructor(alt = '', url = '', width = '', label = '') {
     super();
     this.alt = alt;
     this.url = url;
     this.width = width;
+    this.label = label;
   }
 
   accept(visitor) { return visitor.visit_Image(this); }

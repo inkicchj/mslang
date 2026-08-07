@@ -91,12 +91,14 @@ class HTMLRenderer {
 
     let body;
     if (source instanceof Document) {
+      this._collectRefs(source);
       source.accept(this);
       body = this._output.join('');
     } else {
       const lexer = new Lexer(source);
       const tokens = lexer.tokenize();
       const ast = new Parser().parse(tokens);
+      this._collectRefs(ast);
       ast.accept(this);
       body = this._output.join('');
     }
@@ -104,6 +106,101 @@ class HTMLRenderer {
     const cls = wrapperClass ? ` class="${wrapperClass}"` : '';
     const id = wrapperId ? ` id="${wrapperId}"` : '';
     return `<div${cls}${id}>\n${body}\n</div>`;
+  }
+
+  // ================================================================
+  // 编号收集（渲染前对 AST 遍历一遍）
+  // ================================================================
+
+  /**
+   * 收集引用编号，供渲染阶段回填：
+   *   - cite("key") 按文档出现顺序编号 → _citeNumbers / _citeOrder
+   *   - 图片/表格/标题的 label → _refs { label: { kind, number } }
+   * 遍历顺序与渲染顺序一致（块 → 行内 → 表达式参数）。
+   */
+  _collectRefs(doc) {
+    this._citeNumbers = {};
+    this._citeOrder = [];
+    this._refs = {};
+    const counters = { fig: 0, tbl: 0, sec: 0 };
+
+    const collectCite = (key) => {
+      if (!(key in this._citeNumbers)) {
+        this._citeNumbers[key] = this._citeOrder.length + 1;
+        this._citeOrder.push(key);
+      }
+    };
+
+    // 表达式树中的 cite 调用（嵌套于 if 等函数参数）
+    const walkExpr = (node) => {
+      if (!node || typeof node !== 'object') return;
+      if (node.type === 'call') {
+        if (node.name === 'cite' && node.args[0] && node.args[0].type === 'string') {
+          collectCite(node.args[0].value);
+        }
+        node.args.forEach(walkExpr);
+        Object.values(node.kwargs).forEach(walkExpr);
+      } else if (node.type === 'unary') {
+        walkExpr(node.operand);
+      } else if (node.type === 'binary') {
+        walkExpr(node.left);
+        walkExpr(node.right);
+      }
+    };
+
+    const walkInlines = (inlines) => {
+      for (const n of inlines) {
+        if (n instanceof Image && n.label) {
+          counters.fig++;
+          this._refs[n.label] = { kind: 'fig', number: counters.fig };
+        }
+        if (n instanceof FunctionCall) {
+          // 顶层 @cite("key") 调用
+          if (n.name === 'cite' && n.args[0] && n.args[0].type === 'string') {
+            collectCite(n.args[0].value);
+          }
+          // 嵌套在参数表达式中的 cite
+          n.args.forEach(walkExpr);
+        }
+        if (n.content) walkInlines(n.content);
+      }
+    };
+
+    for (const block of doc.blocks) {
+      if (block instanceof Table && block.label) {
+        counters.tbl++;
+        this._refs[block.label] = { kind: 'tbl', number: counters.tbl };
+      }
+      if (block instanceof Heading && block.id) {
+        counters.sec++;
+        this._refs[block.id] = { kind: 'sec', number: counters.sec };
+      }
+      if (block.content) walkInlines(block.content);
+      if (block.items) {
+        for (const item of block.items) {
+          walkInlines(item.content);
+          if (item.children) {
+            for (const child of item.children) {
+              if (child.content) walkInlines(child.content);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /** 文献条目格式化：字符串原样转义；对象拼接 authors (year). title. journal. */
+  _formatBibEntry(entry) {
+    if (typeof entry === 'string') return this._esc(entry);
+    const e = entry || {};
+    const parts = [];
+    if (e.authors) parts.push(this._esc(String(e.authors)));
+    if (e.year !== undefined) parts.push(`(${this._esc(String(e.year))})`);
+    const title = e.title ? this._esc(String(e.title)) : '';
+    if (e.url) parts.push(`<a href="${this._escAttr(String(e.url))}">${title}</a>`);
+    else if (title) parts.push(title);
+    if (e.journal) parts.push(this._esc(String(e.journal)));
+    return parts.join(' ');
   }
 
   // ================================================================
@@ -223,7 +320,8 @@ class HTMLRenderer {
   }
 
   visit_Table(node) {
-    this._write('<table>');
+    const id = node.label ? ` id="${this._escAttr(node.label)}"` : '';
+    this._write(`<table${id}>`);
     if (this.pretty) this._write('\n');
     if (node.headers.length) {
       this._write('<thead><tr>');
@@ -282,7 +380,8 @@ class HTMLRenderer {
 
   visit_Image(node) {
     const w = node.width ? ` width="${node.width}"` : '';
-    this._write(`<img src="${this._escAttr(node.url)}" alt="${this._escAttr(node.alt)}"${w}>`);
+    const id = node.label ? ` id="${this._escAttr(node.label)}"` : '';
+    this._write(`<img src="${this._escAttr(node.url)}" alt="${this._escAttr(node.alt)}"${w}${id}>`);
   }
 
   visit_FunctionCall(node) {
@@ -385,12 +484,38 @@ function builtinFunctions(renderer) {
     /** 术语是否存在（供 if 条件使用） */
     has_term: (name) => !!(renderer._data.terms && renderer._data.terms[name]),
 
-    /** 文献引用：输出上标链接 [number]，缺失时输出 [key?] 占位 */
+    /** 文献引用：按文档出现顺序自动编号，输出上标链接 [n]，缺失时输出 [key?] 占位 */
     cite: (key) => {
       const entry = renderer._data.bibliography && renderer._data.bibliography[key];
       if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
-      const num = entry.number !== undefined ? entry.number : key;
-      return `<sup><a href="#cite-${escAttr(String(key))}">[${esc(String(num))}]</a></sup>`;
+      // 收集阶段未覆盖的键（如变量参数）在此动态编号
+      if (!(key in renderer._citeNumbers)) {
+        renderer._citeNumbers[key] = renderer._citeOrder.length + 1;
+        renderer._citeOrder.push(key);
+      }
+      const num = renderer._citeNumbers[key];
+      return `<sup><a href="#cite-${num}" id="ref-cite-${num}">[${esc(String(num))}]</a></sup>`;
+    },
+
+    /** 交叉引用：@ref("fig:1") → 图 1，@ref("tbl:1") → 表 1，@ref("sec:x") → 第 N 节 */
+    ref: (label) => {
+      const r = renderer._refs[label];
+      if (!r) return `<a href="#${escAttr(String(label))}">[${esc(String(label))}?]</a>`;
+      const text = r.kind === 'sec' ? `第 ${r.number} 节` : (r.kind === 'fig' ? `图 ${r.number}` : `表 ${r.number}`);
+      return `<a href="#${escAttr(String(label))}">${esc(text)}</a>`;
+    },
+
+    /** 文献表：列出全部被引用文献（按编号顺序），生成 <ol> 锚点与 cite 对应 */
+    bibliography: () => {
+      const items = renderer._citeOrder
+        .map((key, i) => {
+          const entry = renderer._data.bibliography && renderer._data.bibliography[key];
+          if (entry === undefined) return null;
+          return `<li id="cite-${i + 1}">${renderer._formatBibEntry(entry)}</li>`;
+        })
+        .filter(Boolean);
+      if (!items.length) return '';
+      return `<ol class="bibliography">\n${items.join('\n')}\n</ol>`;
     },
 
     /** 术语引用：输出 <span class="term">，数据可带 label / url */

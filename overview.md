@@ -70,6 +70,16 @@ const html2 = mslangToHTML('@if(has_cite("doe2020"), cite("doe2020"), "（待补
   data: { bibliography: { doe2020: { number: 1 } } },
 });
 
+// 论文写作：cite 自动编号、@ref 交叉引用（图/表/章节）、@bibliography 文献表
+const paper = mslangToHTML(
+  '# 引言 {#sec:intro}\n\n' +
+  '如 @ref("fig:1") 所示，结果见 @cite("doe2020")。\n\n' +
+  '![结果](r.png){#fig:1}\n\n' +
+  '| 方法 | 准确率 | {#tbl:1} |\n| --- | --- |\n| A | 0.9 |\n\n' +
+  '见表 @ref("tbl:1")。\n\n@bibliography()',
+  { data: { bibliography: { doe2020: { authors: 'Doe, J.', year: 2020, title: 'A Study' } } } },
+);
+
 // 仅解析 AST
 const parser = new Parser();
 const ast = parser.parseText('# Hello');

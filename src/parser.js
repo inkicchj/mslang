@@ -373,12 +373,13 @@ class Parser {
     const headers = [];
     const rows = [];
     let hasSep = false;
+    let label = '';
 
     while (!this._isAtEnd()) {
       const token = this._current();
       if (token.type !== TokenType.TABLE_ROW && token.type !== TokenType.TABLE_SEP) break;
 
-      const cells = token.metadata ? (token.metadata.cells || []) : [];
+      let cells = token.metadata ? (token.metadata.cells || []) : [];
       this._advance();
 
       if (token.type === TokenType.TABLE_SEP) {
@@ -388,6 +389,15 @@ class Parser {
       }
 
       if (!hasSep) {
+        // 表头行：末尾单元格 {#label} 作为表格交叉引用标签
+        if (headers.length === 0) {
+          const last = cells.length ? cells[cells.length - 1] : '';
+          const m = last.match(/^\{#([^}]+)\}$/);
+          if (m) {
+            label = m[1];
+            cells = cells.slice(0, -1);
+          }
+        }
         headers.push(...cells);
       } else {
         rows.push(cells);
@@ -396,7 +406,7 @@ class Parser {
       if (this._current() && this._current().type === TokenType.LINE_BREAK) this._advance();
     }
 
-    return new Table(headers, rows);
+    return new Table(headers, rows, label);
   }
 
   _numberFootnotes(doc) {
@@ -451,6 +461,7 @@ class Parser {
         token.value,
         token.metadata.url || '',
         token.metadata.width || '',
+        token.metadata.label || '',
       );
     }
     if (token.type === TokenType.FUNCTION_CALL) {
@@ -757,7 +768,14 @@ function dumpAST(node, indent = 0, prefix = '', isLast = true) {
   }
   if (node instanceof InlineCode) return `${linePrefix}InlineCode \`${node.code}\``;
   if (node instanceof Link) return `${linePrefix}Link "${node.text}" -> ${node.url}`;
-  if (node instanceof Image) return `${linePrefix}Image alt="${node.alt}" src="${node.url}"`;
+  if (node instanceof Image) {
+    const lbl = node.label ? ` label=${node.label}` : '';
+    return `${linePrefix}Image alt="${node.alt}" src="${node.url}"${lbl}`;
+  }
+  if (node instanceof Table) {
+    const lbl = node.label ? ` (label=${node.label})` : '';
+    return `${linePrefix}Table${lbl}`;
+  }
   if (node instanceof RawText) return `${linePrefix}Text "${node.text}"`;
   if (node instanceof LineBreak) return `${linePrefix}LineBreak`;
 

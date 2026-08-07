@@ -545,7 +545,18 @@ class Lexer {
         }
       }
       this._advance(urlRaw.length + 1);
-      return new Token(TokenType.IMAGE, startPos, alt, { url, width });
+
+      // 可选的交叉引用标签：![alt](url){#fig:1}
+      let label = '';
+      if (this.source.startsWith('{#', this.pos)) {
+        const labelEnd = this.source.indexOf('}', this.pos);
+        if (labelEnd !== -1) {
+          label = this.source.slice(this.pos + 2, labelEnd);
+          this._advance(labelEnd - this.pos + 1);
+        }
+      }
+
+      return new Token(TokenType.IMAGE, startPos, alt, { url, width, label });
     }
 
     return this._fallbackRawText(startPos, `![${alt}]`);
