@@ -250,16 +250,18 @@ class Image extends InlineNode {
 class FunctionCall extends InlineNode {
   /**
    * @param {string} [name]
-   * @param {string[]} [args]
-   * @param {Object<string, string>} [kwargs]
+   * @param {object[]} [args] - 表达式 AST 列表
+   * @param {Object<string, object>} [kwargs] - 关键字参数（表达式 AST）
    * @param {string} [rawArgs]
+   * @param {string} [error] - 参数表达式解析错误信息（空串表示无错误）
    */
-  constructor(name = '', args = [], kwargs = {}, rawArgs = '') {
+  constructor(name = '', args = [], kwargs = {}, rawArgs = '', error = '') {
     super();
     this.name = name;
     this.args = args;
     this.kwargs = kwargs;
     this.rawArgs = rawArgs;
+    this.error = error;
   }
 
   accept(visitor) { return visitor.visit_FunctionCall(this); }

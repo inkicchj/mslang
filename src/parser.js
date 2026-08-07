@@ -12,6 +12,7 @@
 
 import { TokenType } from './tokens.js';
 import { Lexer } from './lexer.js';
+import { parseArgs } from './expression.js';
 import {
   Document,
   Heading, Paragraph, BlockQuote, CodeBlock,
@@ -453,12 +454,16 @@ class Parser {
       );
     }
     if (token.type === TokenType.FUNCTION_CALL) {
-      return new FunctionCall(
-        token.value,
-        token.metadata.args || [],
-        token.metadata.kwargs || {},
-        token.metadata.raw_args || '',
-      );
+      const rawArgs = token.metadata.raw_args || '';
+      let args = [];
+      let kwargs = {};
+      let error = '';
+      try {
+        ({ args, kwargs } = parseArgs(rawArgs));
+      } catch (e) {
+        error = e.message;
+      }
+      return new FunctionCall(token.value, args, kwargs, rawArgs, error);
     }
     if (token.type === TokenType.COLOR) {
       return new Color(token.metadata.color || '', token.value);
@@ -719,7 +724,8 @@ function dumpAST(node, indent = 0, prefix = '', isLast = true) {
   // Inline nodes
   if (node instanceof FunctionCall) {
     const argsRepr = node.rawArgs || '';
-    return `${linePrefix}FunctionCall @${node.name}(${argsRepr})`;
+    const err = node.error ? `  !ERROR: ${node.error}` : '';
+    return `${linePrefix}FunctionCall @${node.name}(${argsRepr})${err}`;
   }
   if (node instanceof Color) return `${linePrefix}Color #${node.color} "${node.text}"`;
   if (node instanceof Superscript) {

@@ -571,16 +571,32 @@ class Lexer {
 
     this._advance(1); // skip (
 
-    const rparen = this.source.indexOf(CHAR.RPAREN, this.pos);
+    // 括号栈匹配（跳过字符串字面量），支持嵌套调用如 @if(@has(x), a, b)
+    let depth = 1;
+    let rparen = -1;
+    let quote = null;
+    for (let i = this.pos; i < this.source.length; i++) {
+      const ch = this.source[i];
+      if (quote) {
+        if (ch === '\\') { i++; continue; }
+        if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'") { quote = ch; continue; }
+      if (ch === CHAR.LPAREN) depth++;
+      else if (ch === CHAR.RPAREN) {
+        depth--;
+        if (depth === 0) { rparen = i; break; }
+      }
+    }
+
     if (rparen === -1) return this._fallbackRawText(startPos, `@${funcName}(`);
 
     const rawArgs = this.source.slice(this.pos, rparen);
     this._advance(rawArgs.length + 1);
 
-    const { args, kwargs } = parseFunctionArgs(rawArgs);
-
     return new Token(TokenType.FUNCTION_CALL, startPos, funcName, {
-      args, kwargs, raw_args: rawArgs,
+      raw_args: rawArgs,
     });
   }
 

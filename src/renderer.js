@@ -15,6 +15,7 @@ import {
 
 import { Lexer } from './lexer.js';
 import { Parser } from './parser.js';
+import { evaluate } from './expression.js';
 
 // ================================================================
 // HTML 转义
@@ -51,12 +52,14 @@ class HTMLRenderer {
    * @param {object} [opts]
    * @param {boolean} [opts.pretty=true]
    * @param {boolean} [opts.escapeHtml=true]
-   * @param {Object<string, Function>} [opts.functions]
+   * @param {Object<string, Function>} [opts.functions] - 自定义函数（覆盖同名内置函数）
    */
   constructor(opts = {}) {
     this.pretty = opts.pretty !== false;
     this.escapeHtml = opts.escapeHtml !== false;
-    this._functions = opts.functions || {};
+    this._data = {};
+    this._variables = {};
+    this._functions = { ...builtinFunctions(this), ...(opts.functions || {}) };
     this._output = [];
   }
 
@@ -76,10 +79,14 @@ class HTMLRenderer {
    * @param {object} [opts]
    * @param {string} [opts.wrapperClass='mslang']
    * @param {string} [opts.wrapperId='']
+   * @param {object} [opts.data] - 注入数据（{ bibliography, terms, ... }）
+   * @param {object} [opts.variables] - 注入变量（表达式裸词引用）
    * @returns {string}
    */
   render(source, opts = {}) {
-    const { wrapperClass = 'mslang', wrapperId = '' } = opts;
+    const { wrapperClass = 'mslang', wrapperId = '', data = {}, variables = {} } = opts;
+    this._data = data || {};
+    this._variables = variables || {};
     this._output = [];
 
     let body;
@@ -279,13 +286,21 @@ class HTMLRenderer {
   }
 
   visit_FunctionCall(node) {
+    if (node.error) {
+      this._write(`<!-- mslang: 参数解析错误 @${node.name}: ${this._esc(node.error)} -->`);
+      return;
+    }
     const func = this._functions[node.name];
     if (!func) {
       this._write(`<!-- mslang: unknown function @${node.name} -->`);
       return;
     }
     try {
-      const result = func(...node.args, node.kwargs);
+      const ctx = { functions: this._functions, variables: this._variables };
+      const args = node.args.map(a => evaluate(a, ctx));
+      const kwargs = {};
+      for (const [k, v] of Object.entries(node.kwargs)) kwargs[k] = evaluate(v, ctx);
+      const result = func(...args, kwargs);
       if (typeof result === 'string') {
         this._write(result);
       } else if (Array.isArray(result)) {
@@ -344,6 +359,49 @@ class HTMLRenderer {
     if (this.escapeHtml) return escapeAttr(text);
     return text;
   }
+}
+
+// ================================================================
+// 内置函数
+// ================================================================
+
+/**
+ * 论文写作常用内置函数：逻辑运算、文献引用、术语引用。
+ * 通过 renderer.render(source, { data, variables }) 注入数据。
+ */
+function builtinFunctions(renderer) {
+  const esc = (t) => renderer._esc(t);
+  const escAttr = (t) => renderer._escAttr(t);
+
+  return {
+    if: (cond, then, els) => (cond ? then : (els === undefined ? '' : els)),
+    not: (x) => !x,
+    and: (...xs) => xs.every(Boolean),
+    or: (...xs) => xs.some(Boolean),
+
+    /** 文献键是否存在（供 if 条件使用） */
+    has_cite: (key) => !!(renderer._data.bibliography && renderer._data.bibliography[key]),
+
+    /** 术语是否存在（供 if 条件使用） */
+    has_term: (name) => !!(renderer._data.terms && renderer._data.terms[name]),
+
+    /** 文献引用：输出上标链接 [number]，缺失时输出 [key?] 占位 */
+    cite: (key) => {
+      const entry = renderer._data.bibliography && renderer._data.bibliography[key];
+      if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
+      const num = entry.number !== undefined ? entry.number : key;
+      return `<sup><a href="#cite-${escAttr(String(key))}">[${esc(String(num))}]</a></sup>`;
+    },
+
+    /** 术语引用：输出 <span class="term">，数据可带 label / url */
+    term: (name, kwargs) => {
+      const entry = renderer._data.terms && renderer._data.terms[name];
+      const label = (entry && entry.label) ? entry.label : name;
+      const inner = `<span class="term">${esc(String(label))}</span>`;
+      const url = (entry && entry.url) ? entry.url : '';
+      return url ? `<a href="${escAttr(String(url))}">${inner}</a>` : inner;
+    },
+  };
 }
 
 export { HTMLRenderer, escapeHTML, escapeAttr };

@@ -12,12 +12,17 @@
  *   // 渲染
  *   const renderer = new HTMLRenderer();
  *   renderer.addFunction('greet', (name) => `<b>Hello, ${name}!</b>`);
- *   const html = renderer.render('# Hello @greet(World)');
+ *   const html = renderer.render('# Hello @greet("World")');
  *
  *   // 仅解析为 AST
  *   const parser = new Parser();
  *   const ast = parser.parseText('# Hello **World**');
  *   console.log(ast);
+ *
+ *   // 表达式：逻辑运算、文献/术语引用（数据经 render 注入）
+ *   const html2 = renderer.render('@if(has_cite("doe2020"), cite("doe2020"), "（待补充）")', {
+ *     data: { bibliography: { doe2020: { number: 1 } } },
+ *   });
  *
  *   // Token 流
  *   const lexer = new Lexer('# Hello');
@@ -28,6 +33,7 @@ import { Lexer, LexerError, parseFunctionArgs, unquote } from './lexer.js';
 import { Parser, ParserError, dumpAST } from './parser.js';
 import { HTMLRenderer } from './renderer.js';
 import { TokenType, Position, Token, CHAR } from './tokens.js';
+import { parseExpression, parseArgs, evaluate, EvalError } from './expression.js';
 import {
   Document, Heading, Paragraph, BlockQuote, CodeBlock,
   UnorderedList, OrderedList, ListItem, HorizontalRule,
@@ -42,6 +48,7 @@ export {
   Lexer, LexerError, parseFunctionArgs, unquote,
   Parser, ParserError, dumpAST,
   HTMLRenderer,
+  parseExpression, parseArgs, evaluate, EvalError,
   TokenType, Position, Token, CHAR,
   Document, Heading, Paragraph, BlockQuote, CodeBlock,
   UnorderedList, OrderedList, ListItem, HorizontalRule,
@@ -58,5 +65,7 @@ export function mslangToHTML(source, options = {}) {
   return renderer.render(source, {
     wrapperClass: options.wrapperClass || 'mslang',
     wrapperId: options.wrapperId || '',
+    data: options.data,
+    variables: options.variables,
   });
 }

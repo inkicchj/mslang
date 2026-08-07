@@ -65,6 +65,11 @@ const html = mslangToHTML('# Hello\n\n**bold** text');
 const renderer = new HTMLRenderer();
 renderer.addFunction('greet', (name) => `<b>Hello ${name}!</b>`);
 
+// 表达式：逻辑运算、文献/术语引用（数据经 render / mslangToHTML 注入）
+const html2 = mslangToHTML('@if(has_cite("doe2020"), cite("doe2020"), "（待补充）")', {
+  data: { bibliography: { doe2020: { number: 1 } } },
+});
+
 // 仅解析 AST
 const parser = new Parser();
 const ast = parser.parseText('# Hello');

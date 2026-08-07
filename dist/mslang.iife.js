@@ -28,6 +28,7 @@ var mslang = (() => {
     CodeBlock: () => CodeBlock,
     Color: () => Color,
     Document: () => Document,
+    EvalError: () => EvalError,
     FootnoteRef: () => FootnoteRef,
     FunctionCall: () => FunctionCall,
     HTMLRenderer: () => HTMLRenderer,
@@ -56,7 +57,10 @@ var mslang = (() => {
     TokenType: () => TokenType,
     UnorderedList: () => UnorderedList,
     dumpAST: () => dumpAST,
+    evaluate: () => evaluate,
     mslangToHTML: () => mslangToHTML,
+    parseArgs: () => parseArgs,
+    parseExpression: () => parseExpression,
     parseFunctionArgs: () => parseFunctionArgs,
     unquote: () => unquote
   });
@@ -608,14 +612,36 @@ var mslang = (() => {
         return this._fallbackRawText(startPos, `@${funcName}`);
       }
       this._advance(1);
-      const rparen = this.source.indexOf(CHAR.RPAREN, this.pos);
+      let depth = 1;
+      let rparen = -1;
+      let quote = null;
+      for (let i = this.pos; i < this.source.length; i++) {
+        const ch = this.source[i];
+        if (quote) {
+          if (ch === "\\") {
+            i++;
+            continue;
+          }
+          if (ch === quote) quote = null;
+          continue;
+        }
+        if (ch === '"' || ch === "'") {
+          quote = ch;
+          continue;
+        }
+        if (ch === CHAR.LPAREN) depth++;
+        else if (ch === CHAR.RPAREN) {
+          depth--;
+          if (depth === 0) {
+            rparen = i;
+            break;
+          }
+        }
+      }
       if (rparen === -1) return this._fallbackRawText(startPos, `@${funcName}(`);
       const rawArgs = this.source.slice(this.pos, rparen);
       this._advance(rawArgs.length + 1);
-      const { args, kwargs } = parseFunctionArgs(rawArgs);
       return new Token(TokenType.FUNCTION_CALL, startPos, funcName, {
-        args,
-        kwargs,
         raw_args: rawArgs
       });
     }
@@ -770,6 +796,294 @@ var mslang = (() => {
       return lines.join("\n");
     }
   };
+
+  // src/expression.js
+  var EvalError = class extends Error {
+    constructor(message) {
+      super(`EvalError: ${message}`);
+    }
+  };
+  var ExpressionParser = class {
+    /** @param {string} source */
+    constructor(source) {
+      this.source = source;
+      this.pos = 0;
+    }
+    // ---- 工具 ----
+    _skipWs() {
+      while (this.pos < this.source.length && /\s/.test(this.source[this.pos])) this.pos++;
+    }
+    _peek() {
+      return this.pos < this.source.length ? this.source[this.pos] : null;
+    }
+    _error(message) {
+      throw new Error(`\u8868\u8FBE\u5F0F\u8BED\u6CD5\u9519\u8BEF @${this.pos}: ${message}`);
+    }
+    _readIdentifier() {
+      const m = /^[a-zA-Z0-9_]+/.exec(this.source.slice(this.pos));
+      if (!m) return null;
+      this.pos += m[0].length;
+      return m[0];
+    }
+    // ---- 入口 ----
+    /** 解析单个表达式 */
+    parse() {
+      this._skipWs();
+      const node = this._parseOr();
+      this._skipWs();
+      if (this.pos < this.source.length) this._error(`\u610F\u5916\u7684\u5B57\u7B26 '${this.source[this.pos]}'`);
+      return node;
+    }
+    /** 解析参数列表，返回 { args: node[], kwargs: Object<string, node> } */
+    parseArgs() {
+      this._skipWs();
+      return this._parseArgsBody();
+    }
+    // ---- 参数 ----
+    _parseArgsBody() {
+      const args = [];
+      const kwargs = {};
+      while (true) {
+        this._skipWs();
+        if (this._peek() === null || this._peek() === ")") break;
+        const arg = this._parseArg();
+        if (arg.kw) kwargs[arg.kw] = arg.node;
+        else args.push(arg.node);
+        this._skipWs();
+        if (this._peek() === ",") {
+          this.pos++;
+          continue;
+        }
+        break;
+      }
+      return { args, kwargs };
+    }
+    _parseArg() {
+      const save = this.pos;
+      const name = this._readIdentifier();
+      if (name !== null) {
+        this._skipWs();
+        if (this._peek() === "=" && this.source[this.pos + 1] !== "=") {
+          this.pos++;
+          this._skipWs();
+          return { kw: name, node: this._parseOr() };
+        }
+      }
+      this.pos = save;
+      return { node: this._parseOr() };
+    }
+    // ---- 优先级链 ----
+    _parseOr() {
+      let left = this._parseAnd();
+      while (true) {
+        this._skipWs();
+        if (this._peek() !== "|" || this.source[this.pos + 1] !== "|") break;
+        this.pos += 2;
+        this._skipWs();
+        left = { type: "binary", op: "||", left, right: this._parseAnd() };
+      }
+      return left;
+    }
+    _parseAnd() {
+      let left = this._parseCmp();
+      while (true) {
+        this._skipWs();
+        if (this._peek() !== "&" || this.source[this.pos + 1] !== "&") break;
+        this.pos += 2;
+        this._skipWs();
+        left = { type: "binary", op: "&&", left, right: this._parseCmp() };
+      }
+      return left;
+    }
+    _parseCmp() {
+      let left = this._parseAdd();
+      while (true) {
+        this._skipWs();
+        let op = null;
+        for (const candidate of ["==", "!=", "<=", ">=", "<", ">"]) {
+          if (this.source.startsWith(candidate, this.pos)) {
+            op = candidate;
+            break;
+          }
+        }
+        if (!op) break;
+        this.pos += op.length;
+        this._skipWs();
+        left = { type: "binary", op, left, right: this._parseAdd() };
+      }
+      return left;
+    }
+    _parseAdd() {
+      let left = this._parseMul();
+      while (true) {
+        this._skipWs();
+        const ch = this._peek();
+        if (ch !== "+" && ch !== "-") break;
+        this.pos++;
+        this._skipWs();
+        left = { type: "binary", op: ch, left, right: this._parseMul() };
+      }
+      return left;
+    }
+    _parseMul() {
+      let left = this._parseUnary();
+      while (true) {
+        this._skipWs();
+        const ch = this._peek();
+        if (ch !== "*" && ch !== "/" && ch !== "%") break;
+        this.pos++;
+        this._skipWs();
+        left = { type: "binary", op: ch, left, right: this._parseUnary() };
+      }
+      return left;
+    }
+    _parseUnary() {
+      this._skipWs();
+      const ch = this._peek();
+      if (ch === "!" || ch === "-") {
+        this.pos++;
+        this._skipWs();
+        return { type: "unary", op: ch, operand: this._parseUnary() };
+      }
+      return this._parsePrimary();
+    }
+    // ---- 基本项 ----
+    _parsePrimary() {
+      this._skipWs();
+      const ch = this._peek();
+      if (ch === null) this._error("\u8868\u8FBE\u5F0F\u610F\u5916\u7ED3\u675F");
+      if (ch === "(") {
+        this.pos++;
+        const node = this._parseOr();
+        this._skipWs();
+        if (this._peek() !== ")") this._error("\u7F3A\u5C11 ')'");
+        this.pos++;
+        return node;
+      }
+      if (ch === '"' || ch === "'") return this._parseString(ch);
+      if (ch >= "0" && ch <= "9") return this._parseNumber();
+      const name = this._readIdentifier();
+      if (name !== null) {
+        if (name === "true") return { type: "bool", value: true };
+        if (name === "false") return { type: "bool", value: false };
+        if (name === "null") return { type: "null" };
+        this._skipWs();
+        if (this._peek() === "(") {
+          this.pos++;
+          const { args, kwargs } = this._parseArgsBody();
+          this._skipWs();
+          if (this._peek() !== ")") this._error("\u7F3A\u5C11 ')'");
+          this.pos++;
+          return { type: "call", name, args, kwargs };
+        }
+        return { type: "var", name };
+      }
+      this._error(`\u610F\u5916\u7684\u5B57\u7B26 '${ch}'`);
+    }
+    _parseString(quote) {
+      this.pos++;
+      let out = "";
+      while (this.pos < this.source.length) {
+        const ch = this.source[this.pos];
+        if (ch === "\\") {
+          this.pos++;
+          if (this.pos >= this.source.length) this._error("\u5B57\u7B26\u4E32\u8F6C\u4E49\u4E0D\u5B8C\u6574");
+          out += this.source[this.pos];
+          this.pos++;
+          continue;
+        }
+        if (ch === quote) {
+          this.pos++;
+          return { type: "string", value: out };
+        }
+        out += ch;
+        this.pos++;
+      }
+      this._error("\u5B57\u7B26\u4E32\u672A\u95ED\u5408");
+    }
+    _parseNumber() {
+      let j = this.pos;
+      while (j < this.source.length && /[0-9]/.test(this.source[j])) j++;
+      if (this.source[j] === "." && /[0-9]/.test(this.source[j + 1] || "")) {
+        j++;
+        while (j < this.source.length && /[0-9]/.test(this.source[j])) j++;
+      }
+      const value = Number(this.source.slice(this.pos, j));
+      this.pos = j;
+      return { type: "number", value };
+    }
+  };
+  function evaluate(node, ctx = {}) {
+    const functions = ctx.functions || {};
+    const variables = ctx.variables || {};
+    switch (node.type) {
+      case "number":
+      case "string":
+      case "bool":
+        return node.value;
+      case "null":
+        return null;
+      case "var": {
+        if (!(node.name in variables)) {
+          throw new EvalError(`\u672A\u5B9A\u4E49\u7684\u53D8\u91CF '${node.name}'`);
+        }
+        return variables[node.name];
+      }
+      case "call": {
+        const func = functions[node.name];
+        if (typeof func !== "function") {
+          throw new EvalError(`\u672A\u5B9A\u4E49\u7684\u51FD\u6570 '${node.name}'`);
+        }
+        const args = node.args.map((a) => evaluate(a, ctx));
+        const kwargs = {};
+        for (const [k, v] of Object.entries(node.kwargs)) kwargs[k] = evaluate(v, ctx);
+        return func(...args, kwargs);
+      }
+      case "unary": {
+        const v = evaluate(node.operand, ctx);
+        return node.op === "!" ? !v : -v;
+      }
+      case "binary": {
+        const left = evaluate(node.left, ctx);
+        if (node.op === "&&") return left ? evaluate(node.right, ctx) : left;
+        if (node.op === "||") return left ? left : evaluate(node.right, ctx);
+        const right = evaluate(node.right, ctx);
+        switch (node.op) {
+          case "==":
+            return left === right;
+          case "!=":
+            return left !== right;
+          case "<":
+            return left < right;
+          case "<=":
+            return left <= right;
+          case ">":
+            return left > right;
+          case ">=":
+            return left >= right;
+          case "+":
+            return left + right;
+          case "-":
+            return left - right;
+          case "*":
+            return left * right;
+          case "/":
+            return left / right;
+          case "%":
+            return left % right;
+        }
+        throw new EvalError(`\u672A\u77E5\u8FD0\u7B97\u7B26 '${node.op}'`);
+      }
+      default:
+        throw new EvalError(`\u672A\u77E5\u8868\u8FBE\u5F0F\u8282\u70B9 '${node.type}'`);
+    }
+  }
+  function parseExpression(source) {
+    return new ExpressionParser(source).parse();
+  }
+  function parseArgs(raw) {
+    return new ExpressionParser(raw).parseArgs();
+  }
 
   // src/nodes.js
   var ASTNode = class {
@@ -998,16 +1312,18 @@ var mslang = (() => {
   var FunctionCall = class extends InlineNode {
     /**
      * @param {string} [name]
-     * @param {string[]} [args]
-     * @param {Object<string, string>} [kwargs]
+     * @param {object[]} [args] - 表达式 AST 列表
+     * @param {Object<string, object>} [kwargs] - 关键字参数（表达式 AST）
      * @param {string} [rawArgs]
+     * @param {string} [error] - 参数表达式解析错误信息（空串表示无错误）
      */
-    constructor(name = "", args = [], kwargs = {}, rawArgs = "") {
+    constructor(name = "", args = [], kwargs = {}, rawArgs = "", error = "") {
       super();
       this.name = name;
       this.args = args;
       this.kwargs = kwargs;
       this.rawArgs = rawArgs;
+      this.error = error;
     }
     accept(visitor) {
       return visitor.visit_FunctionCall(this);
@@ -1405,12 +1721,16 @@ var mslang = (() => {
         );
       }
       if (token.type === TokenType.FUNCTION_CALL) {
-        return new FunctionCall(
-          token.value,
-          token.metadata.args || [],
-          token.metadata.kwargs || {},
-          token.metadata.raw_args || ""
-        );
+        const rawArgs = token.metadata.raw_args || "";
+        let args = [];
+        let kwargs = {};
+        let error = "";
+        try {
+          ({ args, kwargs } = parseArgs(rawArgs));
+        } catch (e) {
+          error = e.message;
+        }
+        return new FunctionCall(token.value, args, kwargs, rawArgs, error);
       }
       if (token.type === TokenType.COLOR) {
         return new Color(token.metadata.color || "", token.value);
@@ -1623,7 +1943,8 @@ var mslang = (() => {
     }
     if (node instanceof FunctionCall) {
       const argsRepr = node.rawArgs || "";
-      return `${linePrefix}FunctionCall @${node.name}(${argsRepr})`;
+      const err = node.error ? `  !ERROR: ${node.error}` : "";
+      return `${linePrefix}FunctionCall @${node.name}(${argsRepr})${err}`;
     }
     if (node instanceof Color) return `${linePrefix}Color #${node.color} "${node.text}"`;
     if (node instanceof Superscript) {
@@ -1685,12 +2006,14 @@ var mslang = (() => {
      * @param {object} [opts]
      * @param {boolean} [opts.pretty=true]
      * @param {boolean} [opts.escapeHtml=true]
-     * @param {Object<string, Function>} [opts.functions]
+     * @param {Object<string, Function>} [opts.functions] - 自定义函数（覆盖同名内置函数）
      */
     constructor(opts = {}) {
       this.pretty = opts.pretty !== false;
       this.escapeHtml = opts.escapeHtml !== false;
-      this._functions = opts.functions || {};
+      this._data = {};
+      this._variables = {};
+      this._functions = { ...builtinFunctions(this), ...opts.functions || {} };
       this._output = [];
     }
     /**
@@ -1708,10 +2031,14 @@ var mslang = (() => {
      * @param {object} [opts]
      * @param {string} [opts.wrapperClass='mslang']
      * @param {string} [opts.wrapperId='']
+     * @param {object} [opts.data] - 注入数据（{ bibliography, terms, ... }）
+     * @param {object} [opts.variables] - 注入变量（表达式裸词引用）
      * @returns {string}
      */
     render(source, opts = {}) {
-      const { wrapperClass = "mslang", wrapperId = "" } = opts;
+      const { wrapperClass = "mslang", wrapperId = "", data = {}, variables = {} } = opts;
+      this._data = data || {};
+      this._variables = variables || {};
       this._output = [];
       let body;
       if (source instanceof Document) {
@@ -1890,13 +2217,21 @@ ${body}
       this._write(`<img src="${this._escAttr(node.url)}" alt="${this._escAttr(node.alt)}"${w}>`);
     }
     visit_FunctionCall(node) {
+      if (node.error) {
+        this._write(`<!-- mslang: \u53C2\u6570\u89E3\u6790\u9519\u8BEF @${node.name}: ${this._esc(node.error)} -->`);
+        return;
+      }
       const func = this._functions[node.name];
       if (!func) {
         this._write(`<!-- mslang: unknown function @${node.name} -->`);
         return;
       }
       try {
-        const result = func(...node.args, node.kwargs);
+        const ctx = { functions: this._functions, variables: this._variables };
+        const args = node.args.map((a) => evaluate(a, ctx));
+        const kwargs = {};
+        for (const [k, v] of Object.entries(node.kwargs)) kwargs[k] = evaluate(v, ctx);
+        const result = func(...args, kwargs);
         if (typeof result === "string") {
           this._write(result);
         } else if (Array.isArray(result)) {
@@ -1948,15 +2283,46 @@ ${body}
       return text;
     }
   };
+  function builtinFunctions(renderer) {
+    const esc = (t) => renderer._esc(t);
+    const escAttr = (t) => renderer._escAttr(t);
+    return {
+      if: (cond, then, els) => cond ? then : els === void 0 ? "" : els,
+      not: (x) => !x,
+      and: (...xs) => xs.every(Boolean),
+      or: (...xs) => xs.some(Boolean),
+      /** 文献键是否存在（供 if 条件使用） */
+      has_cite: (key) => !!(renderer._data.bibliography && renderer._data.bibliography[key]),
+      /** 术语是否存在（供 if 条件使用） */
+      has_term: (name) => !!(renderer._data.terms && renderer._data.terms[name]),
+      /** 文献引用：输出上标链接 [number]，缺失时输出 [key?] 占位 */
+      cite: (key) => {
+        const entry = renderer._data.bibliography && renderer._data.bibliography[key];
+        if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
+        const num = entry.number !== void 0 ? entry.number : key;
+        return `<sup><a href="#cite-${escAttr(String(key))}">[${esc(String(num))}]</a></sup>`;
+      },
+      /** 术语引用：输出 <span class="term">，数据可带 label / url */
+      term: (name, kwargs) => {
+        const entry = renderer._data.terms && renderer._data.terms[name];
+        const label = entry && entry.label ? entry.label : name;
+        const inner = `<span class="term">${esc(String(label))}</span>`;
+        const url = entry && entry.url ? entry.url : "";
+        return url ? `<a href="${escAttr(String(url))}">${inner}</a>` : inner;
+      }
+    };
+  }
 
   // src/index.js
   function mslangToHTML(source, options = {}) {
     const renderer = new HTMLRenderer({ functions: options.functions });
     return renderer.render(source, {
       wrapperClass: options.wrapperClass || "mslang",
-      wrapperId: options.wrapperId || ""
+      wrapperId: options.wrapperId || "",
+      data: options.data,
+      variables: options.variables
     });
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-07T17:47:19.658Z */
+/*! built: 2026-08-07T18:02:11.965Z */
