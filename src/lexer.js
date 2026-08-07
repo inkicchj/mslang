@@ -103,6 +103,9 @@ const RE_TABLE           = /^\|(.+)\|$/;
 const RE_ALIGN_RIGHT     = /^>>\s+(.+)$/;
 const RE_ALIGN_CENTER    = /^-><-\s+(.+)$/;
 
+// 可被反斜杠转义的字符（与行内语法起始符一致）
+const ESCAPABLE = new Set(['*', '_', '~', '`', '[', '!', '@', '/', '\\']);
+
 class Lexer {
   /**
    * @param {string} source - mslang 格式文本
@@ -243,6 +246,13 @@ class Lexer {
     if (ch === CHAR.SLASH) {
       const next = this._peekAt(this.pos + 1);
       if (next === '#') return this._scanColor();
+    }
+
+    // HTML 透传 <...>（仅当本行内能找到闭合 >）
+    if (ch === '<') {
+      const lineEnd = this._lineEnd();
+      const gt = this.source.indexOf('>', this.pos + 1);
+      if (gt !== -1 && gt < lineEnd) return this._scanHtml(gt);
     }
 
     return this._scanRawText();
@@ -428,7 +438,7 @@ class Lexer {
 
     const endIdx = this.source.indexOf(delimiter, this.pos);
     if (endIdx === -1) {
-      return new Token(TokenType.RAW_TEXT, startPos, delimiter);
+      return this._fallbackRawText(startPos, delimiter);
     }
 
     const content = this.source.slice(this.pos, endIdx);
@@ -442,7 +452,7 @@ class Lexer {
     this._advance(1);
     const endIdx = this.source.indexOf(CHAR.BACKTICK, this.pos);
     if (endIdx === -1) {
-      return new Token(TokenType.RAW_TEXT, startPos, CHAR.BACKTICK);
+      return this._fallbackRawText(startPos, CHAR.BACKTICK);
     }
     const code = this.source.slice(this.pos, endIdx);
     this._advance(code.length + 1);
@@ -610,16 +620,23 @@ class Lexer {
     return new Token(TokenType.LINE_BREAK, startPos, '\n');
   }
 
+  _scanHtml(endIdx) {
+    const startPos = new Position(this.line, this.col, this.pos);
+    const html = this.source.slice(this.pos, endIdx + 1);
+    this._advance(html.length);
+    return new Token(TokenType.RAW_HTML, startPos, html);
+  }
+
   _scanRawText() {
     const start = this.pos;
     const specials = new Set([CHAR.STAR, CHAR.UNDERSCORE, CHAR.TILDE, CHAR.BACKTICK,
-                              CHAR.BANG, CHAR.LBRACKET, CHAR.AT, '^', CHAR.NEWLINE]);
+                              CHAR.BANG, CHAR.LBRACKET, CHAR.AT, '^', '<']);
     const end = this._lineEnd();
 
     while (this.pos < end) {
       const ch = this.source[this.pos];
       if (ch === '\\' && this.pos + 1 < this.source.length &&
-          specials.has(this.source[this.pos + 1])) {
+          ESCAPABLE.has(this.source[this.pos + 1])) {
         this._advance(2);
         continue;
       }
@@ -638,10 +655,11 @@ class Lexer {
       );
     }
 
-    const text = this.source.slice(start, this.pos);
+    // 剥离转义（\X → X），value 为纯文本，不再含行内语法起始符
+    const text = this._unescape(this.source.slice(start, this.pos));
     return new Token(
       TokenType.RAW_TEXT,
-      new Position(this.line, this.col - text.length, start),
+      new Position(this.line, this.col - (this.pos - start), start),
       text,
     );
   }
@@ -676,7 +694,22 @@ class Lexer {
   }
 
   _fallbackRawText(startPos, text) {
-    return new Token(TokenType.RAW_TEXT, startPos, text);
+    return new Token(TokenType.RAW_TEXT, startPos, this._unescape(text));
+  }
+
+  /** 剥离转义序列（\\X → X，X 必须属于 ESCAPABLE） */
+  _unescape(text) {
+    let out = '';
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === '\\' && i + 1 < text.length && ESCAPABLE.has(text[i + 1])) {
+        out += text[i + 1];
+        i++;
+      } else {
+        out += ch;
+      }
+    }
+    return out;
   }
 
   /**

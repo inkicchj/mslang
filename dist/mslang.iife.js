@@ -81,6 +81,7 @@ var mslang = (() => {
     "COLOR",
     "SUPERSCRIPT",
     "SUBSCRIPT",
+    "RAW_HTML",
     "TABLE_ROW",
     "TABLE_SEP",
     "FOOTNOTE_REF",
@@ -234,6 +235,7 @@ var mslang = (() => {
   var RE_TABLE = /^\|(.+)\|$/;
   var RE_ALIGN_RIGHT = /^>>\s+(.+)$/;
   var RE_ALIGN_CENTER = /^-><-\s+(.+)$/;
+  var ESCAPABLE = /* @__PURE__ */ new Set(["*", "_", "~", "`", "[", "!", "@", "/", "\\"]);
   var Lexer = class {
     /**
      * @param {string} source - mslang 格式文本
@@ -328,6 +330,11 @@ var mslang = (() => {
       if (ch === CHAR.SLASH) {
         const next = this._peekAt(this.pos + 1);
         if (next === "#") return this._scanColor();
+      }
+      if (ch === "<") {
+        const lineEnd = this._lineEnd();
+        const gt = this.source.indexOf(">", this.pos + 1);
+        if (gt !== -1 && gt < lineEnd) return this._scanHtml(gt);
       }
       return this._scanRawText();
     }
@@ -492,7 +499,7 @@ var mslang = (() => {
       this._advance(delLen);
       const endIdx = this.source.indexOf(delimiter, this.pos);
       if (endIdx === -1) {
-        return new Token(TokenType.RAW_TEXT, startPos, delimiter);
+        return this._fallbackRawText(startPos, delimiter);
       }
       const content = this.source.slice(this.pos, endIdx);
       this._advance(content.length + delLen);
@@ -503,7 +510,7 @@ var mslang = (() => {
       this._advance(1);
       const endIdx = this.source.indexOf(CHAR.BACKTICK, this.pos);
       if (endIdx === -1) {
-        return new Token(TokenType.RAW_TEXT, startPos, CHAR.BACKTICK);
+        return this._fallbackRawText(startPos, CHAR.BACKTICK);
       }
       const code = this.source.slice(this.pos, endIdx);
       this._advance(code.length + 1);
@@ -640,6 +647,12 @@ var mslang = (() => {
       }
       return new Token(TokenType.LINE_BREAK, startPos, "\n");
     }
+    _scanHtml(endIdx) {
+      const startPos = new Position(this.line, this.col, this.pos);
+      const html = this.source.slice(this.pos, endIdx + 1);
+      this._advance(html.length);
+      return new Token(TokenType.RAW_HTML, startPos, html);
+    }
     _scanRawText() {
       const start = this.pos;
       const specials = /* @__PURE__ */ new Set([
@@ -651,12 +664,12 @@ var mslang = (() => {
         CHAR.LBRACKET,
         CHAR.AT,
         "^",
-        CHAR.NEWLINE
+        "<"
       ]);
       const end = this._lineEnd();
       while (this.pos < end) {
         const ch = this.source[this.pos];
-        if (ch === "\\" && this.pos + 1 < this.source.length && specials.has(this.source[this.pos + 1])) {
+        if (ch === "\\" && this.pos + 1 < this.source.length && ESCAPABLE.has(this.source[this.pos + 1])) {
           this._advance(2);
           continue;
         }
@@ -672,10 +685,10 @@ var mslang = (() => {
           this.source[start]
         );
       }
-      const text = this.source.slice(start, this.pos);
+      const text = this._unescape(this.source.slice(start, this.pos));
       return new Token(
         TokenType.RAW_TEXT,
-        new Position(this.line, this.col - text.length, start),
+        new Position(this.line, this.col - (this.pos - start), start),
         text
       );
     }
@@ -708,7 +721,21 @@ var mslang = (() => {
       return end === -1 ? this.source.length : end;
     }
     _fallbackRawText(startPos, text) {
-      return new Token(TokenType.RAW_TEXT, startPos, text);
+      return new Token(TokenType.RAW_TEXT, startPos, this._unescape(text));
+    }
+    /** 剥离转义序列（\\X → X，X 必须属于 ESCAPABLE） */
+    _unescape(text) {
+      let out = "";
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (ch === "\\" && i + 1 < text.length && ESCAPABLE.has(text[i + 1])) {
+          out += text[i + 1];
+          i++;
+        } else {
+          out += ch;
+        }
+      }
+      return out;
     }
     /**
      * 检查从 pos 开始是否匹配 /#hex: 颜色语法。
@@ -1180,13 +1207,14 @@ var mslang = (() => {
         if (token.type === TokenType.RAW_TEXT) {
           const text = token.value;
           this._advance();
-          inlines.push(...this._parseInline(text));
+          inlines.push(...this._autolink([new RawText(text)]));
           seenText = true;
           continue;
         }
-        const inline = this._parseInlineToken();
+        const inline = this._parseInlineToken(token);
         if (inline) {
           inlines.push(inline);
+          this._advance();
           seenText = true;
         } else {
           this._advance();
@@ -1353,30 +1381,23 @@ var mslang = (() => {
       const inlines = this._parseInline(token.value);
       return new AlignBlock(align, this._mergeAdjacentText(inlines));
     }
-    _parseInlineToken() {
-      const token = this._current();
+    _parseInlineToken(token) {
       if (token.type === TokenType.BOLD) {
-        this._advance();
         return new Bold(this._parseInline(token.value));
       }
       if (token.type === TokenType.ITALIC) {
-        this._advance();
         return new Italic(this._parseInline(token.value));
       }
       if (token.type === TokenType.STRIKETHROUGH) {
-        this._advance();
         return new Strikethrough(this._parseInline(token.value));
       }
       if (token.type === TokenType.INLINE_CODE) {
-        this._advance();
         return new InlineCode(token.value);
       }
       if (token.type === TokenType.LINK) {
-        this._advance();
         return new Link(token.value, token.metadata.url || "");
       }
       if (token.type === TokenType.IMAGE) {
-        this._advance();
         return new Image(
           token.value,
           token.metadata.url || "",
@@ -1384,7 +1405,6 @@ var mslang = (() => {
         );
       }
       if (token.type === TokenType.FUNCTION_CALL) {
-        this._advance();
         return new FunctionCall(
           token.value,
           token.metadata.args || [],
@@ -1393,194 +1413,40 @@ var mslang = (() => {
         );
       }
       if (token.type === TokenType.COLOR) {
-        this._advance();
         return new Color(token.metadata.color || "", token.value);
       }
       if (token.type === TokenType.SUPERSCRIPT) {
-        this._advance();
         return new Superscript(this._parseInline(token.value));
       }
       if (token.type === TokenType.SUBSCRIPT) {
-        this._advance();
         return new Subscript(this._parseInline(token.value));
       }
       if (token.type === TokenType.FOOTNOTE_REF) {
-        this._advance();
         return new FootnoteRef(token.value);
+      }
+      if (token.type === TokenType.RAW_HTML) {
+        return new RawHtml(token.value);
       }
       return null;
     }
     /**
-     * 解析一个纯文本字符串中的行内元素
+     * 解析一个纯文本字符串中的行内元素。
+     * 行内语法识别全部交由 Lexer 完成，本方法只做 Token → AST 映射与递归。
      * @param {string} text
      * @returns {import('./nodes.js').InlineNode[]}
      */
     _parseInline(text) {
       if (!text) return [];
+      const tokens = new Lexer(text).tokenize();
       const inlines = [];
-      let i = 0;
-      while (i < text.length) {
-        let matched = false;
-        if (text.startsWith("**", i)) {
-          const end = text.indexOf("**", i + 2);
-          if (end !== -1) {
-            const inner = text.slice(i + 2, end);
-            inlines.push(new Bold(this._parseInline(inner)));
-            i = end + 2;
-            matched = true;
-          }
-        } else if (text.startsWith("__", i)) {
-          const end = text.indexOf("__", i + 2);
-          if (end !== -1) {
-            const inner = text.slice(i + 2, end);
-            inlines.push(new Bold(this._parseInline(inner)));
-            i = end + 2;
-            matched = true;
-          }
-        } else if (text[i] === "*" && !text.startsWith("**", i)) {
-          const end = text.indexOf("*", i + 1);
-          if (end !== -1) {
-            const inner = text.slice(i + 1, end);
-            inlines.push(new Italic(this._parseInline(inner)));
-            i = end + 1;
-            matched = true;
-          }
-        } else if (text[i] === "_" && !text.startsWith("__", i)) {
-          const end = text.indexOf("_", i + 1);
-          if (end !== -1) {
-            const inner = text.slice(i + 1, end);
-            inlines.push(new Italic(this._parseInline(inner)));
-            i = end + 1;
-            matched = true;
-          }
-        } else if (text.startsWith("~~", i)) {
-          const end = text.indexOf("~~", i + 2);
-          if (end !== -1) {
-            const inner = text.slice(i + 2, end);
-            inlines.push(new Strikethrough(this._parseInline(inner)));
-            i = end + 2;
-            matched = true;
-          }
-        } else if (text[i] === "~" && !text.startsWith("~~", i)) {
-          const end = text.indexOf("~", i + 1);
-          if (end !== -1 && end > i + 1) {
-            const inner = text.slice(i + 1, end);
-            inlines.push(new Subscript(this._parseInline(inner)));
-            i = end + 1;
-            matched = true;
-          }
-        } else if (text[i] === "^") {
-          const end = text.indexOf("^", i + 1);
-          if (end !== -1 && end > i + 1) {
-            const inner = text.slice(i + 1, end);
-            inlines.push(new Superscript(this._parseInline(inner)));
-            i = end + 1;
-            matched = true;
-          }
-        } else if (text[i] === "`") {
-          const end = text.indexOf("`", i + 1);
-          if (end !== -1) {
-            const code = text.slice(i + 1, end);
-            inlines.push(new InlineCode(code));
-            i = end + 1;
-            matched = true;
-          }
-        } else if (text[i] === "[") {
-          if (i + 1 < text.length && text[i + 1] === "^") {
-            const end = text.indexOf("]", i + 2);
-            if (end !== -1) {
-              const label = text.slice(i + 2, end);
-              inlines.push(new FootnoteRef(label));
-              i = end + 1;
-              matched = true;
-            }
-          } else {
-            const textEnd = text.indexOf("]", i + 1);
-            if (textEnd !== -1 && textEnd + 1 < text.length && text[textEnd + 1] === "(") {
-              const urlEnd = text.indexOf(")", textEnd + 2);
-              if (urlEnd !== -1) {
-                const linkText = text.slice(i + 1, textEnd);
-                const url = text.slice(textEnd + 2, urlEnd);
-                inlines.push(new Link(linkText, url));
-                i = urlEnd + 1;
-                matched = true;
-              }
-            }
-          }
-        } else if (text.startsWith("![", i)) {
-          const altEnd = text.indexOf("]", i + 2);
-          if (altEnd !== -1 && altEnd + 1 < text.length && text[altEnd + 1] === "(") {
-            const urlEnd = text.indexOf(")", altEnd + 2);
-            if (urlEnd !== -1) {
-              const alt = text.slice(i + 2, altEnd);
-              const urlRaw = text.slice(altEnd + 2, urlEnd).trim();
-              let url = urlRaw;
-              let width = "";
-              if (urlRaw.includes(" ")) {
-                const parts = urlRaw.split(" ");
-                const last = parts[parts.length - 1];
-                if (last.endsWith("%") && /^\d+%$/.test(last)) {
-                  url = parts.slice(0, -1).join(" ");
-                  width = last;
-                }
-              }
-              inlines.push(new Image(alt, url, width));
-              i = urlEnd + 1;
-              matched = true;
-            }
-          }
-        } else if (text[i] === "@") {
-          let j = i + 1;
-          while (j < text.length && /[a-zA-Z0-9_]/.test(text[j])) j++;
-          if (j > i + 1 && j < text.length && text[j] === "(") {
-            const rp = text.indexOf(")", j + 1);
-            if (rp !== -1) {
-              const name = text.slice(i + 1, j);
-              const rawArgs = text.slice(j + 1, rp);
-              const { args, kwargs } = parseFunctionArgs(rawArgs);
-              inlines.push(new FunctionCall(name, args, kwargs, rawArgs));
-              i = rp + 1;
-              matched = true;
-            }
-          }
-        } else if (text.startsWith("/#", i)) {
-          let j = i + 2;
-          while (j < text.length && /[0-9a-fA-F]/.test(text[j])) j++;
-          const hexLen = j - i - 2;
-          if ([3, 6].includes(hexLen) && j < text.length && text[j] === ":") {
-            const end = text.indexOf(":/", j + 1);
-            if (end !== -1) {
-              const color = text.slice(i + 2, j);
-              const inner = text.slice(j + 1, end);
-              inlines.push(new Color(color, inner));
-              i = end + 2;
-              matched = true;
-            }
-          }
+      for (const token of tokens) {
+        if (token.type === TokenType.EOF) break;
+        if (token.type === TokenType.RAW_TEXT || token.type === TokenType.LINE_BREAK || token.type === TokenType.BLANK_LINE) {
+          inlines.push(new RawText(token.value));
+          continue;
         }
-        if (!matched && text[i] === "\\") {
-          const specials = /* @__PURE__ */ new Set(["*", "_", "~", "`", "[", "!", "@", "/", "\\"]);
-          if (i + 1 < text.length && specials.has(text[i + 1])) {
-            inlines.push(new RawText(text[i + 1]));
-            i += 2;
-            matched = true;
-          }
-        }
-        if (!matched && text[i] === "<") {
-          const end = text.indexOf(">", i + 1);
-          if (end !== -1) {
-            inlines.push(new RawHtml(text.slice(i, end + 1)));
-            i = end + 1;
-            matched = true;
-          }
-        }
-        if (!matched) {
-          let j = i + 1;
-          const specials = /* @__PURE__ */ new Set(["*", "_", "~", "`", "[", "!", "@", "\\", "^", "<"]);
-          while (j < text.length && !specials.has(text[j])) j++;
-          inlines.push(new RawText(text.slice(i, j)));
-          i = j;
-        }
+        const node = this._parseInlineToken(token);
+        if (node) inlines.push(node);
       }
       return this._mergeAdjacentText(this._autolink(inlines));
     }
@@ -2093,4 +1959,4 @@ ${body}
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-06-04T15:23:54.122Z */
+/*! built: 2026-08-07T17:47:19.658Z */

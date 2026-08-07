@@ -29,6 +29,7 @@ const _types = [
   'COLOR',
   'SUPERSCRIPT',
   'SUBSCRIPT',
+  'RAW_HTML',
   'TABLE_ROW',
   'TABLE_SEP',
   'FOOTNOTE_REF',
