@@ -93,6 +93,12 @@ const withSet = mslangToHTML(
   '@set({ headingNumbering: "1.1", refNumbering: "1" })\n\n# 引言 {#sec:intro}\n\n如 @ref("sec:intro") 所述',
 );
 
+// 术语/文献可增量设置：@set 支持 terms/bibliography 顶层键（免 data 嵌套），
+// 多次设置按 key 合并；术语值为字符串时即显示文本（需链接才写对象）
+const withTerms = mslangToHTML(
+  '@set({ terms: { 词干提取: "词干提取 (Stemming)" } })\n\n@term("词干提取")',
+);
+
 // 仅解析 AST
 const parser = new Parser();
 const ast = parser.parseText('# Hello');

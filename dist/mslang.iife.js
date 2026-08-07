@@ -2171,7 +2171,7 @@ ${body}
       } catch (e) {
       }
     }
-    /** 白名单合并：@set 覆盖同名选项 */
+    /** 白名单合并：@set 覆盖同名选项；terms/bibliography 增量合并（可多次设置） */
     _mergeSet(config) {
       for (const key of _HTMLRenderer.SET_KEYS) {
         if (!(key in config)) continue;
@@ -2180,13 +2180,29 @@ ${body}
         } else if (key === "refNumbering") {
           this._refNumbering = config[key] || "";
         } else if (key === "data") {
-          this._data = config[key] || {};
+          this._data = this._mergeData(this._data, config[key]);
+        } else if (key === "terms" || key === "bibliography") {
+          this._data = this._mergeData(this._data, { [key]: config[key] });
         } else if (key === "variables") {
           this._variables = config[key] || {};
         } else {
           this[key] = config[key];
         }
       }
+    }
+    /** 数据合并：一层深合并（terms/bibliography 按 key 合并），其余键整体替换 */
+    _mergeData(existing, incoming) {
+      if (!incoming || typeof incoming !== "object") return existing;
+      const out = { ...existing };
+      for (const [k, v] of Object.entries(incoming)) {
+        const isPlainObj = v && typeof v === "object" && !Array.isArray(v);
+        if (isPlainObj && out[k] && typeof out[k] === "object" && !Array.isArray(out[k])) {
+          out[k] = { ...out[k], ...v };
+        } else {
+          out[k] = v;
+        }
+      }
+      return out;
     }
     // ================================================================
     // 编号收集（渲染前对 AST 遍历一遍）
@@ -2542,7 +2558,7 @@ ${body}
   // 文档内配置（@set）
   // ================================================================
   // @set 白名单：仅这些键可被文档内配置覆盖
-  __publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables"]);
+  __publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables", "terms", "bibliography"]);
   var HTMLRenderer = _HTMLRenderer;
   var RE_NUM_ARABIC = /^(\d+(?:\.\d+)*)/;
   var RE_NUM_CN = /^(第[一二三四五六七八九十百]+[章节篇]|[一二三四五六七八九十百]+[、．.]|（[一二三四五六七八九十百]+）|\([一二三四五六七八九十百]+\))/;
@@ -2605,12 +2621,12 @@ ${body}
 ${items.join("\n")}
 </ol>`;
       },
-      /** 术语引用：输出 <span class="term">，数据可带 label / url */
+      /** 术语引用：字符串值为 label 简写；对象可带 label / url */
       term: (name, kwargs) => {
         const entry = renderer._data.terms && renderer._data.terms[name];
-        const label = entry && entry.label ? entry.label : name;
+        const label = typeof entry === "string" ? entry : entry && entry.label ? entry.label : name;
         const inner = `<span class="term">${esc(String(label))}</span>`;
-        const url = entry && entry.url ? entry.url : "";
+        const url = entry && typeof entry === "object" && entry.url ? entry.url : "";
         return url ? `<a href="${escAttr(String(url))}">${inner}</a>` : inner;
       }
     };
@@ -2630,4 +2646,4 @@ ${items.join("\n")}
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-07T18:45:48.230Z */
+/*! built: 2026-08-07T18:56:06.616Z */
