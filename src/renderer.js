@@ -10,7 +10,7 @@ import {
   UnorderedList, OrderedList, ListItem, HorizontalRule,
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, LineBreak, FunctionCall, Color,
-  Superscript, Subscript, RawHtml, Table, FootnoteRef, AlignBlock,
+  Superscript, Subscript, RawHtml, Table, FootnoteRef, AlignBlock, Equation,
 } from './nodes.js';
 
 import { Lexer } from './lexer.js';
@@ -125,6 +125,7 @@ class HTMLRenderer {
       citeKeyAttr = HTMLRenderer.DEFAULT_KEY_ATTRS.citeKeyAttr,
       termKeyAttr = HTMLRenderer.DEFAULT_KEY_ATTRS.termKeyAttr,
       refKeyAttr = HTMLRenderer.DEFAULT_KEY_ATTRS.refKeyAttr,
+      mathRenderer = null,
     } = opts;
     this._data = data || {};
     this._variables = variables || {};
@@ -134,6 +135,7 @@ class HTMLRenderer {
     this._citeKeyAttr = citeKeyAttr || '';
     this._termKeyAttr = termKeyAttr || '';
     this._refKeyAttr = refKeyAttr || '';
+    this._mathRenderer = mathRenderer || null;
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
@@ -166,7 +168,7 @@ class HTMLRenderer {
   static DEFAULT_KEY_ATTRS = { citeKeyAttr: 'data-cite-key', termKeyAttr: 'data-term-key', refKeyAttr: 'data-ref-label' };
 
   // caption 前缀（默认中文，可用 @set 覆盖）
-  static DEFAULT_CAPTION_PREFIX = { fig: '图', tbl: '表' };
+  static DEFAULT_CAPTION_PREFIX = { fig: '图', tbl: '表', eq: '式' };
 
   /**
    * 预扫描文档顶层的 @set({...}) 调用并应用配置。
@@ -289,7 +291,7 @@ class HTMLRenderer {
     this._refs = {};
     this._headingSeq = [];
     this._headingIdx = 0;
-    const counters = { fig: 0, tbl: 0, sec: 0 };
+    const counters = { fig: 0, tbl: 0, sec: 0, eq: 0 };
 
     // 标题自动编号：按文档顺序对全部 Heading 计算层级编号（如 1 / 1.1 / 1.1.1）
     const sep = this._headingNumbering.match(/[^\d1]/)?.[0] || '.';
@@ -371,6 +373,10 @@ class HTMLRenderer {
       if (block instanceof Table && block.label) {
         counters.tbl++;
         this._refs[block.label] = { kind: 'tbl', number: counters.tbl };
+      }
+      if (block instanceof Equation && block.label) {
+        counters.eq++;
+        this._refs[block.label] = { kind: 'eq', number: counters.eq };
       }
     }
   }
@@ -577,6 +583,39 @@ class HTMLRenderer {
       if (this.pretty) this._write('\n');
     }
     this._write('</table>');
+    if (this.pretty) this._write('\n');
+  }
+
+  /**
+   * 公式：行内 <span class="math-inline">，块级 <div class="math">。
+   * mathRenderer 选项存在时调用其渲染（返回 HTML 不转义），否则源码转义透传。
+   * 块级公式带 caption 时包 <figure>（与图片一致）。
+   */
+  visit_Equation(node) {
+    const html = this._mathRenderer
+      ? this._mathRenderer(node.source, node.inline)
+      : this._esc(node.source);
+    const id = node.label ? ` id="${this._escAttr(node.label)}"` : '';
+    if (node.inline) {
+      this._write(`<span class="math-inline"${id}>${html}</span>`);
+      return;
+    }
+    if (node.caption.length) {
+      const ref = this._refs[node.label];
+      const num = ref ? ref.number : '';
+      this._write(`<figure${id}>`);
+      if (this.pretty) this._write('\n');
+      this._write(`<div class="math">${html}</div>`);
+      if (this.pretty) this._write('\n');
+      this._write(`<figcaption>${this._esc(this._captionPrefix.eq)} ${num}：`);
+      node.caption.forEach(n => n.accept(this));
+      this._write('</figcaption>');
+      if (this.pretty) this._write('\n');
+      this._write('</figure>');
+      if (this.pretty) this._write('\n');
+      return;
+    }
+    this._write(`<div class="math"${id}>${html}</div>`);
     if (this.pretty) this._write('\n');
   }
 

@@ -37,6 +37,7 @@ const _types = [
   'ALIGN_RIGHT',
   'ALIGN_CENTER',
   'CAPTION',
+  'MATH',
 
   // 文本与空白
   'RAW_TEXT',

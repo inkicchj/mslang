@@ -94,6 +94,22 @@ const html = mslangToHTMLAll(['引言.md', '方法.md', '参考文献.md'], { da
 // 异步版：mslangToHTMLAllAsync；AST 层：mergeDocuments(...docs)
 ```
 
+### 公式（LaTeX 语法，轻量级）
+
+```
+行内：质能方程 $E = mc^2$ 是核心
+块级：$$ \int_0^1 x dx $$
+带编号：$$ E = mc^2 $$ {#eq:energy}          → @ref("eq:energy") 显示"式 1"
+带说明：$$ x = 1 $$ {#eq:a}
+
+{#eq:a} 归一化条件                            → <figure><div class="math">…</div><figcaption>式 1：…</figcaption></figure>
+```
+
+- `$...$` 行内（限同行）、`$$...$$` 块级（可跨行）；`\$` 转义字面美元；未闭合回退普通文本
+- 内容为 LaTeX 源码，**默认转义透传**（`<span class="math-inline">` / `<div class="math">`）
+- `mathRenderer` 选项接管渲染（如接入 KaTeX：`(src, inline) => katex.renderToString(src, { displayMode: !inline })`），核心库保持零依赖
+- 编号体系与图/表统一：`captionPrefix` 默认含 `eq: '式'`，跨文档合并自动连续
+
 ### 引用元数据（工作台交互）
 
 `cite`/`term`/`ref` 输出携带 data 属性（点击证据 → 工作台定位文献库）：

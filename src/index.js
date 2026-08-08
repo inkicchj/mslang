@@ -41,7 +41,7 @@ import {
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, FunctionCall, Color,
   Superscript, Subscript, RawHtml, FootnoteRef,
-  LineBreak, Caption,
+  LineBreak, Caption, Equation,
 } from './nodes.js';
 
 export {
@@ -56,7 +56,7 @@ export {
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, FunctionCall, Color,
   Superscript, Subscript, RawHtml, FootnoteRef,
-  LineBreak, Caption,
+  LineBreak, Caption, Equation,
 };
 
 // 便捷函数: 将 mslang 文本直接渲染为 HTML
@@ -105,5 +105,6 @@ function _renderOptions(options) {
     citeKeyAttr: options.citeKeyAttr,
     termKeyAttr: options.termKeyAttr,
     refKeyAttr: options.refKeyAttr,
+    mathRenderer: options.mathRenderer,
   };
 }

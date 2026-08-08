@@ -162,6 +162,24 @@ class Caption extends BlockNode {
   accept(visitor) { return visitor.visit_Caption(this); }
 }
 
+/**
+ * 公式：$...$ 行内 / $$...$$ 块级。
+ * source 为 LaTeX 源码（字段名避开 content，防止遍历器递归字符串）。
+ * 命名避开全局 Math 对象（Equation）。
+ */
+class Equation extends ASTNode {
+  constructor(source = '', inline = true, label = '') {
+    super();
+    this.source = source;
+    this.inline = inline;
+    this.label = label;
+    /** @type {InlineNode[]} - 公式说明（caption 行归并） */
+    this.caption = [];
+  }
+
+  accept(visitor) { return visitor.visit_Equation(this); }
+}
+
 class Table extends BlockNode {
   /**
    * @param {string[]} [headers]
@@ -358,7 +376,7 @@ export {
   BlockNode, InlineNode,
   Heading, Paragraph, BlockQuote, CodeBlock,
   UnorderedList, OrderedList, ListItem, HorizontalRule,
-  AlignBlock, Table, Caption,
+  AlignBlock, Table, Caption, Equation,
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, FunctionCall, Color,
   Superscript, Subscript, RawHtml, FootnoteRef,

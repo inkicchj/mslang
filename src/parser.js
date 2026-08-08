@@ -20,7 +20,7 @@ import {
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, LineBreak, FunctionCall, Color,
   Superscript, Subscript, RawHtml, FootnoteRef,
-  Table, AlignBlock, Caption,
+  Table, AlignBlock, Caption, Equation,
 } from './nodes.js';
 
 // 会终止段落/引用的块级 Token 类型
@@ -194,6 +194,9 @@ class Parser {
 
     // 图表 caption（{#label} 说明，归并到前一块或降级为段落）
     if (token.type === TokenType.CAPTION) return this._parseCaption(token);
+
+    // 块级公式（$$...$$）
+    if (token.type === TokenType.MATH && !token.metadata.inline) return this._parseMath(token);
 
     // 默认为段落
     if (token.type === TokenType.RAW_TEXT || token.type.value >= TokenType.BOLD.value) {
@@ -453,11 +456,17 @@ class Parser {
   _captionTarget(prev, label) {
     if (!prev) return null;
     if (prev instanceof Table && prev.label === label) return prev;
+    if (prev instanceof Equation && prev.label === label) return prev;
     if (prev instanceof Paragraph && prev.content.length === 1 &&
         prev.content[0] instanceof Image && prev.content[0].label === label) {
       return prev.content[0];
     }
     return null;
+  }
+
+  _parseMath(token) {
+    this._advance();
+    return new Equation(token.value, token.metadata.inline, token.metadata.label || '');
   }
 
   _parseCaption(token) {
@@ -482,6 +491,9 @@ class Parser {
   }
 
   _parseInlineToken(token) {
+    if (token.type === TokenType.MATH) {
+      return new Equation(token.value, token.metadata.inline, token.metadata.label || '');
+    }
     if (token.type === TokenType.BOLD) {
       return new Bold(this._parseInline(token.value));
     }
@@ -847,6 +859,10 @@ function dumpAST(node, indent = 0, prefix = '', isLast = true) {
     return lines.join('\n');
   }
   if (node instanceof InlineCode) return `${linePrefix}InlineCode \`${node.code}\``;
+  if (node instanceof Equation) {
+    const lbl = node.label ? ` label=${node.label}` : '';
+    return `${linePrefix}Equation ${node.inline ? 'inline' : 'block'} "${node.source}"${lbl}`;
+  }
   if (node instanceof Link) return `${linePrefix}Link "${node.text}" -> ${node.url}`;
   if (node instanceof Image) {
     const lbl = node.label ? ` label=${node.label}` : '';

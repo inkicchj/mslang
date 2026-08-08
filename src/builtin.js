@@ -89,6 +89,7 @@ export function builtinFunctions(renderer) {
       let text;
       if (r.kind === 'fig') text = `${renderer._captionPrefix.fig} ${r.number}`;
       else if (r.kind === 'tbl') text = `${renderer._captionPrefix.tbl} ${r.number}`;
+      else if (r.kind === 'eq') text = `${renderer._captionPrefix.eq} ${r.number}`;
       else text = r.display;
       const keyAttr = renderer._refKeyAttr
         ? ` ${renderer._refKeyAttr}="${escapeAttr(String(label))}" data-ref-kind="${r.kind}"` : '';

@@ -141,6 +141,49 @@ test('条目无 key 字段时回退引用名', () => {
   assert.match(h, /data-term-key="词干提取"/);
 });
 
+test('公式：行内与块级容器', () => {
+  assert.match(mslangToHTML('质能方程 $E = mc^2$'), /<span class="math-inline">E = mc\^2<\/span>/);
+  assert.match(mslangToHTML('$$ \\int_0^1 x dx $$'), /<div class="math"> \\int_0\^1 x dx <\/div>/);
+});
+
+test('公式：块级 label、编号与 @ref', () => {
+  const h = mslangToHTML('$$ E = mc^2 $$ {#eq:energy}\n\n见 @ref("eq:energy")');
+  assert.match(h, /<div class="math" id="eq:energy">/);
+  assert.match(h, />式 1<\/a>/);
+});
+
+test('公式：caption 归并渲染 figure', () => {
+  const h = mslangToHTML('$$ x = 1 $$ {#eq:a}\n\n{#eq:a} 归一化条件');
+  assert.match(h, /<figure id="eq:a">/);
+  assert.match(h, /<figcaption>式 1：归一化条件<\/figcaption>/);
+});
+
+test('公式：未闭合回退普通文本', () => {
+  assert.match(mslangToHTML('价格是 $5 美元'), /<p>价格是 \$5 美元<\/p>/);
+  assert.match(mslangToHTML('$$ 未闭合'), /\$\$ 未闭合/);
+});
+
+test('公式：\\$ 转义美元符号', () => {
+  assert.match(mslangToHTML('\\$5 与 $x$'), /<p>\$5 与 <span class="math-inline">x<\/span><\/p>/);
+});
+
+test('公式：mathRenderer 钩子', () => {
+  const h = mslangToHTML('$x^2$ 与 $$ y $$', {
+    mathRenderer: (src, inline) => `[[${inline ? 'i' : 'b'}:${src}]]`,
+  });
+  assert.match(h, /<span class="math-inline">\[\[i:x\^2\]\]<\/span>/);
+  assert.match(h, /<div class="math">\[\[b: y \]\]<\/div>/);
+});
+
+test('公式：内容默认转义防注入', () => {
+  assert.match(mslangToHTML('$a < b$'), /a &lt; b/);
+});
+
+test('公式：caption 内 cite 参与编号', () => {
+  const h = mslangToHTML('$$ x $$ {#eq:1}\n\n{#eq:1} 见 @cite("doe2020")', { data });
+  assert.match(h, /href="#cite-1"/);
+});
+
 test('escapeHtml 默认转义正文特殊字符', () => {
   const h = mslangToHTML('a < b & c');
   assert.match(h, /a &lt; b &amp; c/);

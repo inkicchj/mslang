@@ -31,6 +31,7 @@ var _types = [
   "ALIGN_RIGHT",
   "ALIGN_CENTER",
   "CAPTION",
+  "MATH",
   // 文本与空白
   "RAW_TEXT",
   "LINE_BREAK",
@@ -110,7 +111,7 @@ var RE_TABLE = /^\|(.+)\|$/;
 var RE_ALIGN_RIGHT = /^>>\s+(.+)$/;
 var RE_ALIGN_CENTER = /^-><-\s+(.+)$/;
 var RE_CAPTION = /^\{#([^}]+)\}\s?(.*)$/;
-var ESCAPABLE = /* @__PURE__ */ new Set(["*", "_", "~", "`", "[", "!", "@", "/", "\\"]);
+var ESCAPABLE = /* @__PURE__ */ new Set(["*", "_", "~", "`", "[", "!", "@", "/", "\\", "$"]);
 var RAW_TEXT_SPECIALS = /* @__PURE__ */ new Set([
   CHAR.STAR,
   CHAR.UNDERSCORE,
@@ -120,7 +121,8 @@ var RAW_TEXT_SPECIALS = /* @__PURE__ */ new Set([
   CHAR.LBRACKET,
   CHAR.AT,
   "^",
-  "<"
+  "<",
+  "$"
 ]);
 var Lexer = class {
   /**
@@ -193,6 +195,7 @@ var Lexer = class {
     if (m) return this._scanTableRow(m);
     m = remaining.match(RE_CAPTION);
     if (m) return this._scanCaption(m);
+    if (remaining.startsWith("$$")) return this._scanMath(false);
     return this._scanInline();
   }
   // ================================================================
@@ -200,6 +203,7 @@ var Lexer = class {
   // ================================================================
   _scanInline() {
     const ch = this._peek();
+    if (ch === "$") return this._scanMath(true);
     if (ch === CHAR.STAR) return this._scanStarDelimited();
     if (ch === CHAR.UNDERSCORE) return this._scanUnderscoreDelimited();
     if (ch === CHAR.TILDE) return this._scanTildeDelimited();
@@ -437,6 +441,37 @@ var Lexer = class {
       match[2] || "",
       { label: match[1], raw: match[0] }
     );
+  }
+  /**
+   * 扫描公式：$...$（行内，限同行）/ $$...$$（块级，可跨行，行内位置也渲染块级容器）。
+   * 未闭合回退普通文本；块级结束分隔符后的同行尾部 {#label} 提取为 label。
+   * @param {boolean} limitToLine - 是否限同行搜索（行内触发时为 true）
+   */
+  _scanMath(limitToLine) {
+    const startPos = new Position(this.line, this.col, this.pos);
+    const delim = this.source.startsWith("$$", this.pos) ? "$$" : "$";
+    const inline = delim === "$";
+    const contentStart = this.pos + delim.length;
+    const searchEnd = limitToLine ? this._lineEnd() : this.source.length;
+    const end = this.source.indexOf(delim, contentStart);
+    if (end === -1 || end > searchEnd) {
+      this._advance(delim.length);
+      return this._fallbackRawText(startPos, delim);
+    }
+    const content = this.source.slice(contentStart, end);
+    let label = "";
+    let advanceTo = end + delim.length;
+    if (!inline) {
+      const tailEnd = this.source.indexOf(CHAR.NEWLINE, advanceTo);
+      const tail = this.source.slice(advanceTo, tailEnd === -1 ? this.source.length : tailEnd);
+      const m = tail.match(/^\s*\{#([^}]+)\}/);
+      if (m) {
+        label = m[1];
+        advanceTo += m[0].length;
+      }
+    }
+    this._advance(advanceTo - this.pos);
+    return new Token(TokenType.MATH, startPos, content, { inline, label });
   }
   _scanAlign(match, tokenType) {
     const content = match[1];
@@ -1181,6 +1216,18 @@ var Caption = class extends BlockNode {
     return visitor.visit_Caption(this);
   }
 };
+var Equation = class extends ASTNode {
+  constructor(source = "", inline = true, label = "") {
+    super();
+    this.source = source;
+    this.inline = inline;
+    this.label = label;
+    this.caption = [];
+  }
+  accept(visitor) {
+    return visitor.visit_Equation(this);
+  }
+};
 var Table = class extends BlockNode {
   /**
    * @param {string[]} [headers]
@@ -1495,6 +1542,7 @@ var Parser = class {
       return this._parseAlign(token);
     }
     if (token.type === TokenType.CAPTION) return this._parseCaption(token);
+    if (token.type === TokenType.MATH && !token.metadata.inline) return this._parseMath(token);
     if (token.type === TokenType.RAW_TEXT || token.type.value >= TokenType.BOLD.value) {
       return this._parseParagraph();
     }
@@ -1696,10 +1744,15 @@ var Parser = class {
   _captionTarget(prev, label) {
     if (!prev) return null;
     if (prev instanceof Table && prev.label === label) return prev;
+    if (prev instanceof Equation && prev.label === label) return prev;
     if (prev instanceof Paragraph && prev.content.length === 1 && prev.content[0] instanceof Image && prev.content[0].label === label) {
       return prev.content[0];
     }
     return null;
+  }
+  _parseMath(token) {
+    this._advance();
+    return new Equation(token.value, token.metadata.inline, token.metadata.label || "");
   }
   _parseCaption(token) {
     this._advance();
@@ -1720,6 +1773,9 @@ var Parser = class {
     return new AlignBlock(align, this._mergeAdjacentText(inlines));
   }
   _parseInlineToken(token) {
+    if (token.type === TokenType.MATH) {
+      return new Equation(token.value, token.metadata.inline, token.metadata.label || "");
+    }
     if (token.type === TokenType.BOLD) {
       return new Bold(this._parseInline(token.value));
     }
@@ -2020,6 +2076,10 @@ function dumpAST(node, indent = 0, prefix = "", isLast = true) {
     return lines.join("\n");
   }
   if (node instanceof InlineCode) return `${linePrefix}InlineCode \`${node.code}\``;
+  if (node instanceof Equation) {
+    const lbl = node.label ? ` label=${node.label}` : "";
+    return `${linePrefix}Equation ${node.inline ? "inline" : "block"} "${node.source}"${lbl}`;
+  }
   if (node instanceof Link) return `${linePrefix}Link "${node.text}" -> ${node.url}`;
   if (node instanceof Image) {
     const lbl = node.label ? ` label=${node.label}` : "";
@@ -2105,6 +2165,7 @@ function builtinFunctions(renderer) {
       let text;
       if (r.kind === "fig") text = `${renderer._captionPrefix.fig} ${r.number}`;
       else if (r.kind === "tbl") text = `${renderer._captionPrefix.tbl} ${r.number}`;
+      else if (r.kind === "eq") text = `${renderer._captionPrefix.eq} ${r.number}`;
       else text = r.display;
       const keyAttr = renderer._refKeyAttr ? ` ${renderer._refKeyAttr}="${escapeAttr(String(label))}" data-ref-kind="${r.kind}"` : "";
       return `<a href="#${escAttr(String(label))}"${keyAttr}>${esc(text)}</a>`;
@@ -2230,7 +2291,8 @@ var _HTMLRenderer = class _HTMLRenderer {
       captionPrefix = {},
       citeKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.citeKeyAttr,
       termKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.termKeyAttr,
-      refKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.refKeyAttr
+      refKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.refKeyAttr,
+      mathRenderer = null
     } = opts;
     this._data = data || {};
     this._variables = variables || {};
@@ -2240,6 +2302,7 @@ var _HTMLRenderer = class _HTMLRenderer {
     this._citeKeyAttr = citeKeyAttr || "";
     this._termKeyAttr = termKeyAttr || "";
     this._refKeyAttr = refKeyAttr || "";
+    this._mathRenderer = mathRenderer || null;
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
@@ -2369,7 +2432,7 @@ ${body}
     this._refs = {};
     this._headingSeq = [];
     this._headingIdx = 0;
-    const counters = { fig: 0, tbl: 0, sec: 0 };
+    const counters = { fig: 0, tbl: 0, sec: 0, eq: 0 };
     const sep = this._headingNumbering.match(/[^\d1]/)?.[0] || ".";
     const levelCounts = [0, 0, 0, 0, 0, 0];
     const nextSecNumber = (level) => {
@@ -2438,6 +2501,10 @@ ${body}
       if (block instanceof Table && block.label) {
         counters.tbl++;
         this._refs[block.label] = { kind: "tbl", number: counters.tbl };
+      }
+      if (block instanceof Equation && block.label) {
+        counters.eq++;
+        this._refs[block.label] = { kind: "eq", number: counters.eq };
       }
     }
   }
@@ -2624,6 +2691,36 @@ ${body}
     this._write("</table>");
     if (this.pretty) this._write("\n");
   }
+  /**
+   * 公式：行内 <span class="math-inline">，块级 <div class="math">。
+   * mathRenderer 选项存在时调用其渲染（返回 HTML 不转义），否则源码转义透传。
+   * 块级公式带 caption 时包 <figure>（与图片一致）。
+   */
+  visit_Equation(node) {
+    const html = this._mathRenderer ? this._mathRenderer(node.source, node.inline) : this._esc(node.source);
+    const id = node.label ? ` id="${this._escAttr(node.label)}"` : "";
+    if (node.inline) {
+      this._write(`<span class="math-inline"${id}>${html}</span>`);
+      return;
+    }
+    if (node.caption.length) {
+      const ref = this._refs[node.label];
+      const num = ref ? ref.number : "";
+      this._write(`<figure${id}>`);
+      if (this.pretty) this._write("\n");
+      this._write(`<div class="math">${html}</div>`);
+      if (this.pretty) this._write("\n");
+      this._write(`<figcaption>${this._esc(this._captionPrefix.eq)} ${num}\uFF1A`);
+      node.caption.forEach((n) => n.accept(this));
+      this._write("</figcaption>");
+      if (this.pretty) this._write("\n");
+      this._write("</figure>");
+      if (this.pretty) this._write("\n");
+      return;
+    }
+    this._write(`<div class="math"${id}>${html}</div>`);
+    if (this.pretty) this._write("\n");
+  }
   // ================================================================
   // 行内节点
   // ================================================================
@@ -2773,7 +2870,7 @@ __publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "e
 // 引用/术语 data 属性名（工作台交互定位用；空串关闭）
 __publicField(_HTMLRenderer, "DEFAULT_KEY_ATTRS", { citeKeyAttr: "data-cite-key", termKeyAttr: "data-term-key", refKeyAttr: "data-ref-label" });
 // caption 前缀（默认中文，可用 @set 覆盖）
-__publicField(_HTMLRenderer, "DEFAULT_CAPTION_PREFIX", { fig: "\u56FE", tbl: "\u8868" });
+__publicField(_HTMLRenderer, "DEFAULT_CAPTION_PREFIX", { fig: "\u56FE", tbl: "\u8868", eq: "\u5F0F" });
 var HTMLRenderer = _HTMLRenderer;
 
 // src/index.js
@@ -2811,7 +2908,8 @@ function _renderOptions(options) {
     captionPrefix: options.captionPrefix,
     citeKeyAttr: options.citeKeyAttr,
     termKeyAttr: options.termKeyAttr,
-    refKeyAttr: options.refKeyAttr
+    refKeyAttr: options.refKeyAttr,
+    mathRenderer: options.mathRenderer
   };
 }
 export {
@@ -2823,6 +2921,7 @@ export {
   CodeBlock,
   Color,
   Document,
+  Equation,
   EvalError,
   FootnoteRef,
   FunctionCall,
@@ -2861,4 +2960,4 @@ export {
   parseArgs,
   parseExpression
 };
-/*! built: 2026-08-08T05:21:49.803Z */
+/*! built: 2026-08-08T05:57:56.787Z */

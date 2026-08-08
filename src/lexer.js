@@ -35,11 +35,11 @@ const RE_ALIGN_CENTER    = /^-><-\s+(.+)$/;
 const RE_CAPTION         = /^\{#([^}]+)\}\s?(.*)$/;
 
 // 可被反斜杠转义的字符（与行内语法起始符一致）
-const ESCAPABLE = new Set(['*', '_', '~', '`', '[', '!', '@', '/', '\\']);
+const ESCAPABLE = new Set(['*', '_', '~', '`', '[', '!', '@', '/', '\\', '$']);
 
 // RAW_TEXT 扫描的终止符（行内语法起始符 + HTML 透传检查）
 const RAW_TEXT_SPECIALS = new Set([CHAR.STAR, CHAR.UNDERSCORE, CHAR.TILDE, CHAR.BACKTICK,
-                                   CHAR.BANG, CHAR.LBRACKET, CHAR.AT, '^', '<']);
+                                   CHAR.BANG, CHAR.LBRACKET, CHAR.AT, '^', '<', '$']);
 
 class Lexer {
   /**
@@ -152,6 +152,9 @@ class Lexer {
     m = remaining.match(RE_CAPTION);
     if (m) return this._scanCaption(m);
 
+    // 块级公式（$$...$$，可跨行）
+    if (remaining.startsWith('$$')) return this._scanMath(false);
+
     // 默认为行内文本
     return this._scanInline();
   }
@@ -163,6 +166,7 @@ class Lexer {
   _scanInline() {
     const ch = this._peek();
 
+    if (ch === '$') return this._scanMath(true);
     if (ch === CHAR.STAR) return this._scanStarDelimited();
     if (ch === CHAR.UNDERSCORE) return this._scanUnderscoreDelimited();
     if (ch === CHAR.TILDE) return this._scanTildeDelimited();
@@ -433,6 +437,39 @@ class Lexer {
       match[2] || '',
       { label: match[1], raw: match[0] },
     );
+  }
+
+  /**
+   * 扫描公式：$...$（行内，限同行）/ $$...$$（块级，可跨行，行内位置也渲染块级容器）。
+   * 未闭合回退普通文本；块级结束分隔符后的同行尾部 {#label} 提取为 label。
+   * @param {boolean} limitToLine - 是否限同行搜索（行内触发时为 true）
+   */
+  _scanMath(limitToLine) {
+    const startPos = new Position(this.line, this.col, this.pos);
+    const delim = this.source.startsWith('$$', this.pos) ? '$$' : '$';
+    const inline = delim === '$';
+    const contentStart = this.pos + delim.length;
+    const searchEnd = limitToLine ? this._lineEnd() : this.source.length;
+    const end = this.source.indexOf(delim, contentStart);
+    if (end === -1 || end > searchEnd) {
+      this._advance(delim.length); // 推进分隔符，避免 tokenize 死循环
+      return this._fallbackRawText(startPos, delim);
+    }
+    const content = this.source.slice(contentStart, end);
+    let label = '';
+    let advanceTo = end + delim.length;
+    if (!inline) {
+      // 结束 $$ 后的同行尾部 {#label}（如 $$ E=mc^2 $$ {#eq:energy}）
+      const tailEnd = this.source.indexOf(CHAR.NEWLINE, advanceTo);
+      const tail = this.source.slice(advanceTo, tailEnd === -1 ? this.source.length : tailEnd);
+      const m = tail.match(/^\s*\{#([^}]+)\}/);
+      if (m) {
+        label = m[1];
+        advanceTo += m[0].length;
+      }
+    }
+    this._advance(advanceTo - this.pos);
+    return new Token(TokenType.MATH, startPos, content, { inline, label });
   }
 
   _scanAlign(match, tokenType) {
