@@ -19,6 +19,25 @@ import { evaluate } from './expression.js';
 import { builtinFunctions, extractHeadingNumber } from './builtin.js';
 import { escapeHTML, escapeAttr } from './escape.js';
 import katex from 'katex';
+import hljs from 'highlight.js/lib/core';
+import javascript from 'highlight.js/lib/languages/javascript';
+import typescript from 'highlight.js/lib/languages/typescript';
+import python from 'highlight.js/lib/languages/python';
+import java from 'highlight.js/lib/languages/java';
+import c from 'highlight.js/lib/languages/c';
+import cpp from 'highlight.js/lib/languages/cpp';
+import go from 'highlight.js/lib/languages/go';
+import rust from 'highlight.js/lib/languages/rust';
+import bash from 'highlight.js/lib/languages/bash';
+import json from 'highlight.js/lib/languages/json';
+import sql from 'highlight.js/lib/languages/sql';
+import xml from 'highlight.js/lib/languages/xml';
+import css from 'highlight.js/lib/languages/css';
+import markdown from 'highlight.js/lib/languages/markdown';
+
+// 代码高亮语言子集（常用论文/脚本语言，控制体积）
+const HLJS_LANGUAGES = { javascript, typescript, python, java, c, cpp, go, rust, bash, json, sql, xml, css, markdown };
+for (const [name, lang] of Object.entries(HLJS_LANGUAGES)) hljs.registerLanguage(name, lang);
 
 // KaTeX CSS 内容：dist 由 esbuild define 注入；Node 直接运行 src/ 时读取依赖包内文件。
 // 文档含公式且未自定义 mathRenderer 时内联 <style>（katex 输出依赖此 CSS 排版）。
@@ -31,6 +50,17 @@ try {
     katexCss = readFileSync(`${process.cwd()}/node_modules/katex/dist/katex.min.css`, 'utf8');
   }
 } catch { katexCss = ''; }
+
+// highlight.js github 主题（dist 由 esbuild define 注入；Node 直接运行 src/ 时读取依赖包内文件）
+let highlightCss = '';
+try {
+  if (typeof HIGHLIGHT_CSS !== 'undefined') {
+    highlightCss = HIGHLIGHT_CSS;
+  } else if (typeof process !== 'undefined' && process.getBuiltinModule) {
+    const { readFileSync } = process.getBuiltinModule('fs');
+    highlightCss = readFileSync(`${process.cwd()}/node_modules/highlight.js/styles/github.css`, 'utf8');
+  }
+} catch { highlightCss = ''; }
 
 // KaTeX 字体默认 CDN（与内联 CSS 的 @font-face 对应；可用 mathFontsPath 选项本地托管）
 const KATEX_FONTS_CDN = `https://cdn.jsdelivr.net/npm/katex@${katex.version}/dist/fonts/`;
@@ -80,13 +110,10 @@ class HTMLRenderer {
    * @returns {string}
    */
   render(source, opts = {}) {
-    this._applyOpts(opts);
-    const doc = this._parseDoc(source);
-    this._applySets(doc);
-    this._collectRefs(doc);
+    const doc = this._prepare(source, opts);
     doc.accept(this);
     const body = this._output.join('');
-    return this._mathStyle() + this._wrap(body, opts);
+    return this._inlineStyles() + this._wrap(body, opts);
   }
 
   /**
@@ -98,19 +125,16 @@ class HTMLRenderer {
    * @returns {Promise<string>}
    */
   async renderAsync(source, opts = {}) {
-    this._applyOpts(opts);
+    const doc = this._prepare(source, opts);
     this._asyncSlots = [];
     this._asyncId = 0;
-    const doc = this._parseDoc(source);
-    this._applySets(doc);
-    this._collectRefs(doc);
     doc.accept(this);
     await Promise.all(this._asyncSlots.map(s => s.promise));
     let body = this._output.join('');
     for (const slot of this._asyncSlots) {
       body = body.split(slot.token).join(slot.html);
     }
-    return this._mathStyle() + this._wrap(body, opts);
+    return this._inlineStyles() + this._wrap(body, opts);
   }
 
   /**
@@ -130,6 +154,15 @@ class HTMLRenderer {
     return this.renderAsync(mergeDocuments(...docs), opts);
   }
 
+  /** 渲染管线公共部分：选项应用 + 解析 + 预扫描 + 编号收集（render / renderAsync 共用） */
+  _prepare(source, opts) {
+    this._applyOpts(opts);
+    const doc = this._parseDoc(source);
+    this._applySets(doc);
+    this._collectRefs(doc);
+    return doc;
+  }
+
   /** 应用渲染选项（render / renderAsync 共用） */
   _applyOpts(opts) {
     const {
@@ -144,6 +177,7 @@ class HTMLRenderer {
       mathRenderer = null,
       mathFontsPath = '',
       codeRenderer = null,
+      citeStyle = 'numeric',
     } = opts;
     this._data = data || {};
     this._variables = variables || {};
@@ -158,11 +192,14 @@ class HTMLRenderer {
       katex.renderToString(src, { displayMode: !inline, throwOnError: false }));
     this._mathFontsPath = mathFontsPath || '';
     this._codeRenderer = codeRenderer || null;
+    this._citeStyle = citeStyle || 'numeric';
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
     this._hasMath = false;
     this._mathRendererCustom = !!mathRenderer;
+    this._termOrder = [];
+    this._hasHighlight = false;
   }
 
   /** 解析输入为 Document（render / renderAsync 共用） */
@@ -186,7 +223,7 @@ class HTMLRenderer {
   // ================================================================
 
   // @set 白名单：仅这些键可被文档内配置覆盖
-  static SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables', 'terms', 'bibliography', 'captionPrefix', 'citeKeyAttr', 'termKeyAttr', 'refKeyAttr'];
+  static SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables', 'terms', 'bibliography', 'captionPrefix', 'citeKeyAttr', 'termKeyAttr', 'refKeyAttr', 'citeStyle'];
 
   // 引用/术语 data 属性名（工作台交互定位用；空串关闭）
   static DEFAULT_KEY_ATTRS = { citeKeyAttr: 'data-cite-key', termKeyAttr: 'data-term-key', refKeyAttr: 'data-ref-label' };
@@ -200,10 +237,10 @@ class HTMLRenderer {
    * @set 全文档生效（建议放文档开头），仅识别块级内容中的顶层调用。
    */
   /**
-   * 遍历文档全部行内节点（块 → 列表项 → 子项，递归穿过行内容器）。
-   * _applySets / _collectRefs 共用，遍历顺序与渲染顺序一致。
+   * 遍历单个块的全部行内节点（content/items/children，递归穿过行内容器）。
+   * _eachInline 与 _collectRefs 共用，顺序与渲染顺序一致。
    */
-  _eachInline(doc, fn) {
+  _eachBlockInline(block, fn) {
     const walk = (inlines) => {
       for (const n of inlines) {
         fn(n);
@@ -211,19 +248,22 @@ class HTMLRenderer {
         if (n.caption) walk(n.caption);
       }
     };
-    for (const block of doc.blocks) {
-      if (block.content) walk(block.content);
-      if (block.items) {
-        for (const item of block.items) {
-          walk(item.content);
-          if (item.children) {
-            for (const child of item.children) {
-              if (child.content) walk(child.content);
-            }
+    if (block.content) walk(block.content);
+    if (block.items) {
+      for (const item of block.items) {
+        walk(item.content);
+        if (item.children) {
+          for (const child of item.children) {
+            if (child.content) walk(child.content);
           }
         }
       }
     }
+  }
+
+  /** 遍历文档全部块的行内节点 */
+  _eachInline(doc, fn) {
+    for (const block of doc.blocks) this._eachBlockInline(block, fn);
   }
 
   _applySets(doc) {
@@ -278,6 +318,8 @@ class HTMLRenderer {
         this._captionPrefix = { ...this._captionPrefix, ...config[key] };
       } else if (key === 'citeKeyAttr' || key === 'termKeyAttr' || key === 'refKeyAttr') {
         this[`_${key}`] = config[key] || '';
+      } else if (key === 'citeStyle') {
+        this._citeStyle = config[key] || 'numeric';
       } else {
         this[key] = config[key];
       }
@@ -335,6 +377,9 @@ class HTMLRenderer {
         if (node.name === 'cite' && node.args[0] && node.args[0].type === 'string') {
           this._registerCite(node.args[0].value);
         }
+        if (node.name === 'term' && node.args[0] && node.args[0].type === 'string') {
+          this._registerTerm(node.args[0].value);
+        }
         node.args.forEach(walkExpr);
         Object.values(node.kwargs).forEach(walkExpr);
       } else if (node.type === 'unary') {
@@ -349,23 +394,22 @@ class HTMLRenderer {
       }
     };
 
-    // 行内遍历（递归 content/caption 行内容器），与块循环同序保证 fig 编号一致
-    const walkInlineList = (inlines) => {
-      for (const n of inlines) {
-        if (n instanceof Image && n.label) {
-          counters.fig++;
-          this._refs[n.label] = { kind: 'fig', number: counters.fig };
+    // 行内节点处理（递归由 _eachBlockInline 负责）
+    const walkInlineList = (n) => {
+      if (n instanceof Image && n.label) {
+        counters.fig++;
+        this._refs[n.label] = { kind: 'fig', number: counters.fig };
+      }
+      if (n instanceof FunctionCall) {
+        // 顶层 @cite("key") / @term("name") 调用
+        if (n.name === 'cite' && n.args[0] && n.args[0].type === 'string') {
+          this._registerCite(n.args[0].value);
         }
-        if (n instanceof FunctionCall) {
-          // 顶层 @cite("key") 调用
-          if (n.name === 'cite' && n.args[0] && n.args[0].type === 'string') {
-            this._registerCite(n.args[0].value);
-          }
-          // 嵌套在参数表达式中的 cite
-          n.args.forEach(walkExpr);
+        if (n.name === 'term' && n.args[0] && n.args[0].type === 'string') {
+          this._registerTerm(n.args[0].value);
         }
-        if (n.content) walkInlineList(n.content);
-        if (n.caption) walkInlineList(n.caption);
+        // 嵌套在参数表达式中的 cite/term
+        n.args.forEach(walkExpr);
       }
     };
 
@@ -410,16 +454,26 @@ class HTMLRenderer {
         counters.fig++;
         this._refs[block.label] = { kind: 'fig', number: counters.fig };
       }
-      if (block.content) walkInlineList(block.content);
-      if (block.items) {
-        for (const item of block.items) {
-          walkInlineList(item.content);
-          if (item.children) {
-            for (const child of item.children) {
-              if (child.content) walkInlineList(child.content);
-            }
-          }
-        }
+      if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
+    }
+
+    // author-year 样式消歧：同年同作者按引用顺序加 a/b/c 后缀（收集完成后计算，cite/bibliography 共用）
+    this._citeYearSuffix = {};
+    if (this._citeStyle !== 'numeric') {
+      const counts = {};
+      for (const key of this._citeOrder) {
+        const entry = this._data.bibliography && this._data.bibliography[key];
+        if (!entry || typeof entry !== 'object' || !entry.authors || entry.year === undefined) continue;
+        const g = `${String(entry.authors).toLowerCase()}|${entry.year}`;
+        counts[g] = (counts[g] || 0) + 1;
+      }
+      const seen = {};
+      for (const key of this._citeOrder) {
+        const entry = this._data.bibliography && this._data.bibliography[key];
+        if (!entry || typeof entry !== 'object' || !entry.authors || entry.year === undefined) continue;
+        const g = `${String(entry.authors).toLowerCase()}|${entry.year}`;
+        const idx = (seen[g] = (seen[g] || 0) + 1);
+        this._citeYearSuffix[key] = counts[g] > 1 ? String.fromCharCode(96 + idx) : '';
       }
     }
   }
@@ -433,6 +487,11 @@ class HTMLRenderer {
       this._citeNumbers[key] = this._citeOrder.length + 1;
       this._citeOrder.push(key);
     }
+  }
+
+  /** 术语键收集：首次出现加入 _termOrder（_collectRefs 预收集与运行时 term 共用） */
+  _registerTerm(name) {
+    if (!this._termOrder.includes(name)) this._termOrder.push(name);
   }
 
   /** 文献条目格式化：字符串原样转义；对象拼接 authors (year). title. journal. */
@@ -525,22 +584,33 @@ class HTMLRenderer {
     if (this.pretty) this._write('\n');
   }
 
+  /**
+   * figure 包裹：id 属性 + 主体 HTML + 可选 figcaption（prefix N：caption 行内节点）。
+   * 图片/公式/mermaid 共用。
+   */
+  _writeFigure(idAttr, bodyHtml, caption, prefix, num) {
+    this._write(`<figure${idAttr}>`);
+    if (this.pretty) this._write('\n');
+    this._write(bodyHtml);
+    if (this.pretty) this._write('\n');
+    if (caption && caption.length) {
+      this._write(`<figcaption>${this._esc(prefix)} ${num}：`);
+      caption.forEach(n => n.accept(this));
+      this._write('</figcaption>');
+      if (this.pretty) this._write('\n');
+    }
+    this._write('</figure>');
+    if (this.pretty) this._write('\n');
+  }
+
   /** 带 caption 的图片渲染为 <figure>（图下方 figcaption） */
   _visitFigure(image) {
     const ref = this._refs[image.label];
     const num = ref ? ref.number : '';
     const id = image.label ? ` id="${this._escAttr(image.label)}"` : '';
     const width = image.width ? ` width="${image.width}"` : '';
-    this._write(`<figure${id}>`);
-    if (this.pretty) this._write('\n');
-    this._write(`<img src="${this._escAttr(image.url)}" alt="${this._escAttr(image.alt)}"${width} referrerpolicy="no-referrer">`);
-    if (this.pretty) this._write('\n');
-    this._write(`<figcaption>${this._esc(this._captionPrefix.fig)} ${num}：`);
-    image.caption.forEach(n => n.accept(this));
-    this._write('</figcaption>');
-    if (this.pretty) this._write('\n');
-    this._write('</figure>');
-    if (this.pretty) this._write('\n');
+    const img = `<img src="${this._escAttr(image.url)}" alt="${this._escAttr(image.alt)}"${width} referrerpolicy="no-referrer">`;
+    this._writeFigure(id, img, image.caption, this._captionPrefix.fig, num);
   }
 
   visit_CodeBlock(node) {
@@ -557,24 +627,19 @@ class HTMLRenderer {
       }
       const ref = this._refs[node.label];
       const num = ref ? ref.number : '';
-      this._write(`<figure id="${this._escAttr(node.label)}">`);
-      if (this.pretty) this._write('\n');
-      this._write(`<div class="mermaid">${body}</div>`);
-      if (this.pretty) this._write('\n');
-      if (node.caption.length) {
-        this._write(`<figcaption>${this._esc(this._captionPrefix.fig)} ${num}：`);
-        node.caption.forEach(n => n.accept(this));
-        this._write('</figcaption>');
-        if (this.pretty) this._write('\n');
-      }
-      this._write('</figure>');
-      if (this.pretty) this._write('\n');
+      this._writeFigure(` id="${this._escAttr(node.label)}"`, `<div class="mermaid">${body}</div>`, node.caption, this._captionPrefix.fig, num);
       return;
     }
     const langAttr = node.language ? ` data-language="${this._escAttr(node.language)}"` : '';
-    this._write(`<pre${langAttr}><code>`);
-    this._write(this._esc(node.code));
-    this._write('</code></pre>');
+    // 代码高亮：语言在 hljs 子集内时输出 hljs 渲染（已转义，class 带语言标记）
+    let codeHtml = this._esc(node.code);
+    let hljsClass = '';
+    if (node.language && hljs.getLanguage(node.language)) {
+      this._hasHighlight = true;
+      codeHtml = hljs.highlight(node.code, { language: node.language }).value;
+      hljsClass = ` class="hljs language-${this._escAttr(node.language)}"`;
+    }
+    this._write(`<pre${langAttr}><code${hljsClass}>${codeHtml}</code></pre>`);
     if (this.pretty) this._write('\n');
   }
 
@@ -674,16 +739,7 @@ class HTMLRenderer {
     if (node.caption.length) {
       const ref = this._refs[node.label];
       const num = ref ? ref.number : '';
-      this._write(`<figure${id}>`);
-      if (this.pretty) this._write('\n');
-      this._write(`<div class="math">${html}</div>`);
-      if (this.pretty) this._write('\n');
-      this._write(`<figcaption>${this._esc(this._captionPrefix.eq)} ${num}：`);
-      node.caption.forEach(n => n.accept(this));
-      this._write('</figcaption>');
-      if (this.pretty) this._write('\n');
-      this._write('</figure>');
-      if (this.pretty) this._write('\n');
+      this._writeFigure(id, `<div class="math">${html}</div>`, node.caption, this._captionPrefix.eq, num);
       return;
     }
     this._write(`<div class="math"${id}>${html}</div>`);
@@ -834,13 +890,18 @@ class HTMLRenderer {
   // 辅助方法
   // ================================================================
 
-  /** 文档含公式且未自定义 mathRenderer 时，返回内联的 KaTeX CSS <style>（置于 wrapper 外）
-   * 字体 URL 重写：默认 jsdelivr CDN，mathFontsPath 选项可指向本地托管目录。 */
-  _mathStyle() {
-    if (!(this._hasMath && !this._mathRendererCustom && katexCss)) return '';
-    const fontsPath = this._mathFontsPath || KATEX_FONTS_CDN;
-    const css = katexCss.replace(/url\(fonts\//g, `url(${fontsPath}`);
-    return `<style>${css}</style>\n`;
+  /** 文档含公式/高亮代码块时返回内联 CSS <style>（置于 wrapper 外；自定义渲染器/无样式需求时不内联） */
+  _inlineStyles() {
+    let out = '';
+    if (this._hasMath && !this._mathRendererCustom && katexCss) {
+      const fontsPath = this._mathFontsPath || KATEX_FONTS_CDN;
+      const css = katexCss.replace(/url\(fonts\//g, `url(${fontsPath}`);
+      out += `<style>${css}</style>\n`;
+    }
+    if (this._hasHighlight && highlightCss) {
+      out += `<style>${highlightCss}</style>\n`;
+    }
+    return out;
   }
 
   _write(text) { this._output.push(text); }

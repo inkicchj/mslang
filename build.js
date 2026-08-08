@@ -12,18 +12,25 @@
 import * as esbuild from 'esbuild';
 import { readFileSync } from 'fs';
 
-// KaTeX CSS 内容（构建时内联进产物；renderer 在文档含公式时输出 <style>）
+// KaTeX CSS 与 highlight.js github 主题（构建时内联进产物；renderer 按需输出 <style>）
 let katexCss = '';
 try {
   katexCss = readFileSync('node_modules/katex/dist/katex.min.css', 'utf8');
 } catch { /* katex 未安装时跳过 */ }
+let highlightCss = '';
+try {
+  highlightCss = readFileSync('node_modules/highlight.js/styles/github.css', 'utf8');
+} catch { /* highlight.js 未安装时跳过 */ }
 
 const shared = {
   entryPoints: ['src/index.js'],
   bundle: true,
   globalName: 'mslang',
   target: 'es2020',
-  define: { KATEX_CSS: JSON.stringify(katexCss) },
+  define: {
+    KATEX_CSS: JSON.stringify(katexCss),
+    HIGHLIGHT_CSS: JSON.stringify(highlightCss),
+  },
   banner: {
     js: `/*! mslang v0.1.0 — Lightweight Markup Language | MIT License */`,
   },

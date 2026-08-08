@@ -108,5 +108,6 @@ function _renderOptions(options) {
     mathRenderer: options.mathRenderer,
     mathFontsPath: options.mathFontsPath,
     codeRenderer: options.codeRenderer,
+    citeStyle: options.citeStyle,
   };
 }

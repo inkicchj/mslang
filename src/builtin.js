@@ -69,7 +69,8 @@ export function builtinFunctions(renderer) {
     /** 术语是否存在（供 if 条件使用） */
     has_term: (name) => !!(renderer._data.terms && renderer._data.terms[name]),
 
-    /** 文献引用：按文档出现顺序自动编号，输出上标链接 [n]，缺失时输出 [key?] 占位 */
+    /** 文献引用：按文档出现顺序自动编号；citeStyle 为 numeric（默认）输出上标 [n]，
+     *  author-year / author 输出 (Doe, 2020a) 风格（缺 authors 时回退数字） */
     cite: (key) => {
       const entry = renderer._data.bibliography && renderer._data.bibliography[key];
       if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
@@ -79,7 +80,17 @@ export function builtinFunctions(renderer) {
       const dataKey = entry && entry.key !== undefined ? entry.key : key;
       const keyAttr = renderer._citeKeyAttr
         ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(dataKey))}"` : '';
-      return `<sup><a href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}">[${esc(String(num))}]</a></sup>`;
+      const anchor = `href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}"`;
+      if (renderer._citeStyle !== 'numeric') {
+        const authors = entry && entry.authors ? String(entry.authors) : '';
+        if (authors) {
+          const suffix = renderer._citeYearSuffix && renderer._citeYearSuffix[key] || '';
+          const year = renderer._citeStyle === 'author-year' && entry.year !== undefined
+            ? `, ${entry.year}${suffix}` : '';
+          return `<a ${anchor}>(${esc(authors)}${year})</a>`;
+        }
+      }
+      return `<sup><a ${anchor}>[${esc(String(num))}]</a></sup>`;
     },
 
     /** 交叉引用：图/表显示"图 N/表 N"（前缀随 captionPrefix 配置）；章节显示 显式编号 → 自动编号 → 标题全文 */
@@ -102,15 +113,31 @@ export function builtinFunctions(renderer) {
         .map((key, i) => {
           const entry = renderer._data.bibliography && renderer._data.bibliography[key];
           if (entry === undefined) return null;
-          return `<li id="cite-${i + 1}">${renderer._formatBibEntry(entry)}</li>`;
+          return { key, index: i, entry };
         })
-        .filter(Boolean);
+        .filter(x => x !== null);
       if (!items.length) return '';
-      return `<ol class="bibliography">\n${items.join('\n')}\n</ol>`;
+      if (renderer._citeStyle !== 'numeric') {
+        // author-year/author：按作者+年份排序（id 仍对应引用锚点）
+        const sortKey = (x) => {
+          const e = x.entry;
+          const a = (typeof e === 'object' && e.authors ? String(e.authors) : '').toLowerCase();
+          const y = (typeof e === 'object' && e.year !== undefined ? String(e.year) : '');
+          return `${a}${y}`;
+        };
+        const sorted = [...items].sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+        const lis = sorted.map(({ index, entry }) =>
+          `<li id="cite-${index + 1}">${renderer._formatBibEntry(entry)}</li>`).join('\n');
+        return `<ul class="bibliography">\n${lis}\n</ul>`;
+      }
+      const lis = items.map(({ index, entry }) =>
+        `<li id="cite-${index + 1}">${renderer._formatBibEntry(entry)}</li>`).join('\n');
+      return `<ol class="bibliography">\n${lis}\n</ol>`;
     },
 
     /** 术语引用：字符串值为 label 简写；对象可带 label / url / key */
     term: (name, kwargs) => {
+      renderer._registerTerm(name); // 收集阶段未覆盖的键（如变量参数）在此动态注册
       const entry = renderer._data.terms && renderer._data.terms[name];
       const label = typeof entry === 'string' ? entry : ((entry && entry.label) ? entry.label : name);
       const inner = `<span class="term">${esc(String(label))}</span>`;
@@ -122,6 +149,24 @@ export function builtinFunctions(renderer) {
       return url
         ? `<a href="${escAttr(String(url))}"${keyAttr}>${inner}</a>`
         : `<span class="term"${keyAttr}>${esc(String(label))}</span>`;
+    },
+
+    /** 术语表：列出全部被引用术语（按首次出现顺序），label — desc（可选），url 可链接 */
+    glossary: () => {
+      const items = renderer._termOrder
+        .map((name, i) => {
+          const entry = renderer._data.terms && renderer._data.terms[name];
+          if (entry === undefined) return null;
+          const label = typeof entry === 'string' ? entry : ((entry && entry.label) ? entry.label : name);
+          const desc = (entry && typeof entry === 'object' && entry.desc) ? String(entry.desc) : '';
+          const text = desc ? `${esc(String(label))} — ${esc(desc)}` : esc(String(label));
+          const url = (entry && typeof entry === 'object' && entry.url) ? entry.url : '';
+          const inner = url ? `<a href="${escAttr(String(url))}">${text}</a>` : text;
+          return `<li id="term-${i + 1}">${inner}</li>`;
+        })
+        .filter(Boolean);
+      if (!items.length) return '';
+      return `<ul class="glossary">\n${items.join('\n')}\n</ul>`;
     },
   };
 }

@@ -110,6 +110,35 @@ const html = mslangToHTMLAll(['引言.md', '方法.md', '参考文献.md'], { da
 - `mathRenderer` 选项可覆盖默认渲染（如自定义 KaTeX 选项或换其他引擎）；`throwOnError: false` 容错渲染错误公式
 - 编号体系与图/表统一：`captionPrefix` 默认含 `eq: '式'`，跨文档合并自动连续
 
+### 引用样式与术语表
+
+```js
+// citeStyle: numeric（默认上标 [n]）/ author-year（(Doe, 2020a)）/ author（(Doe)）
+mslangToHTML('@cite("doe2020")\n\n@bibliography()', {
+  data: { bibliography: { doe2020: { authors: 'Doe, J.', year: 2020 } } },
+  citeStyle: 'author-year',   // 或 @set({ citeStyle: "author-year" })
+});
+// author-year: 正文 (Doe, J., 2020)；文献表按作者+年份排序的 <ul>；
+// 同年同作者自动消歧 a/b；缺 authors 回退数字编号
+
+// @glossary(): 术语表（按引用首次出现顺序），label — desc（可选），url 可链接
+mslangToHTML('@term("词干提取")\n\n@glossary()', {
+  data: { terms: { 词干提取: { label: 'Stemming', desc: '词形还原', url: 'https://x' } } },
+});
+```
+
+### 代码高亮（内置 highlight.js）
+
+```
+```js
+const a = 1;
+```
+```
+
+- 内置 highlight.js（14 种常用语言子集），文档含高亮代码块时自动内联 github 主题 `<style>`（与公式 CSS 同机制）
+- 输出 `<code class="hljs language-js">`，hljs 渲染已转义（`escapeHtml: false` 下也安全）
+- 未知/无语言代码块保持原样；mermaid 块走流程图渲染不受影响
+
 ### 流程图（mermaid）
 
 ```

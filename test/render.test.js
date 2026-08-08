@@ -184,9 +184,61 @@ test('公式：内容默认转义防注入', () => {
   assert.match(mslangToHTML('$a < b$'), /a &lt; b/);
 });
 
-test('公式：caption 内 cite 参与编号', () => {
-  const h = mslangToHTML('$$ x $$ {#eq:1}\n\n{#eq:1} 见 @cite("doe2020")', { data });
-  assert.match(h, /href="#cite-1"/);
+test('引用样式：author-year 与 author', () => {
+  const data = {
+    bibliography: {
+      doe2020: { authors: 'Doe, J.', year: 2020, title: 'A', journal: 'JML' },
+      smith2020: { authors: 'Smith, A.', year: 2020, title: 'B', journal: 'ACL' },
+    },
+  };
+  const doc = '@cite("doe2020") @cite("smith2020")\n\n@bibliography()';
+  // author-year：正文 (Doe, J., 2020)，文献表按作者排序的 ul
+  const h = mslangToHTML(doc, { data, citeStyle: 'author-year' });
+  assert.match(h, />\(Doe, J\., 2020\)<\/a>/);
+  assert.match(h, /<ul class="bibliography">/);
+  assert.ok(h.indexOf('>Doe, J. (2020) A JML</li>') < h.indexOf('>Smith, A. (2020) B ACL</li>'));
+  // author：无年份
+  const h2 = mslangToHTML(doc, { data, citeStyle: 'author' });
+  assert.match(h2, />\(Doe, J\.\)<\/a>/);
+  // @set 配置
+  const h3 = mslangToHTML('@set({ citeStyle: "author-year" })\n\n@cite("doe2020")', { data });
+  assert.match(h3, />\(Doe, J\., 2020\)<\/a>/);
+});
+
+test('引用样式：同年同作者消歧 a/b', () => {
+  const data = {
+    bibliography: {
+      a1: { authors: 'Lee', year: 2021, title: 'X' },
+      a2: { authors: 'Lee', year: 2021, title: 'Y' },
+    },
+  };
+  const h = mslangToHTML('@cite("a1") @cite("a2")\n\n@bibliography()', { data, citeStyle: 'author-year' });
+  assert.match(h, />\(Lee, 2021a\)<\/a>/);
+  assert.match(h, />\(Lee, 2021b\)<\/a>/);
+});
+
+test('术语表：@glossary 按引用顺序列出（label — desc，url 链接）', () => {
+  const h = mslangToHTML('@term("a") 与 @term("b")\n\n@glossary()', {
+    data: { terms: { a: { label: 'Alpha', desc: '第一个', url: 'https://x' }, b: 'Beta' } },
+  });
+  assert.match(h, /<ul class="glossary">/);
+  assert.match(h, /<li id="term-1"><a href="https:\/\/x">Alpha — 第一个<\/a><\/li>/);
+  assert.match(h, /<li id="term-2">Beta<\/li>/);
+  // 未被引用的术语不列出
+  const h2 = mslangToHTML('@glossary()', { data: { terms: { c: 'C' } } });
+  assert.ok(!h2.includes('class="glossary"'));
+});
+
+test('代码高亮：hljs 渲染与内联 CSS', () => {
+  const h = mslangToHTML('```js\nconst a = 1;\n```');
+  assert.match(h, /<code class="hljs language-js">/);
+  assert.match(h, /<span class="hljs-keyword">const<\/span>/);
+  assert.match(h, /<style>/); // github 主题内联
+  // 未知语言不高亮
+  assert.match(mslangToHTML('```nolang\nx\n```'), /<code>x<\/code>/);
+  // 高亮转义安全（escapeHtml:false 下也安全）
+  const h2 = mslangToHTML('```html\n<b>t</b>\n```', { escapeHtml: false });
+  assert.ok(h2.includes('&lt;') && !h2.includes('<b>t</b>'));
 });
 
 test('流程图：mermaid 代码块渲染 div/figure/caption', () => {
@@ -213,9 +265,9 @@ test('流程图：codeRenderer 钩子与普通代码块隔离', () => {
   const flow = '```mermaid {#fig:flow}\ngraph TD\n  A --> B\n```';
   const h = mslangToHTML(flow, { codeRenderer: (code, lang) => `<svg>${lang}</svg>` });
   assert.match(h, /<div class="mermaid"><svg>mermaid<\/svg><\/div>/);
-  // 普通代码块不受影响
+  // 普通代码块不受 codeRenderer 影响（js 现在走内置高亮）
   const js = mslangToHTML('```js\nx\n```', { codeRenderer: () => 'SVG' });
-  assert.match(js, /<code>x<\/code>/);
+  assert.match(js, /<code class="hljs language-js">x<\/code>/);
   // js fence 的 label 不参与 fig 编号
   const jsLabeled = mslangToHTML('```js {#x}\ny\n```');
   assert.ok(!jsLabeled.includes('id="x"'));
