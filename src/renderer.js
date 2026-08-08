@@ -20,6 +20,18 @@ import { builtinFunctions, extractHeadingNumber } from './builtin.js';
 import { escapeHTML, escapeAttr } from './escape.js';
 import katex from 'katex';
 
+// KaTeX CSS 内容：dist 由 esbuild define 注入；Node 直接运行 src/ 时读取依赖包内文件。
+// 文档含公式且未自定义 mathRenderer 时内联 <style>（katex 输出依赖此 CSS 排版）。
+let katexCss = '';
+try {
+  if (typeof KATEX_CSS !== 'undefined') {
+    katexCss = KATEX_CSS;
+  } else if (typeof process !== 'undefined' && process.getBuiltinModule) {
+    const { readFileSync } = process.getBuiltinModule('fs');
+    katexCss = readFileSync(`${process.cwd()}/node_modules/katex/dist/katex.min.css`, 'utf8');
+  }
+} catch { katexCss = ''; }
+
 // ================================================================
 // HTMLRenderer
 // ================================================================
@@ -71,7 +83,7 @@ class HTMLRenderer {
     this._collectRefs(doc);
     doc.accept(this);
     const body = this._output.join('');
-    return this._wrap(body, opts);
+    return this._mathStyle() + this._wrap(body, opts);
   }
 
   /**
@@ -95,7 +107,7 @@ class HTMLRenderer {
     for (const slot of this._asyncSlots) {
       body = body.split(slot.token).join(slot.html);
     }
-    return this._wrap(body, opts);
+    return this._mathStyle() + this._wrap(body, opts);
   }
 
   /**
@@ -142,6 +154,8 @@ class HTMLRenderer {
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
+    this._hasMath = false;
+    this._mathRendererCustom = !!mathRenderer;
   }
 
   /** 解析输入为 Document（render / renderAsync 共用） */
@@ -595,6 +609,7 @@ class HTMLRenderer {
    * 块级公式带 caption 时包 <figure>（与图片一致）。
    */
   visit_Equation(node) {
+    this._hasMath = true;
     const html = this._mathRenderer
       ? this._mathRenderer(node.source, node.inline)
       : this._esc(node.source);
@@ -765,6 +780,13 @@ class HTMLRenderer {
   // ================================================================
   // 辅助方法
   // ================================================================
+
+  /** 文档含公式且未自定义 mathRenderer 时，返回内联的 KaTeX CSS <style>（置于 wrapper 外） */
+  _mathStyle() {
+    return (this._hasMath && !this._mathRendererCustom && katexCss)
+      ? `<style>${katexCss}</style>\n`
+      : '';
+  }
 
   _write(text) { this._output.push(text); }
 

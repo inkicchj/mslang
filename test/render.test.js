@@ -189,6 +189,16 @@ test('公式：caption 内 cite 参与编号', () => {
   assert.match(h, /href="#cite-1"/);
 });
 
+test('公式：文档自动内联 KaTeX CSS（wrapper 外）', () => {
+  const h = mslangToHTML('质能方程 $E = mc^2$');
+  assert.match(h, /^<style>@font-face/); // style 位于输出开头
+  assert.match(h, /\.katex-display/); // CSS 内容已内联
+  // 无公式文档不内联
+  assert.ok(!mslangToHTML('普通文本').includes('<style>'));
+  // 自定义 mathRenderer 时不内联（渲染器自管样式）
+  assert.ok(!mslangToHTML('$x$', { mathRenderer: (s, i) => 'X' }).includes('<style>'));
+});
+
 test('escapeHtml 默认转义正文特殊字符', () => {
   const h = mslangToHTML('a < b & c');
   assert.match(h, /a &lt; b &amp; c/);
