@@ -331,12 +331,15 @@ var Lexer = class {
       );
     }
     this._inCodeBlock = true;
-    const language = fenceLine.slice(3).trim();
+    const rest = fenceLine.slice(3).trim();
+    const m = rest.match(/^(\S*)\s*(?:\{#([^}]+)\})?$/);
+    const language = m ? m[1] : rest;
+    const label = m && m[2] ? m[2] : "";
     return new Token(
       TokenType.CODE_BLOCK,
       startPos,
       "",
-      { fence_type: "start", language }
+      { fence_type: "start", language, label }
     );
   }
   _scanCodeBlockLine() {
@@ -1141,10 +1144,12 @@ var CodeBlock = class extends BlockNode {
    * @param {string} [language]
    * @param {string} [code]
    */
-  constructor(language = "", code = "") {
+  constructor(language = "", code = "", label = "") {
     super();
     this.language = language;
     this.code = code;
+    this.label = label;
+    this.caption = [];
   }
   accept(visitor) {
     return visitor.visit_CodeBlock(this);
@@ -1613,6 +1618,7 @@ var Parser = class {
   _parseCodeBlock() {
     const startToken = this._advance();
     const language = startToken.metadata.language || "";
+    const label = startToken.metadata.label || "";
     const codeLines = [];
     while (!this._isAtEnd()) {
       const token = this._current();
@@ -1633,7 +1639,7 @@ var Parser = class {
     }
     while (codeLines.length && codeLines[0] === "") codeLines.shift();
     while (codeLines.length && codeLines[codeLines.length - 1] === "") codeLines.pop();
-    return new CodeBlock(language, codeLines.join("\n"));
+    return new CodeBlock(language, codeLines.join("\n"), label);
   }
   _parseUnorderedList() {
     return new UnorderedList(this._parseListItems(TokenType.UNORDERED_LIST));
@@ -1744,6 +1750,7 @@ var Parser = class {
   _captionTarget(prev, label) {
     if (!prev) return null;
     if (prev instanceof Table && prev.label === label) return prev;
+    if (prev instanceof CodeBlock && prev.label === label) return prev;
     if (prev instanceof Equation && prev.label === label) return prev;
     if (prev instanceof Paragraph && prev.content.length === 1 && prev.content[0] instanceof Image && prev.content[0].label === label) {
       return prev.content[0];
@@ -2008,7 +2015,8 @@ function dumpAST(node, indent = 0, prefix = "", isLast = true) {
     return lines.join("\n");
   }
   if (node instanceof CodeBlock) {
-    const lines = [`${linePrefix}CodeBlock (lang=${JSON.stringify(node.language)})`];
+    const lbl = node.label ? ` label=${node.label}` : "";
+    const lines = [`${linePrefix}CodeBlock (lang=${JSON.stringify(node.language)})${lbl}`];
     const codePreview = node.code.trim();
     codePreview.split("\n").forEach((cl) => {
       lines.push(`${continuation}\u2502   ${cl}`);
@@ -16411,7 +16419,8 @@ var _HTMLRenderer = class _HTMLRenderer {
       termKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.termKeyAttr,
       refKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.refKeyAttr,
       mathRenderer = null,
-      mathFontsPath = ""
+      mathFontsPath = "",
+      codeRenderer = null
     } = opts;
     this._data = data || {};
     this._variables = variables || {};
@@ -16423,6 +16432,7 @@ var _HTMLRenderer = class _HTMLRenderer {
     this._refKeyAttr = refKeyAttr || "";
     this._mathRenderer = mathRenderer || ((src, inline) => katex.renderToString(src, { displayMode: !inline, throwOnError: false }));
     this._mathFontsPath = mathFontsPath || "";
+    this._codeRenderer = codeRenderer || null;
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
@@ -16583,16 +16593,20 @@ ${body}
         node.items.forEach(walkExpr);
       }
     };
-    const walkInlines = (n) => {
-      if (n instanceof Image && n.label) {
-        counters.fig++;
-        this._refs[n.label] = { kind: "fig", number: counters.fig };
-      }
-      if (n instanceof FunctionCall) {
-        if (n.name === "cite" && n.args[0] && n.args[0].type === "string") {
-          this._registerCite(n.args[0].value);
+    const walkInlineList = (inlines) => {
+      for (const n of inlines) {
+        if (n instanceof Image && n.label) {
+          counters.fig++;
+          this._refs[n.label] = { kind: "fig", number: counters.fig };
         }
-        n.args.forEach(walkExpr);
+        if (n instanceof FunctionCall) {
+          if (n.name === "cite" && n.args[0] && n.args[0].type === "string") {
+            this._registerCite(n.args[0].value);
+          }
+          n.args.forEach(walkExpr);
+        }
+        if (n.content) walkInlineList(n.content);
+        if (n.caption) walkInlineList(n.caption);
       }
     };
     const headingText = (nodes) => {
@@ -16603,7 +16617,6 @@ ${body}
       }
       return out;
     };
-    this._eachInline(doc, walkInlines);
     for (const block of doc.blocks) {
       if (block instanceof Heading) {
         const autoNum = this._headingNumbering ? nextSecNumber(block.level) : "";
@@ -16627,6 +16640,21 @@ ${body}
       if (block instanceof Equation && block.label) {
         counters.eq++;
         this._refs[block.label] = { kind: "eq", number: counters.eq };
+      }
+      if (block instanceof CodeBlock && block.label && block.language === "mermaid") {
+        counters.fig++;
+        this._refs[block.label] = { kind: "fig", number: counters.fig };
+      }
+      if (block.content) walkInlineList(block.content);
+      if (block.items) {
+        for (const item of block.items) {
+          walkInlineList(item.content);
+          if (item.children) {
+            for (const child of item.children) {
+              if (child.content) walkInlineList(child.content);
+            }
+          }
+        }
       }
     }
   }
@@ -16736,6 +16764,29 @@ ${body}
     if (this.pretty) this._write("\n");
   }
   visit_CodeBlock(node) {
+    if (node.language === "mermaid") {
+      const body = this._codeRenderer ? this._codeRenderer(node.code, node.language) : this._esc(node.code);
+      if (!node.label) {
+        this._write(`<div class="mermaid">${body}</div>`);
+        if (this.pretty) this._write("\n");
+        return;
+      }
+      const ref = this._refs[node.label];
+      const num = ref ? ref.number : "";
+      this._write(`<figure id="${this._escAttr(node.label)}">`);
+      if (this.pretty) this._write("\n");
+      this._write(`<div class="mermaid">${body}</div>`);
+      if (this.pretty) this._write("\n");
+      if (node.caption.length) {
+        this._write(`<figcaption>${this._esc(this._captionPrefix.fig)} ${num}\uFF1A`);
+        node.caption.forEach((n) => n.accept(this));
+        this._write("</figcaption>");
+        if (this.pretty) this._write("\n");
+      }
+      this._write("</figure>");
+      if (this.pretty) this._write("\n");
+      return;
+    }
     const langAttr = node.language ? ` data-language="${this._escAttr(node.language)}"` : "";
     this._write(`<pre${langAttr}><code>`);
     this._write(this._esc(node.code));
@@ -17042,7 +17093,8 @@ function _renderOptions(options) {
     termKeyAttr: options.termKeyAttr,
     refKeyAttr: options.refKeyAttr,
     mathRenderer: options.mathRenderer,
-    mathFontsPath: options.mathFontsPath
+    mathFontsPath: options.mathFontsPath,
+    codeRenderer: options.codeRenderer
   };
 }
 export {
@@ -17093,4 +17145,4 @@ export {
   parseArgs,
   parseExpression
 };
-/*! built: 2026-08-08T06:17:49.563Z */
+/*! built: 2026-08-08T06:27:07.759Z */

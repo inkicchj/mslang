@@ -107,5 +107,6 @@ function _renderOptions(options) {
     refKeyAttr: options.refKeyAttr,
     mathRenderer: options.mathRenderer,
     mathFontsPath: options.mathFontsPath,
+    codeRenderer: options.codeRenderer,
   };
 }

@@ -143,6 +143,7 @@ class HTMLRenderer {
       refKeyAttr = HTMLRenderer.DEFAULT_KEY_ATTRS.refKeyAttr,
       mathRenderer = null,
       mathFontsPath = '',
+      codeRenderer = null,
     } = opts;
     this._data = data || {};
     this._variables = variables || {};
@@ -156,6 +157,7 @@ class HTMLRenderer {
     this._mathRenderer = mathRenderer || ((src, inline) =>
       katex.renderToString(src, { displayMode: !inline, throwOnError: false }));
     this._mathFontsPath = mathFontsPath || '';
+    this._codeRenderer = codeRenderer || null;
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
@@ -347,18 +349,23 @@ class HTMLRenderer {
       }
     };
 
-    const walkInlines = (n) => {
-      if (n instanceof Image && n.label) {
-        counters.fig++;
-        this._refs[n.label] = { kind: 'fig', number: counters.fig };
-      }
-      if (n instanceof FunctionCall) {
-        // 顶层 @cite("key") 调用
-        if (n.name === 'cite' && n.args[0] && n.args[0].type === 'string') {
-          this._registerCite(n.args[0].value);
+    // 行内遍历（递归 content/caption 行内容器），与块循环同序保证 fig 编号一致
+    const walkInlineList = (inlines) => {
+      for (const n of inlines) {
+        if (n instanceof Image && n.label) {
+          counters.fig++;
+          this._refs[n.label] = { kind: 'fig', number: counters.fig };
         }
-        // 嵌套在参数表达式中的 cite
-        n.args.forEach(walkExpr);
+        if (n instanceof FunctionCall) {
+          // 顶层 @cite("key") 调用
+          if (n.name === 'cite' && n.args[0] && n.args[0].type === 'string') {
+            this._registerCite(n.args[0].value);
+          }
+          // 嵌套在参数表达式中的 cite
+          n.args.forEach(walkExpr);
+        }
+        if (n.content) walkInlineList(n.content);
+        if (n.caption) walkInlineList(n.caption);
       }
     };
 
@@ -372,9 +379,7 @@ class HTMLRenderer {
       return out;
     };
 
-    this._eachInline(doc, walkInlines);
-
-    // 标题/表格的引用编号（计数器相互独立，顺序与渲染一致）
+    // 单一遍历：块 → 块内行内，顺序与渲染一致（fig 编号 Image/mermaid 共享）
     for (const block of doc.blocks) {
       if (block instanceof Heading) {
         const autoNum = this._headingNumbering ? nextSecNumber(block.level) : '';
@@ -399,6 +404,22 @@ class HTMLRenderer {
       if (block instanceof Equation && block.label) {
         counters.eq++;
         this._refs[block.label] = { kind: 'eq', number: counters.eq };
+      }
+      if (block instanceof CodeBlock && block.label && block.language === 'mermaid') {
+        // mermaid 流程图与图片共享 fig 编号序列
+        counters.fig++;
+        this._refs[block.label] = { kind: 'fig', number: counters.fig };
+      }
+      if (block.content) walkInlineList(block.content);
+      if (block.items) {
+        for (const item of block.items) {
+          walkInlineList(item.content);
+          if (item.children) {
+            for (const child of item.children) {
+              if (child.content) walkInlineList(child.content);
+            }
+          }
+        }
       }
     }
   }
@@ -523,6 +544,33 @@ class HTMLRenderer {
   }
 
   visit_CodeBlock(node) {
+    // mermaid 流程图：div.mermaid（浏览器端 mermaid.run() 渲染成 SVG）；
+    // 带 label 时包 figure + figcaption（参与 fig 编号）
+    if (node.language === 'mermaid') {
+      const body = this._codeRenderer
+        ? this._codeRenderer(node.code, node.language)
+        : this._esc(node.code);
+      if (!node.label) {
+        this._write(`<div class="mermaid">${body}</div>`);
+        if (this.pretty) this._write('\n');
+        return;
+      }
+      const ref = this._refs[node.label];
+      const num = ref ? ref.number : '';
+      this._write(`<figure id="${this._escAttr(node.label)}">`);
+      if (this.pretty) this._write('\n');
+      this._write(`<div class="mermaid">${body}</div>`);
+      if (this.pretty) this._write('\n');
+      if (node.caption.length) {
+        this._write(`<figcaption>${this._esc(this._captionPrefix.fig)} ${num}：`);
+        node.caption.forEach(n => n.accept(this));
+        this._write('</figcaption>');
+        if (this.pretty) this._write('\n');
+      }
+      this._write('</figure>');
+      if (this.pretty) this._write('\n');
+      return;
+    }
     const langAttr = node.language ? ` data-language="${this._escAttr(node.language)}"` : '';
     this._write(`<pre${langAttr}><code>`);
     this._write(this._esc(node.code));

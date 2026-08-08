@@ -314,11 +314,15 @@ class Lexer {
       );
     }
     this._inCodeBlock = true;
-    const language = fenceLine.slice(3).trim();
+    // 起始行：```lang {#label} —— language 与行尾 label 分离
+    const rest = fenceLine.slice(3).trim();
+    const m = rest.match(/^(\S*)\s*(?:\{#([^}]+)\})?$/);
+    const language = m ? m[1] : rest;
+    const label = m && m[2] ? m[2] : '';
     return new Token(
       TokenType.CODE_BLOCK,
       startPos, '',
-      { fence_type: 'start', language }
+      { fence_type: 'start', language, label }
     );
   }
 

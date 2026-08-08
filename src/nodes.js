@@ -84,10 +84,13 @@ class CodeBlock extends BlockNode {
    * @param {string} [language]
    * @param {string} [code]
    */
-  constructor(language = '', code = '') {
+  constructor(language = '', code = '', label = '') {
     super();
     this.language = language;
     this.code = code;
+    this.label = label; // 起始行 {#label}（如 ```mermaid {#fig:flow}）
+    /** @type {InlineNode[]} - 图表说明（caption 行归并） */
+    this.caption = [];
   }
 
   accept(visitor) { return visitor.visit_CodeBlock(this); }

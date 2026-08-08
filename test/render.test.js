@@ -189,6 +189,38 @@ test('公式：caption 内 cite 参与编号', () => {
   assert.match(h, /href="#cite-1"/);
 });
 
+test('流程图：mermaid 代码块渲染 div/figure/caption', () => {
+  const flow = '```mermaid {#fig:flow}\ngraph TD\n  A[采集] --> B{清洗}\n```';
+  // 无 label：仅 div.mermaid
+  const plain = mslangToHTML('```mermaid\ngraph TD\n  A --> B\n```');
+  assert.match(plain, /<div class="mermaid">graph TD/);
+  assert.ok(!plain.includes('<figure'));
+  // 带 label + caption：figure + figcaption
+  const h = mslangToHTML(`${flow}\n\n{#fig:flow} 数据采集流程`);
+  assert.match(h, /<figure id="fig:flow">/);
+  assert.match(h, /<figcaption>图 1：数据采集流程<\/figcaption>/);
+  // @ref 编号
+  assert.match(mslangToHTML(`${flow}\n\n见 @ref("fig:flow")`), />图 1<\/a>/);
+});
+
+test('流程图：fig 编号与图片共享且按文档顺序', () => {
+  const flow = '```mermaid {#fig:flow}\ngraph TD\n  A --> B\n```';
+  const h = mslangToHTML('![图A](/a.png){#fig:a}\n\n' + flow + '\n\n![图B](/b.png){#fig:b}\n\n@ref("fig:a") @ref("fig:flow") @ref("fig:b")');
+  assert.match(h, />图 1<\/a> <a href="#fig:flow"[^>]*>图 2<\/a> <a href="#fig:b"[^>]*>图 3<\/a>/);
+});
+
+test('流程图：codeRenderer 钩子与普通代码块隔离', () => {
+  const flow = '```mermaid {#fig:flow}\ngraph TD\n  A --> B\n```';
+  const h = mslangToHTML(flow, { codeRenderer: (code, lang) => `<svg>${lang}</svg>` });
+  assert.match(h, /<div class="mermaid"><svg>mermaid<\/svg><\/div>/);
+  // 普通代码块不受影响
+  const js = mslangToHTML('```js\nx\n```', { codeRenderer: () => 'SVG' });
+  assert.match(js, /<code>x<\/code>/);
+  // js fence 的 label 不参与 fig 编号
+  const jsLabeled = mslangToHTML('```js {#x}\ny\n```');
+  assert.ok(!jsLabeled.includes('id="x"'));
+});
+
 test('公式：文档自动内联 KaTeX CSS（wrapper 外）', () => {
   const h = mslangToHTML('质能方程 $E = mc^2$');
   assert.match(h, /^<style>@font-face/); // style 位于输出开头

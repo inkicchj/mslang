@@ -286,6 +286,7 @@ class Parser {
   _parseCodeBlock() {
     const startToken = this._advance();
     const language = startToken.metadata.language || '';
+    const label = startToken.metadata.label || '';
     const codeLines = [];
 
     while (!this._isAtEnd()) {
@@ -316,7 +317,7 @@ class Parser {
     while (codeLines.length && codeLines[0] === '') codeLines.shift();
     while (codeLines.length && codeLines[codeLines.length - 1] === '') codeLines.pop();
 
-    return new CodeBlock(language, codeLines.join('\n'));
+    return new CodeBlock(language, codeLines.join('\n'), label);
   }
 
   _parseUnorderedList() {
@@ -456,6 +457,7 @@ class Parser {
   _captionTarget(prev, label) {
     if (!prev) return null;
     if (prev instanceof Table && prev.label === label) return prev;
+    if (prev instanceof CodeBlock && prev.label === label) return prev;
     if (prev instanceof Equation && prev.label === label) return prev;
     if (prev instanceof Paragraph && prev.content.length === 1 &&
         prev.content[0] instanceof Image && prev.content[0].label === label) {
@@ -784,7 +786,8 @@ function dumpAST(node, indent = 0, prefix = '', isLast = true) {
   }
 
   if (node instanceof CodeBlock) {
-    const lines = [`${linePrefix}CodeBlock (lang=${JSON.stringify(node.language)})`];
+    const lbl = node.label ? ` label=${node.label}` : '';
+    const lines = [`${linePrefix}CodeBlock (lang=${JSON.stringify(node.language)})${lbl}`];
     const codePreview = node.code.trim();
     codePreview.split('\n').forEach(cl => {
       lines.push(`${continuation}│   ${cl}`);

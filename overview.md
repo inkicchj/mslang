@@ -110,6 +110,22 @@ const html = mslangToHTMLAll(['引言.md', '方法.md', '参考文献.md'], { da
 - `mathRenderer` 选项可覆盖默认渲染（如自定义 KaTeX 选项或换其他引擎）；`throwOnError: false` 容错渲染错误公式
 - 编号体系与图/表统一：`captionPrefix` 默认含 `eq: '式'`，跨文档合并自动连续
 
+### 流程图（mermaid）
+
+```
+```mermaid {#fig:flow}
+graph TD
+  A[采集] --> B{清洗}
+```
+
+{#fig:flow} 数据采集流程        → <figure id="fig:flow"><div class="mermaid">…</div><figcaption>图 N：…</figcaption></figure>
+```
+
+- ```` ```mermaid {#fig:flow} ```` 起始行行尾 `{#label}` 提取 label；无 label 时输出纯 `<div class="mermaid">`
+- 浏览器端引入 `mermaid.min.js` 后 `mermaid.run()` 自动渲染成 SVG；Node 服务端可用 `codeRenderer` 钩子（`(source, language) => svgHtml`）
+- **与图片共享 fig 编号序列**（图 1、图 2 连续），`@ref("fig:flow")`、caption 归并、跨文档合并全部复用
+- 普通代码块（js 等）行为不变；其 label 不参与编号
+
 ### 引用元数据（工作台交互）
 
 `cite`/`term`/`ref` 输出携带 data 属性（点击证据 → 工作台定位文献库）：
