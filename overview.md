@@ -127,6 +127,27 @@ const html = mslangToHTMLAll(['引言.md', '方法.md', '参考文献.md'], { da
 - ⚠️ **安全提示**：插件函数体是真实 JS（`new Function` 全局作用域），文档即代码——仅在可信文档上开启
 - 函数体无法捕获文档内 `@let` 变量（全局作用域），请通过参数/kwargs 传值
 
+### 块级编辑（renderBlocks）
+
+```js
+import { mslangToHTMLBlocks } from 'mslang';
+
+const { html, blockHashes } = mslangToHTMLBlocks(source, options);
+// html: 含 <!--mslang:N--> 块哨兵（footnotes 区为 <!--mslang:footnotes-->）
+// blockHashes[N] = 块源 + 编号前缀快照哈希 → 编辑后重渲，对比哈希定位变化块
+
+// 宿主侧流程（编辑块 i 后）：
+//   1. 替换 source 中该块的 [startPos, endPos) 区间（Parser.parseText 产物带
+//      blocks[i].startPos / endPos / raw 块源文本）
+//   2. 重新 mslangToHTMLBlocks 全量渲染（parse 微秒级，公式/代码命中缓存）
+//   3. 对比新旧 blockHashes，只 DOM 替换哈希变化的块区间（编号依赖自动传播：
+//      块 i 加图 → 块 i..N 哈希全变）
+```
+
+- 块区间：`blocks[i].startPos/endPos/raw`——区间连续覆盖文档源；caption 归并行并入前块；脚注定义行不属于任何块（截断）
+- 编号传播正确性：哈希含块渲染时的编号前缀快照（fig/tbl/sec/eq/cite/term 计数），块 i 之后编号变化 → 后续块哈希变
+- 默认 render/mslangToHTML 无哨兵（blockMarkers 默认 false，零回归）
+
 ### 引用样式与术语表
 
 ```js

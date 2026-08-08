@@ -53,6 +53,13 @@ function cacheSet(map, key, value) {
   return value;
 }
 
+// 块哈希：djb2（块源 + 编号前缀快照 → 定位变化块，供块级编辑 DOM patch）
+function djb2(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
 // KaTeX CSS 内容：dist 由 esbuild define 注入；Node 直接运行 src/ 时读取依赖包内文件。
 // 文档含公式且未自定义 mathRenderer 时内联 <style>（katex 输出依赖此 CSS 排版）。
 let katexCss = '';
@@ -131,6 +138,23 @@ class HTMLRenderer {
   }
 
   /**
+   * 块级渲染（块级编辑器用）：与 render() 同管线，额外产出：
+   * - html 含 <!--mslang:N--> 块哨兵（footnotes 区为 <!--mslang:footnotes-->）
+   * - blockHashes[N] = 块源 + 编号前缀快照的哈希，定位变化块（DOM 增量替换）
+   * 编辑块 i 后重调本方法，对比新旧 blockHashes，替换哈希变化的块区间即可。
+   * @returns {{ html: string, blockHashes: Object }}
+   */
+  renderBlocks(source, opts = {}) {
+    const doc = this._prepare(source, { ...opts, blockMarkers: true });
+    doc.accept(this);
+    const body = this._output.join('');
+    return {
+      html: this._inlineStyles() + this._wrap(body, opts),
+      blockHashes: this._blockHashes,
+    };
+  }
+
+  /**
    * 异步渲染：支持返回 Promise 的自定义函数（如网络请求）。
    * 与 render() 语义一致，仅异步函数结果会真正渲染进 HTML；
    * 多个异步函数并行等待，reject 时输出错误注释而非抛错。
@@ -193,6 +217,7 @@ class HTMLRenderer {
       codeRenderer = null,
       citeStyle = 'numeric',
       allowPlugins = true,
+      blockMarkers = false,
     } = opts;
     this._data = data || {};
     this._variables = variables || {};
@@ -209,6 +234,8 @@ class HTMLRenderer {
     this._codeRenderer = codeRenderer || null;
     this._citeStyle = citeStyle || 'numeric';
     this._allowPlugins = allowPlugins !== false;
+    this._blockMarkers = blockMarkers === true;
+    this._blockHashes = {};
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
@@ -219,11 +246,11 @@ class HTMLRenderer {
     this._pluginCache = new Map();
   }
 
-  /** 解析输入为 Document（render / renderAsync 共用） */
+  /** 解析输入为 Document（render / renderAsync 共用）；Document 输入直接使用（无源区间） */
   _parseDoc(source) {
     return source instanceof Document
       ? source
-      : new Parser().parse(new Lexer(source).tokenize());
+      : new Parser().parse(new Lexer(source).tokenize(), source);
   }
 
   /** 包一层 wrapper div */
@@ -478,6 +505,11 @@ class HTMLRenderer {
 
     // 单一遍历：块 → 块内行内，顺序与渲染一致（fig 编号 Image/mermaid 共享）
     for (const block of doc.blocks) {
+      // 块渲染时的编号前缀快照（块级编辑哈希：块 i 之后编号变化 → 后续块哈希变）
+      block._prefixCounts = {
+        fig: counters.fig, tbl: counters.tbl, sec: counters.sec, eq: counters.eq,
+        cite: this._citeOrder.length, term: this._termOrder.length,
+      };
       if (block instanceof Heading) {
         const autoNum = this._headingNumbering ? nextSecNumber(block.level) : '';
         this._headingSeq.push(autoNum);
@@ -571,6 +603,10 @@ class HTMLRenderer {
 
   visit_Document(doc) {
     doc.blocks.forEach((block, i) => {
+      if (this._blockMarkers) {
+        this._write(`<!--mslang:${i}-->\n`);
+        this._blockHashes[i] = djb2(`${block.raw || ''}|${JSON.stringify(block._prefixCounts || {})}`);
+      }
       block.accept(this);
       if (this.pretty && i < doc.blocks.length - 1) this._write('\n');
     });
@@ -578,6 +614,10 @@ class HTMLRenderer {
     // 脚注区域
     if (Object.keys(doc.footnotes).length > 0) {
       if (this.pretty) this._write('\n');
+      if (this._blockMarkers) {
+        this._write('<!--mslang:footnotes-->\n');
+        this._blockHashes.footnotes = djb2(JSON.stringify(doc.footnotes));
+      }
       this._write('<hr>');
       if (this.pretty) this._write('\n');
       this._write('<ol>');

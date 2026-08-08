@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mslangToHTML, mslangToHTMLAsync, mslangToHTMLAll, mslangToHTMLAllAsync,
+  mslangToHTML, mslangToHTMLAsync, mslangToHTMLAll, mslangToHTMLAllAsync, mslangToHTMLBlocks,
   HTMLRenderer, mergeDocuments, Parser, Lexer, dumpAST,
 } from '../src/index.js';
 
@@ -104,6 +104,35 @@ test('dumpAST 输出树形结构', () => {
   const tree = dumpAST(doc);
   assert.match(tree, /Document/);
   assert.match(tree, /Heading/);
+});
+
+test('块级编辑：块源区间连续覆盖（含 caption 归并、脚注定义截断）', () => {
+  const doc = ['# 标题', '', '正文[^n1]', '', '![图A](/a.png){#fig:1}', '', '```js', 'var x = 1;', '```', '', '[^n1]: 注释'].join('\n');
+  const d = new Parser().parseText(doc);
+  const blocks = d.blocks;
+  assert.strictEqual(blocks.length, 4);
+  // 区间连续：块 i endPos === 块 i+1 startPos；末块不含脚注定义行
+  for (let i = 0; i < blocks.length - 1; i++) {
+    assert.strictEqual(blocks[i].endPos, blocks[i + 1].startPos);
+  }
+  assert.ok(!blocks[blocks.length - 1].raw.includes('[^n1]:'));
+  assert.ok(blocks[2].raw.includes('![图A](/a.png){#fig:1}'));
+});
+
+test('块级编辑：renderBlocks 哨兵与 blockHashes 定位变化块', () => {
+  const doc = ['# 标题', '', '第一段 @cite("a")', '', '第二段'].join('\n');
+  const r1 = mslangToHTMLBlocks(doc, { data: { bibliography: { a: { number: 1 } } } });
+  assert.match(r1.html, /<!--mslang:0-->/);
+  assert.strictEqual(r1.html.replace(/<!--mslang:\d+-->\n/g, ''), mslangToHTML(doc, { data: { bibliography: { a: { number: 1 } } } }));
+  // 编辑第一段：只有该块哈希变
+  const r2 = mslangToHTMLBlocks(doc.replace('第一段 @cite("a")', '改过的 @cite("a")'), { data: { bibliography: { a: { number: 1 } } } });
+  const changed = Object.keys(r1.blockHashes).filter(k => r1.blockHashes[k] !== r2.blockHashes[k]);
+  assert.deepStrictEqual(changed, ['1']);
+  // 脚注变化只影响 footnotes 哈希
+  const rf1 = mslangToHTMLBlocks('正文[^n]\n\n[^n]: 甲');
+  const rf2 = mslangToHTMLBlocks('正文[^n]\n\n[^n]: 乙');
+  assert.notStrictEqual(rf1.blockHashes.footnotes, rf2.blockHashes.footnotes);
+  assert.strictEqual(rf1.blockHashes[0], rf2.blockHashes[0]);
 });
 
 test('错误容错：表达式语法错误输出注释不崩溃', () => {

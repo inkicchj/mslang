@@ -65,6 +65,18 @@ export function mslangToHTML(source, options = {}) {
   return renderer.render(source, _renderOptions(options));
 }
 
+/**
+ * 块级渲染：返回 { html, blockHashes }。
+ * html 含 <!--mslang:N--> 块哨兵；blockHashes 供块级编辑对比定位变化块。
+ * @param {string} source
+ * @param {object} [options]
+ * @returns {{ html: string, blockHashes: Object<string, string> }}
+ */
+export function mslangToHTMLBlocks(source, options = {}) {
+  const renderer = new HTMLRenderer(_rendererOpts(options));
+  return renderer.renderBlocks(source, _renderOptions(options));
+}
+
 // 异步版: 支持返回 Promise 的自定义函数（如网络请求），其余语义与 mslangToHTML 相同
 export async function mslangToHTMLAsync(source, options = {}) {
   const renderer = new HTMLRenderer(_rendererOpts(options));
@@ -110,5 +122,6 @@ function _renderOptions(options) {
     codeRenderer: options.codeRenderer,
     citeStyle: options.citeStyle,
     allowPlugins: options.allowPlugins,
+    blockMarkers: options.blockMarkers,
   };
 }

@@ -67,14 +67,17 @@ class Parser {
    * @param {import('./tokens.js').Token[]} tokens
    * @returns {Document}
    */
-  parse(tokens) {
+  parse(tokens, source = '') {
     this._tokens = tokens;
     this._pos = 0;
     this._footnoteDefs = {};
+    this._footnoteDefPositions = [];
+    this._source = source;
 
     const document = new Document();
 
     while (!this._isAtEnd()) {
+      const startPos = this._current().position.index;
       const block = this._parseBlock();
       if (block === null) continue;
       // 图表 caption：归并到前一块（表格/单图片段落），孤立时降级为普通段落
@@ -89,9 +92,24 @@ class Parser {
         const prefix = `{#${block.label}}`;
         const rest = block.raw.startsWith(prefix) ? block.raw.slice(prefix.length) : block.raw;
         const inlines = [new RawText(prefix), ...this._parseInline(rest)];
-        document.blocks.push(new Paragraph(this._mergeAdjacentText(inlines)));
+        const para = new Paragraph(this._mergeAdjacentText(inlines));
+        para.startPos = startPos;
+        document.blocks.push(para);
         continue;      }
+      block.startPos = startPos;
       document.blocks.push(block);
+    }
+
+    // 块源区间：[startPos, 下一块 startPos)，末块到文档末尾（caption 归并行自然落入前块区间）
+    // 脚注定义行不属于任何块：区间截断到其后的第一个脚注定义位置
+    for (let i = 0; i < document.blocks.length; i++) {
+      const b = document.blocks[i];
+      let end = i + 1 < document.blocks.length ? document.blocks[i + 1].startPos : source.length;
+      for (const p of this._footnoteDefPositions) {
+        if (p >= b.startPos && p < end) { end = p; break; }
+      }
+      b.endPos = end;
+      if (source) b.raw = source.slice(b.startPos, b.endPos);
     }
 
     if (Object.keys(this._footnoteDefs).length > 0) {
@@ -110,7 +128,7 @@ class Parser {
   parseText(source) {
     const lexer = new Lexer(source);
     const tokens = lexer.tokenize();
-    return this.parse(tokens);
+    return this.parse(tokens, source);
   }
 
   // ================================================================
@@ -482,6 +500,7 @@ class Parser {
     const token = this._advance();
     const label = token.metadata.label || '';
     this._footnoteDefs[label] = token.value;
+    this._footnoteDefPositions.push(token.position.index);
     return null;
   }
 

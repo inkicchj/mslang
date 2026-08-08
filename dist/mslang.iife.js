@@ -1618,6 +1618,7 @@ var mslang = (() => {
     mslangToHTMLAll: () => mslangToHTMLAll,
     mslangToHTMLAllAsync: () => mslangToHTMLAllAsync,
     mslangToHTMLAsync: () => mslangToHTMLAsync,
+    mslangToHTMLBlocks: () => mslangToHTMLBlocks,
     parseArgs: () => parseArgs,
     parseExpression: () => parseExpression
   });
@@ -3075,12 +3076,15 @@ var mslang = (() => {
      * @param {import('./tokens.js').Token[]} tokens
      * @returns {Document}
      */
-    parse(tokens) {
+    parse(tokens, source = "") {
       this._tokens = tokens;
       this._pos = 0;
       this._footnoteDefs = {};
+      this._footnoteDefPositions = [];
+      this._source = source;
       const document2 = new Document();
       while (!this._isAtEnd()) {
+        const startPos = this._current().position.index;
         const block = this._parseBlock();
         if (block === null) continue;
         if (block instanceof Caption) {
@@ -3092,10 +3096,25 @@ var mslang = (() => {
           const prefix = `{#${block.label}}`;
           const rest = block.raw.startsWith(prefix) ? block.raw.slice(prefix.length) : block.raw;
           const inlines = [new RawText(prefix), ...this._parseInline(rest)];
-          document2.blocks.push(new Paragraph(this._mergeAdjacentText(inlines)));
+          const para = new Paragraph(this._mergeAdjacentText(inlines));
+          para.startPos = startPos;
+          document2.blocks.push(para);
           continue;
         }
+        block.startPos = startPos;
         document2.blocks.push(block);
+      }
+      for (let i = 0; i < document2.blocks.length; i++) {
+        const b = document2.blocks[i];
+        let end = i + 1 < document2.blocks.length ? document2.blocks[i + 1].startPos : source.length;
+        for (const p of this._footnoteDefPositions) {
+          if (p >= b.startPos && p < end) {
+            end = p;
+            break;
+          }
+        }
+        b.endPos = end;
+        if (source) b.raw = source.slice(b.startPos, b.endPos);
       }
       if (Object.keys(this._footnoteDefs).length > 0) {
         document2.footnotes = { ...this._footnoteDefs };
@@ -3111,7 +3130,7 @@ var mslang = (() => {
     parseText(source) {
       const lexer = new Lexer(source);
       const tokens = lexer.tokenize();
-      return this.parse(tokens);
+      return this.parse(tokens, source);
     }
     // ================================================================
     // 块级解析
@@ -3390,6 +3409,7 @@ var mslang = (() => {
       const token = this._advance();
       const label = token.metadata.label || "";
       this._footnoteDefs[label] = token.value;
+      this._footnoteDefPositions.push(token.position.index);
       return null;
     }
     _parseAlign(token) {
@@ -23953,6 +23973,11 @@ ${items.join("\n")}
     map.set(key, value);
     return value;
   }
+  function djb2(str) {
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) h = (h << 5) + h + str.charCodeAt(i) >>> 0;
+    return h.toString(36);
+  }
   var katexCss = "";
   try {
     if (true) {
@@ -24021,6 +24046,22 @@ ${items.join("\n")}
       return this._inlineStyles() + this._wrap(body, opts);
     }
     /**
+     * 块级渲染（块级编辑器用）：与 render() 同管线，额外产出：
+     * - html 含 <!--mslang:N--> 块哨兵（footnotes 区为 <!--mslang:footnotes-->）
+     * - blockHashes[N] = 块源 + 编号前缀快照的哈希，定位变化块（DOM 增量替换）
+     * 编辑块 i 后重调本方法，对比新旧 blockHashes，替换哈希变化的块区间即可。
+     * @returns {{ html: string, blockHashes: Object }}
+     */
+    renderBlocks(source, opts = {}) {
+      const doc = this._prepare(source, { ...opts, blockMarkers: true });
+      doc.accept(this);
+      const body = this._output.join("");
+      return {
+        html: this._inlineStyles() + this._wrap(body, opts),
+        blockHashes: this._blockHashes
+      };
+    }
+    /**
      * 异步渲染：支持返回 Promise 的自定义函数（如网络请求）。
      * 与 render() 语义一致，仅异步函数结果会真正渲染进 HTML；
      * 多个异步函数并行等待，reject 时输出错误注释而非抛错。
@@ -24078,7 +24119,8 @@ ${items.join("\n")}
         mathFontsPath = "",
         codeRenderer = null,
         citeStyle = "numeric",
-        allowPlugins = true
+        allowPlugins = true,
+        blockMarkers = false
       } = opts;
       this._data = data || {};
       this._variables = variables || {};
@@ -24093,6 +24135,8 @@ ${items.join("\n")}
       this._codeRenderer = codeRenderer || null;
       this._citeStyle = citeStyle || "numeric";
       this._allowPlugins = allowPlugins !== false;
+      this._blockMarkers = blockMarkers === true;
+      this._blockHashes = {};
       this._evalCtx = { functions: this._functions, variables: this._variables };
       this._output = [];
       this._asyncSlots = null;
@@ -24102,9 +24146,9 @@ ${items.join("\n")}
       this._hasHighlight = false;
       this._pluginCache = /* @__PURE__ */ new Map();
     }
-    /** 解析输入为 Document（render / renderAsync 共用） */
+    /** 解析输入为 Document（render / renderAsync 共用）；Document 输入直接使用（无源区间） */
     _parseDoc(source) {
-      return source instanceof Document ? source : new Parser().parse(new Lexer(source).tokenize());
+      return source instanceof Document ? source : new Parser().parse(new Lexer(source).tokenize(), source);
     }
     /** 包一层 wrapper div */
     _wrap(body, opts) {
@@ -24320,6 +24364,14 @@ ${body}
         return out;
       };
       for (const block of doc.blocks) {
+        block._prefixCounts = {
+          fig: counters.fig,
+          tbl: counters.tbl,
+          sec: counters.sec,
+          eq: counters.eq,
+          cite: this._citeOrder.length,
+          term: this._termOrder.length
+        };
         if (block instanceof Heading) {
           const autoNum = this._headingNumbering ? nextSecNumber(block.level) : "";
           this._headingSeq.push(autoNum);
@@ -24403,11 +24455,20 @@ ${body}
     }
     visit_Document(doc) {
       doc.blocks.forEach((block, i) => {
+        if (this._blockMarkers) {
+          this._write(`<!--mslang:${i}-->
+`);
+          this._blockHashes[i] = djb2(`${block.raw || ""}|${JSON.stringify(block._prefixCounts || {})}`);
+        }
         block.accept(this);
         if (this.pretty && i < doc.blocks.length - 1) this._write("\n");
       });
       if (Object.keys(doc.footnotes).length > 0) {
         if (this.pretty) this._write("\n");
+        if (this._blockMarkers) {
+          this._write("<!--mslang:footnotes-->\n");
+          this._blockHashes.footnotes = djb2(JSON.stringify(doc.footnotes));
+        }
         this._write("<hr>");
         if (this.pretty) this._write("\n");
         this._write("<ol>");
@@ -24790,6 +24851,10 @@ ${body}
     const renderer = new HTMLRenderer(_rendererOpts(options));
     return renderer.render(source, _renderOptions(options));
   }
+  function mslangToHTMLBlocks(source, options = {}) {
+    const renderer = new HTMLRenderer(_rendererOpts(options));
+    return renderer.renderBlocks(source, _renderOptions(options));
+  }
   async function mslangToHTMLAsync(source, options = {}) {
     const renderer = new HTMLRenderer(_rendererOpts(options));
     return renderer.renderAsync(source, _renderOptions(options));
@@ -24825,9 +24890,10 @@ ${body}
       mathFontsPath: options.mathFontsPath,
       codeRenderer: options.codeRenderer,
       citeStyle: options.citeStyle,
-      allowPlugins: options.allowPlugins
+      allowPlugins: options.allowPlugins,
+      blockMarkers: options.blockMarkers
     };
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-08T07:07:18.237Z */
+/*! built: 2026-08-08T07:20:59.703Z */
