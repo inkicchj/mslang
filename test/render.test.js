@@ -141,9 +141,13 @@ test('条目无 key 字段时回退引用名', () => {
   assert.match(h, /data-term-key="词干提取"/);
 });
 
-test('公式：行内与块级容器', () => {
-  assert.match(mslangToHTML('质能方程 $E = mc^2$'), /<span class="math-inline">E = mc\^2<\/span>/);
-  assert.match(mslangToHTML('$$ \\int_0^1 x dx $$'), /<div class="math"> \\int_0\^1 x dx <\/div>/);
+test('公式：行内与块级容器（内置 KaTeX 渲染）', () => {
+  const h = mslangToHTML('质能方程 $E = mc^2$');
+  assert.match(h, /<span class="math-inline"><span class="katex">/);
+  assert.match(h, /<annotation encoding="application\/x-tex">E = mc\^2<\/annotation>/);
+  const b = mslangToHTML('$$ \\int_0^1 x dx $$');
+  assert.match(b, /<div class="math"><span class="katex-display">/);
+  assert.match(b, /<annotation encoding="application\/x-tex"> \\int_0\^1 x dx <\/annotation>/);
 });
 
 test('公式：块级 label、编号与 @ref', () => {
@@ -164,7 +168,8 @@ test('公式：未闭合回退普通文本', () => {
 });
 
 test('公式：\\$ 转义美元符号', () => {
-  assert.match(mslangToHTML('\\$5 与 $x$'), /<p>\$5 与 <span class="math-inline">x<\/span><\/p>/);
+  const h = mslangToHTML('\\$5 与 $x$');
+  assert.match(h, /<p>\$5 与 <span class="math-inline"><span class="katex">/);
 });
 
 test('公式：mathRenderer 钩子', () => {

@@ -18,6 +18,7 @@ import { Parser, mergeDocuments } from './parser.js';
 import { evaluate } from './expression.js';
 import { builtinFunctions, extractHeadingNumber } from './builtin.js';
 import { escapeHTML, escapeAttr } from './escape.js';
+import katex from 'katex';
 
 // ================================================================
 // HTMLRenderer
@@ -135,7 +136,9 @@ class HTMLRenderer {
     this._citeKeyAttr = citeKeyAttr || '';
     this._termKeyAttr = termKeyAttr || '';
     this._refKeyAttr = refKeyAttr || '';
-    this._mathRenderer = mathRenderer || null;
+    // mathRenderer 默认使用内置 KaTeX 渲染（可传选项覆盖）
+    this._mathRenderer = mathRenderer || ((src, inline) =>
+      katex.renderToString(src, { displayMode: !inline, throwOnError: false }));
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;

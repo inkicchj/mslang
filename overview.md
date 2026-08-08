@@ -94,7 +94,7 @@ const html = mslangToHTMLAll(['引言.md', '方法.md', '参考文献.md'], { da
 // 异步版：mslangToHTMLAllAsync；AST 层：mergeDocuments(...docs)
 ```
 
-### 公式（LaTeX 语法，轻量级）
+### 公式（LaTeX 语法，内置 KaTeX 渲染）
 
 ```
 行内：质能方程 $E = mc^2$ 是核心
@@ -106,8 +106,8 @@ const html = mslangToHTMLAll(['引言.md', '方法.md', '参考文献.md'], { da
 ```
 
 - `$...$` 行内（限同行）、`$$...$$` 块级（可跨行）；`\$` 转义字面美元；未闭合回退普通文本
-- 内容为 LaTeX 源码，**默认转义透传**（`<span class="math-inline">` / `<div class="math">`）
-- `mathRenderer` 选项接管渲染（如接入 KaTeX：`(src, inline) => katex.renderToString(src, { displayMode: !inline })`），核心库保持零依赖
+- **默认内置 KaTeX 渲染**（`katex` 为正式依赖，开箱即用）：行内 `<span class="math-inline">` / 块级 `<div class="math">` 容器内为 KaTeX 输出（MathML + HTML 双轨）
+- `mathRenderer` 选项可覆盖默认渲染（如自定义 KaTeX 选项或换其他引擎）；`throwOnError: false` 容错渲染错误公式
 - 编号体系与图/表统一：`captionPrefix` 默认含 `eq: '式'`，跨文档合并自动连续
 
 ### 引用元数据（工作台交互）
