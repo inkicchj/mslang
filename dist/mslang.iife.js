@@ -2196,6 +2196,11 @@ var mslang = (() => {
         if (config && typeof config === "object") renderer._mergeSet(config);
         return "";
       },
+      /** 变量声明：@let("name", value)，无输出；变量全文档可见（预扫描注册） */
+      let: (name, value) => {
+        if (typeof name === "string") renderer._variables[name] = value;
+        return "";
+      },
       /** 文献键是否存在（供 if 条件使用） */
       has_cite: (key) => !!(renderer._data.bibliography && renderer._data.bibliography[key]),
       /** 术语是否存在（供 if 条件使用） */
@@ -2411,6 +2416,7 @@ ${body}
     _applySets(doc) {
       this._eachInline(doc, (n) => {
         if (n instanceof FunctionCall && n.name === "set") this._applySet(n);
+        else if (n instanceof FunctionCall && n.name === "let") this._applyLet(n);
       });
     }
     _applySet(node) {
@@ -2418,6 +2424,20 @@ ${body}
       try {
         const config = evaluate(node.args[0], this._evalCtx);
         if (config && typeof config === "object") this._mergeSet(config);
+      } catch (e) {
+      }
+    }
+    /**
+     * 预扫描注册 @let 声明的变量（与 _applySet 同步执行），
+     * 使变量全文档可见：@set 参数、@ref 编号计算、渲染阶段均可引用。
+     * 求值失败时忽略，渲染阶段由 let 函数输出错误注释。
+     */
+    _applyLet(node) {
+      if (node.error || node.args.length < 2) return;
+      try {
+        const name = evaluate(node.args[0], this._evalCtx);
+        const value = evaluate(node.args[1], this._evalCtx);
+        if (typeof name === "string") this._variables[name] = value;
       } catch (e) {
       }
     }
@@ -2434,7 +2454,7 @@ ${body}
         } else if (key === "terms" || key === "bibliography") {
           this._data = this._mergeData(this._data, { [key]: config[key] });
         } else if (key === "variables") {
-          this._variables = config[key] || {};
+          Object.assign(this._variables, config[key] || {});
         } else if (key === "captionPrefix") {
           this._captionPrefix = { ...this._captionPrefix, ...config[key] };
         } else {
@@ -2906,4 +2926,4 @@ ${body}
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-08T04:59:32.783Z */
+/*! built: 2026-08-08T05:02:15.191Z */

@@ -219,6 +219,7 @@ class HTMLRenderer {
   _applySets(doc) {
     this._eachInline(doc, (n) => {
       if (n instanceof FunctionCall && n.name === 'set') this._applySet(n);
+      else if (n instanceof FunctionCall && n.name === 'let') this._applyLet(n);
     });
   }
 
@@ -229,6 +230,22 @@ class HTMLRenderer {
       if (config && typeof config === 'object') this._mergeSet(config);
     } catch (e) {
       // 配置求值失败时忽略，渲染阶段由 set 函数输出错误注释
+    }
+  }
+
+  /**
+   * 预扫描注册 @let 声明的变量（与 _applySet 同步执行），
+   * 使变量全文档可见：@set 参数、@ref 编号计算、渲染阶段均可引用。
+   * 求值失败时忽略，渲染阶段由 let 函数输出错误注释。
+   */
+  _applyLet(node) {
+    if (node.error || node.args.length < 2) return;
+    try {
+      const name = evaluate(node.args[0], this._evalCtx);
+      const value = evaluate(node.args[1], this._evalCtx);
+      if (typeof name === 'string') this._variables[name] = value;
+    } catch (e) {
+      // 变量求值失败时忽略（如依赖后文变量），渲染阶段按文档顺序再次尝试
     }
   }
 
@@ -245,7 +262,8 @@ class HTMLRenderer {
       } else if (key === 'terms' || key === 'bibliography') {
         this._data = this._mergeData(this._data, { [key]: config[key] });
       } else if (key === 'variables') {
-        this._variables = config[key] || {};
+        // 就地合并（不替换对象）：保持 _evalCtx.variables 引用有效
+        Object.assign(this._variables, config[key] || {});
       } else if (key === 'captionPrefix') {
         this._captionPrefix = { ...this._captionPrefix, ...config[key] };
       } else {

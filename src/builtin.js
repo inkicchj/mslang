@@ -55,6 +55,12 @@ export function builtinFunctions(renderer) {
       return '';
     },
 
+    /** 变量声明：@let("name", value)，无输出；变量全文档可见（预扫描注册） */
+    let: (name, value) => {
+      if (typeof name === 'string') renderer._variables[name] = value;
+      return '';
+    },
+
     /** 文献键是否存在（供 if 条件使用） */
     has_cite: (key) => !!(renderer._data.bibliography && renderer._data.bibliography[key]),
 
