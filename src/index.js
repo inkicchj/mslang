@@ -1,98 +1,76 @@
 /**
  * mslang-js — A Lightweight Markup Language (JavaScript)
  *
- * 类似于 Markdown 的轻量级排版语言，完整实现了：
- *   词法解析器 (Lexer) → 语法解析器 (Parser) → 渲染引擎 (Renderer)
+ * 类似于 Markdown 的轻量级排版语言：词法解析 (Lexer) → 语法解析 (Parser) → 渲染 (Renderer)。
+ * 主要在前端使用，唯一入口 render()，async/多文档合并/块级渲染均为配置项。
  *
  * 使用:
  *
- *   // ES Module
- *   import { HTMLRenderer, Parser, Lexer } from 'mslang';
- *
- *   // 渲染
- *   const renderer = new HTMLRenderer();
- *   renderer.addFunction('greet', (name) => `<b>Hello, ${name}!</b>`);
- *   const html = renderer.render('# Hello @greet("World")');
- *
- *   // 仅解析为 AST
- *   const parser = new Parser();
- *   const ast = parser.parseText('# Hello **World**');
- *   console.log(ast);
- *
- *   // 表达式：逻辑运算、文献/术语引用（数据经 render 注入）
- *   const html2 = renderer.render('@if(has_cite("doe2020"), cite("doe2020"), "（待补充）")', {
- *     data: { bibliography: { doe2020: { number: 1 } } },
+ *   // 渲染（async: true 时返回 Promise）
+ *   import { render } from 'mslang';
+ *   const html = render('# Hello @greet("World")', {
+ *     functions: { greet: (name) => `<b>Hello, ${name}!</b>` },
  *   });
  *
- *   // Token 流
- *   const lexer = new Lexer('# Hello');
- *   const tokens = lexer.tokenize();
+ *   // 多文档合并：传数组自动合并（跨文档连续编号、交叉引用、全局 @set）
+ *   const htmlAll = render(['# 第一篇', '# 第二篇'], { data: {...} });
+ *
+ *   // 块级渲染：返回 { html, blockHashes }（块级编辑，含 <!--mslang:N--> 哨兵）
+ *   const { html, blockHashes } = render(src, { blocks: true });
+ *
+ *   // 异步渲染（自定义函数返回 Promise，如网络请求）
+ *   const htmlAsync = await render(src, { async: true });
+ *
+ *   // 解析为 AST（块级编辑需要块区间 startPos/endPos/raw 时使用）
+ *   const parser = new Parser();
+ *   const ast = parser.parseText('# Hello **World**');
  */
 
-import { Lexer, LexerError } from './lexer.js';
-import { Parser, ParserError, dumpAST, mergeDocuments } from './parser.js';
+import { Parser, dumpAST, mergeDocuments } from './parser.js';
 import { HTMLRenderer } from './renderer.js';
-import { TokenType, Position, Token, CHAR } from './tokens.js';
-import { parseExpression, parseArgs, evaluate, EvalError } from './expression.js';
-import {
-  Document, Heading, Paragraph, BlockQuote, CodeBlock,
-  UnorderedList, OrderedList, ListItem, HorizontalRule,
-  AlignBlock, Table,
-  RawText, Bold, Italic, Strikethrough, InlineCode,
-  Link, Image, FunctionCall, Color,
-  Superscript, Subscript, RawHtml, FootnoteRef,
-  LineBreak, Caption, Equation,
-} from './nodes.js';
+import { Document } from './nodes.js';
 
-export {
-  Lexer, LexerError,
-  Parser, ParserError, dumpAST, mergeDocuments,
-  HTMLRenderer,
-  parseExpression, parseArgs, evaluate, EvalError,
-  TokenType, Position, Token, CHAR,
-  Document, Heading, Paragraph, BlockQuote, CodeBlock,
-  UnorderedList, OrderedList, ListItem, HorizontalRule,
-  AlignBlock, Table,
-  RawText, Bold, Italic, Strikethrough, InlineCode,
-  Link, Image, FunctionCall, Color,
-  Superscript, Subscript, RawHtml, FootnoteRef,
-  LineBreak, Caption, Equation,
-};
-
-// 便捷函数: 将 mslang 文本直接渲染为 HTML
-export function mslangToHTML(source, options = {}) {
-  const renderer = new HTMLRenderer(_rendererOpts(options));
-  return renderer.render(source, _renderOptions(options));
-}
+export { HTMLRenderer, Parser, dumpAST };
 
 /**
- * 块级渲染：返回 { html, blockHashes }。
- * html 含 <!--mslang:N--> 块哨兵；blockHashes 供块级编辑对比定位变化块。
- * @param {string} source
+ * mslang 唯一渲染入口。
+ * @param {string|string[]|Document} source - 字符串渲染；数组自动合并（多文档连续编号）
  * @param {object} [options]
- * @returns {{ html: string, blockHashes: Object<string, string> }}
+ * @param {boolean} [options.async=false] - 异步渲染（支持返回 Promise 的自定义函数），返回 Promise<string>
+ * @param {boolean} [options.blocks=false] - 块级渲染，返回 { html, blockHashes }（仅单文档）
+ * @param {object} [options.data] - 数据（bibliography/terms 等）
+ * @param {object} [options.variables] - 变量
+ * @param {string} [options.wrapperClass='mslang'] - 外层 div class
+ * @param {string} [options.wrapperId=''] - 外层 div id
+ * @param {string} [options.headingNumbering] - 标题自动编号（如 '1.1'）
+ * @param {string} [options.refNumbering] - @ref 编号提取（如 '1'）
+ * @param {object} [options.captionPrefix] - 图/表/公式编号前缀（fig/tbl/eq）
+ * @param {string} [options.citeKeyAttr] - 引用 data 属性名（如 'data-cite-key'）
+ * @param {string} [options.termKeyAttr] - 术语 data 属性名
+ * @param {string} [options.refKeyAttr] - 交叉引用 data 属性名
+ * @param {string} [options.citeStyle] - 引用样式：'numeric'（默认）/ 'author-year' / 'author'
+ * @param {boolean} [options.allowPlugins=true] - 允许 @plugin 文档内插件
+ * @param {boolean} [options.escapeHtml=true] - 转义 HTML 特殊字符
+ * @param {boolean} [options.pretty=false] - 输出换行美化
+ * @param {function} [options.mathRenderer] - 公式渲染器（默认内置 KaTeX）
+ * @param {string} [options.mathFontsPath] - KaTeX 字体本地托管路径
+ * @param {function} [options.codeRenderer] - mermaid 代码块渲染器（默认转义透传）
+ * @param {object} [options.functions] - 自定义函数表
+ * @returns {string|Promise<string>|{html: string, blockHashes: object}}
  */
-export function mslangToHTMLBlocks(source, options = {}) {
+export function render(source, options = {}) {
   const renderer = new HTMLRenderer(_rendererOpts(options));
-  return renderer.renderBlocks(source, _renderOptions(options));
-}
-
-// 异步版: 支持返回 Promise 的自定义函数（如网络请求），其余语义与 mslangToHTML 相同
-export async function mslangToHTMLAsync(source, options = {}) {
-  const renderer = new HTMLRenderer(_rendererOpts(options));
-  return renderer.renderAsync(source, _renderOptions(options));
-}
-
-// 多文档合并渲染：跨文档连续编号、交叉引用、全局 @set（文档顺序即编号顺序）
-export function mslangToHTMLAll(sources, options = {}) {
-  const renderer = new HTMLRenderer(_rendererOpts(options));
-  return renderer.renderAll(sources, _renderOptions(options));
-}
-
-// 异步版 mslangToHTMLAll，语义与 mslangToHTMLAsync 相同
-export async function mslangToHTMLAllAsync(sources, options = {}) {
-  const renderer = new HTMLRenderer(_rendererOpts(options));
-  return renderer.renderAllAsync(sources, _renderOptions(options));
+  const opts = _renderOptions(options);
+  if (Array.isArray(source)) {
+    // 多文档合并：字符串自动解析，Document 直接使用（跨文档连续编号、交叉引用、全局 @set）
+    const docs = source.map(s => s instanceof Document ? s : new Parser().parseText(s));
+    return options.async
+      ? renderer.renderAllAsync(docs, opts)
+      : renderer.renderAll(docs, opts);
+  }
+  if (options.async) return renderer.renderAsync(source, opts);
+  if (options.blocks) return renderer.renderBlocks(source, opts);
+  return renderer.render(source, opts);
 }
 
 /** 渲染器构造选项（escapeHtml/pretty 仅构造时生效） */
@@ -104,7 +82,7 @@ function _rendererOpts(options) {
   };
 }
 
-/** mslangToHTML / mslangToHTMLAsync 共用选项透传 */
+/** render 共用选项透传 */
 function _renderOptions(options) {
   return {
     wrapperClass: options.wrapperClass || 'mslang',

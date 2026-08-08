@@ -1657,12 +1657,6 @@ var CHAR = Object.freeze({
 });
 
 // src/lexer.js
-var LexerError = class extends Error {
-  constructor(message, position) {
-    super(`[${position}] ${message}`);
-    this.position = position;
-  }
-};
 var RE_HEADING = /^(#{1,6})\s+(.+)$/;
 var RE_HORIZONTAL_RULE = /^(\s{0,3})([-*_])\s*\2\s*\2[ \2]*$/;
 var RE_BLOCKQUOTE = /^>\s?(.*)$/;
@@ -2635,9 +2629,6 @@ function evaluate(node, ctx = {}) {
       throw new EvalError(`\u672A\u77E5\u8868\u8FBE\u5F0F\u8282\u70B9 '${node.type}'`);
   }
 }
-function parseExpression(source) {
-  return new ExpressionParser(source).parse();
-}
 function parseArgs(raw) {
   return new ExpressionParser(raw).parseArgs();
 }
@@ -2995,13 +2986,6 @@ var BLOCK_BOUNDARY_TYPES = /* @__PURE__ */ new Set([
   TokenType.BLANK_LINE,
   TokenType.EOF
 ]);
-var ParserError = class extends Error {
-  constructor(message, token = null) {
-    const loc = token ? ` [${token.position}]` : "";
-    super(`ParseError${loc}: ${message}`);
-    this.token = token;
-  }
-};
 var URL_RE = /^(https?:\/\/[^\s<>"{}|\\^`]+)$/;
 var URL_FIND_RE = /https?:\/\/[^\s<>"{}|\\^`]+/g;
 var Parser = class {
@@ -17809,7 +17793,7 @@ var render = function render2(expression, baseNode, options) {
 if (typeof document !== "undefined") {
   if (document.compatMode !== "CSS1Compat") {
     typeof console !== "undefined" && console.warn("Warning: KaTeX doesn't work in quirks mode. Make sure your website has a suitable doctype.");
-    render = function render3() {
+    render = function render4() {
       throw new ParseError("KaTeX doesn't work in quirks mode.");
     };
   }
@@ -24789,25 +24773,16 @@ __publicField(_HTMLRenderer, "DEFAULT_CAPTION_PREFIX", { fig: "\u56FE", tbl: "\u
 var HTMLRenderer = _HTMLRenderer;
 
 // src/index.js
-function mslangToHTML(source, options = {}) {
+function render3(source, options = {}) {
   const renderer = new HTMLRenderer(_rendererOpts(options));
-  return renderer.render(source, _renderOptions(options));
-}
-function mslangToHTMLBlocks(source, options = {}) {
-  const renderer = new HTMLRenderer(_rendererOpts(options));
-  return renderer.renderBlocks(source, _renderOptions(options));
-}
-async function mslangToHTMLAsync(source, options = {}) {
-  const renderer = new HTMLRenderer(_rendererOpts(options));
-  return renderer.renderAsync(source, _renderOptions(options));
-}
-function mslangToHTMLAll(sources, options = {}) {
-  const renderer = new HTMLRenderer(_rendererOpts(options));
-  return renderer.renderAll(sources, _renderOptions(options));
-}
-async function mslangToHTMLAllAsync(sources, options = {}) {
-  const renderer = new HTMLRenderer(_rendererOpts(options));
-  return renderer.renderAllAsync(sources, _renderOptions(options));
+  const opts = _renderOptions(options);
+  if (Array.isArray(source)) {
+    const docs = source.map((s) => s instanceof Document ? s : new Parser().parseText(s));
+    return options.async ? renderer.renderAllAsync(docs, opts) : renderer.renderAll(docs, opts);
+  }
+  if (options.async) return renderer.renderAsync(source, opts);
+  if (options.blocks) return renderer.renderBlocks(source, opts);
+  return renderer.render(source, opts);
 }
 function _rendererOpts(options) {
   return {
@@ -24837,52 +24812,9 @@ function _renderOptions(options) {
   };
 }
 export {
-  AlignBlock,
-  BlockQuote,
-  Bold,
-  CHAR,
-  Caption,
-  CodeBlock,
-  Color,
-  Document,
-  Equation,
-  EvalError,
-  FootnoteRef,
-  FunctionCall,
   HTMLRenderer,
-  Heading,
-  HorizontalRule,
-  Image,
-  InlineCode,
-  Italic,
-  Lexer,
-  LexerError,
-  LineBreak,
-  Link,
-  ListItem,
-  OrderedList,
-  Paragraph,
   Parser,
-  ParserError,
-  Position,
-  RawHtml,
-  RawText,
-  Strikethrough,
-  Subscript,
-  Superscript,
-  Table,
-  Token,
-  TokenType,
-  UnorderedList,
   dumpAST,
-  evaluate,
-  mergeDocuments,
-  mslangToHTML,
-  mslangToHTMLAll,
-  mslangToHTMLAllAsync,
-  mslangToHTMLAsync,
-  mslangToHTMLBlocks,
-  parseArgs,
-  parseExpression
+  render3 as render
 };
-/*! built: 2026-08-08T07:20:59.703Z */
+/*! built: 2026-08-08T07:34:32.159Z */

@@ -1,7 +1,8 @@
 // lexer 词法分析测试
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Lexer, TokenType } from '../src/index.js';
+import { Lexer } from '../src/lexer.js';
+import { TokenType } from '../src/tokens.js';
 
 const tokenize = (src) => new Lexer(src).tokenize();
 const types = (src) => tokenize(src).map(t => t.type.name);

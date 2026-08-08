@@ -1,10 +1,12 @@
 // parser AST 结构测试
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { Parser } from '../src/index.js';
+import { mergeDocuments } from '../src/parser.js';
+import { Lexer } from '../src/lexer.js';
 import {
-  Parser, Lexer, mergeDocuments,
   Document, Heading, Paragraph, Table, Image, Caption, FootnoteRef,
-} from '../src/index.js';
+} from '../src/nodes.js';
 
 const parse = (src) => new Parser().parse(new Lexer(src).tokenize());
 

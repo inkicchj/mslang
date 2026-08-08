@@ -158,7 +158,6 @@ graph TD
 [^note]: 这是脚注的详细说明。</textarea>
       <div class="toolbar">
         <button class="btn-primary" onclick="renderMSL()">渲染 HTML</button>
-        <button onclick="showTokens()">查看 Token 流</button>
         <button onclick="showAST()">查看 AST</button>
         <button onclick="loadExample()">加载示例</button>
       </div>
@@ -174,13 +173,12 @@ graph TD
 </div>
 
 <script type="module">
-import { mslangToHTML, HTMLRenderer, Parser, Lexer } from './dist/mslang.esm.js';
+import { render, HTMLRenderer, Parser } from './dist/mslang.esm.js';
 
 // 暴露到 window 供 onclick 使用
-window.mslangToHTML = mslangToHTML;
+window.render = render;
 window.HTMLRenderer = HTMLRenderer;
 window.Parser = Parser;
-window.Lexer = Lexer;
 
 // 注册自定义函数
 const renderer = new HTMLRenderer();
@@ -227,20 +225,6 @@ function renderMermaid() {
     mermaid.run({ nodes: output.querySelectorAll('.mermaid') });
   } catch (err) { /* mermaid 渲染失败不阻塞页面 */ }
 }
-
-window.showTokens = function() {
-  try {
-    const source = textarea.value;
-    const lexer = new Lexer(source);
-    const tokens = lexer.tokenize();
-    output.innerHTML = `<pre style="font-size:13px;line-height:1.5;white-space:pre-wrap">${escapeHTML(lexer.dumpTokens(tokens))}</pre>`;
-    modeLabel.textContent = 'Token 流';
-    status.innerHTML = `✅ 解析出 ${tokens.length} 个 Token（含 EOF）`;
-  } catch (err) {
-    output.innerHTML = `<div style="color:#c0392b">错误: ${err.message}</div>`;
-    status.textContent = '❌ ' + err.message;
-  }
-};
 
 window.showAST = function() {
   try {

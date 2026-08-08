@@ -9,16 +9,16 @@ mslang/
 ├── package.json         # npm 包配置 (ES Module)；npm test 运行测试套件
 ├── index.html           # 浏览器端交互式演示页面（需 HTTP 服务打开，file:// 下 ES Module 受限）
 ├── src/
-│   ├── index.js         # 入口模块，导出全部 API + mslangToHTML 系列便捷函数
+│   ├── index.js         # 入口模块，唯一入口 render()（async/合并/块级均为配置项）
 │   ├── tokens.js        # Token 类型枚举、Position、Token 类
 │   ├── lexer.js         # 词法解析器 (源文本 → Token 流)
 │   ├── expression.js    # 表达式解析器与求值（递归下降，变量/函数/字面量）
 │   ├── nodes.js         # AST 节点定义 (Document, Heading, Paragraph, ...)
-│   ├── parser.js        # 语法解析器 (Token 流 → AST) + mergeDocuments
+│   ├── parser.js        # 语法解析器 (Token 流 → AST) + mergeDocuments（内部）
 │   ├── builtin.js       # 内置函数 (if/cite/term/ref/set/let/bibliography...)
 │   ├── renderer.js      # HTML 渲染器 (AST → HTML，Visitor 模式)
 │   └── escape.js        # HTML 转义纯函数（builtin/renderer 共用）
-├── test/                # 测试套件（node:test，63 项）
+├── test/                # 测试套件（node:test，87 项）
 └── dist/                # 构建产物 (esm / iife / iife.min)
 ```
 
@@ -37,13 +37,13 @@ mslang/
 ## 使用方式
 
 ```javascript
-import { mslangToHTML, mslangToHTMLAll, HTMLRenderer, Parser } from 'mslang';
+import { render, HTMLRenderer, Parser } from 'mslang';
 
-// 快捷渲染
-const html = mslangToHTML('# Hello\n\n**bold** text');
+// 唯一入口：字符串渲染；传数组自动合并（跨文档连续编号）；async/块级均为配置项
+const html = render('# Hello\n\n**bold** text');
 
 // 论文写作：cite 自动编号、@ref 交叉引用、@bibliography 文献表
-const paper = mslangToHTML(
+const paper = render(
   '# 引言 {#sec:intro}\n\n' +
   '如 @ref("fig:1") 所示，结果见 @cite("doe2020")。\n\n' +
   '![结果](r.png){#fig:1}\n\n' +
@@ -77,21 +77,21 @@ const paper = mslangToHTML(
 // 白名单键：headingNumbering / refNumbering / escapeHtml / pretty / data /
 //           variables / terms / bibliography / captionPrefix /
 //           citeKeyAttr / termKeyAttr / refKeyAttr
-mslangToHTML('@set({ headingNumbering: "1.1", refNumbering: "1" })\n\n# 引言 {#sec:intro}');
+render('@set({ headingNumbering: "1.1", refNumbering: "1" })\n\n# 引言 {#sec:intro}');
 
 // @let：变量声明（预扫描注册，全文档可见；同名覆盖；值可为任意表达式）
-mslangToHTML('@let("threshold", 5)\n\n@if(threshold > 3, "达标", "不足")');
+render('@let("threshold", 5)\n\n@if(threshold > 3, "达标", "不足")');
 
 // terms/bibliography 顶层键增量合并（多次 @set 按 key 合并；字符串值即显示文本）
-mslangToHTML('@set({ terms: { 词干提取: "词干提取 (Stemming)" } })\n\n@term("词干提取")');
+render('@set({ terms: { 词干提取: "词干提取 (Stemming)" } })\n\n@term("词干提取")');
 ```
 
 ### 跨文档合并渲染
 
 ```javascript
 // 多文档：编号跨文档连续、交叉引用、@set/@let 全局生效（顺序即编号顺序）
-const html = mslangToHTMLAll(['引言.md', '方法.md', '参考文献.md'], { data: {...} });
-// 异步版：mslangToHTMLAllAsync；AST 层：mergeDocuments(...docs)
+const html = render(['引言.md', '方法.md', '参考文献.md'], { data: {...} });
+// 异步：render(src, { async: true }); AST 层：Parser.parseText / dumpAST
 ```
 
 ### 公式（LaTeX 语法，内置 KaTeX 渲染）
@@ -119,7 +119,7 @@ const html = mslangToHTMLAll(['引言.md', '方法.md', '参考文献.md'], { da
 @plugin("ul", `(items) => items.map(i => "<li>" + i + "</li>").join("")`)
 @ul(["a", "b"])                                →  <li>a</li><li>b</li>
 
-@plugin("fetch", `async (u) => "<b>" + u + "</b>"`)   // 异步插件需 mslangToHTMLAsync
+@plugin("fetch", `async (u) => "<b>" + u + "</b>"`)   // 异步插件需 { async: true }
 ```
 
 - 预扫描阶段注册（与 `@set`/`@let` 同机制），**全文档可见、跨文档合并可用**；可覆盖内置/宿主同名函数；同 body 编译缓存
@@ -127,32 +127,32 @@ const html = mslangToHTMLAll(['引言.md', '方法.md', '参考文献.md'], { da
 - ⚠️ **安全提示**：插件函数体是真实 JS（`new Function` 全局作用域），文档即代码——仅在可信文档上开启
 - 函数体无法捕获文档内 `@let` 变量（全局作用域），请通过参数/kwargs 传值
 
-### 块级编辑（renderBlocks）
+### 块级编辑（render 的 blocks 配置）
 
 ```js
-import { mslangToHTMLBlocks } from 'mslang';
+import { render } from 'mslang';
 
-const { html, blockHashes } = mslangToHTMLBlocks(source, options);
+const { html, blockHashes } = render(source, { blocks: true });
 // html: 含 <!--mslang:N--> 块哨兵（footnotes 区为 <!--mslang:footnotes-->）
 // blockHashes[N] = 块源 + 编号前缀快照哈希 → 编辑后重渲，对比哈希定位变化块
 
 // 宿主侧流程（编辑块 i 后）：
 //   1. 替换 source 中该块的 [startPos, endPos) 区间（Parser.parseText 产物带
 //      blocks[i].startPos / endPos / raw 块源文本）
-//   2. 重新 mslangToHTMLBlocks 全量渲染（parse 微秒级，公式/代码命中缓存）
+//   2. 重新 render(source, { blocks: true }) 全量渲染（parse 微秒级，公式/代码命中缓存）
 //   3. 对比新旧 blockHashes，只 DOM 替换哈希变化的块区间（编号依赖自动传播：
 //      块 i 加图 → 块 i..N 哈希全变）
 ```
 
 - 块区间：`blocks[i].startPos/endPos/raw`——区间连续覆盖文档源；caption 归并行并入前块；脚注定义行不属于任何块（截断）
 - 编号传播正确性：哈希含块渲染时的编号前缀快照（fig/tbl/sec/eq/cite/term 计数），块 i 之后编号变化 → 后续块哈希变
-- 默认 render/mslangToHTML 无哨兵（blockMarkers 默认 false，零回归）
+- 默认 render 无哨兵（blockMarkers 默认 false，零回归）
 
 ### 引用样式与术语表
 
 ```js
 // citeStyle: numeric（默认上标 [n]）/ author-year（(Doe, 2020a)）/ author（(Doe)）
-mslangToHTML('@cite("doe2020")\n\n@bibliography()', {
+render('@cite("doe2020")\n\n@bibliography()', {
   data: { bibliography: { doe2020: { authors: 'Doe, J.', year: 2020 } } },
   citeStyle: 'author-year',   // 或 @set({ citeStyle: "author-year" })
 });
@@ -160,7 +160,7 @@ mslangToHTML('@cite("doe2020")\n\n@bibliography()', {
 // 同年同作者自动消歧 a/b；缺 authors 回退数字编号
 
 // @glossary(): 术语表（按引用首次出现顺序），label — desc（可选），url 可链接
-mslangToHTML('@term("词干提取")\n\n@glossary()', {
+render('@term("词干提取")\n\n@glossary()', {
   data: { terms: { 词干提取: { label: 'Stemming', desc: '词形还原', url: 'https://x' } } },
 });
 ```
@@ -208,19 +208,18 @@ graph TD
 ```javascript
 const renderer = new HTMLRenderer();
 renderer.addFunction('fetch_title', async (key) => `<b>${key}</b>`);
-const html = await mslangToHTMLAsync('标题：@fetch_title("paper1")'); // 或 renderer.renderAsync
+const html = await render('标题：@fetch_title("paper1")', { async: true }); // 或 renderer.renderAsync
 ```
 
 ### 其余 API
 
-- 表达式：`parseExpression(source)` / `parseArgs(source)` / `evaluate(node, {functions, variables})`
-- AST：`Parser.parse(tokens)` / `Parser.parseText(source)` / `dumpAST(doc)` / `mergeDocuments(...docs)`
-- 渲染器：`new HTMLRenderer({ functions, escapeHtml, pretty })`，`render / renderAsync / renderAll / renderAllAsync`，`addFunction(name, fn)`
+- AST：`Parser.parseText(source)` / `Parser.parse(tokens)` / `dumpAST(doc)`（块级编辑取块区间用）
+- 渲染器：`new HTMLRenderer({ functions, escapeHtml, pretty })`，`render / renderAsync / renderAll / renderAllAsync / renderBlocks`，`addFunction(name, fn)`
 
 ## 测试
 
 ```bash
-npm test    # node:test 运行 test/ 下 63 项测试（零新依赖）
+npm test    # node:test 运行 test/ 下 87 项测试（零新依赖）
 npm run build  # esbuild 构建 dist/（esm / iife / iife.min）
 ```
 
