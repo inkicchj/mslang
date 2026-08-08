@@ -17,32 +17,7 @@ import { Lexer } from './lexer.js';
 import { Parser, mergeDocuments } from './parser.js';
 import { evaluate } from './expression.js';
 import { builtinFunctions, extractHeadingNumber } from './builtin.js';
-
-// ================================================================
-// HTML 转义
-// ================================================================
-
-const ESC_MAP = {
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-};
-
-const ESC_ATTR_MAP = {
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-  '"': '&quot;',
-  "'": '&#39;',
-};
-
-function escapeHTML(text) {
-  return text.replace(/[&<>]/g, ch => ESC_MAP[ch] || ch);
-}
-
-function escapeAttr(text) {
-  return text.replace(/[&<>"']/g, ch => ESC_ATTR_MAP[ch] || ch);
-}
+import { escapeHTML, escapeAttr } from './escape.js';
 
 // ================================================================
 // HTMLRenderer
@@ -147,12 +122,18 @@ class HTMLRenderer {
       headingNumbering = '',
       refNumbering = '',
       captionPrefix = {},
+      citeKeyAttr = HTMLRenderer.DEFAULT_KEY_ATTRS.citeKeyAttr,
+      termKeyAttr = HTMLRenderer.DEFAULT_KEY_ATTRS.termKeyAttr,
+      refKeyAttr = HTMLRenderer.DEFAULT_KEY_ATTRS.refKeyAttr,
     } = opts;
     this._data = data || {};
     this._variables = variables || {};
     this._headingNumbering = headingNumbering === true ? '1.1' : (headingNumbering || '');
     this._refNumbering = refNumbering || '';
     this._captionPrefix = { ...HTMLRenderer.DEFAULT_CAPTION_PREFIX, ...captionPrefix };
+    this._citeKeyAttr = citeKeyAttr || '';
+    this._termKeyAttr = termKeyAttr || '';
+    this._refKeyAttr = refKeyAttr || '';
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
@@ -179,7 +160,10 @@ class HTMLRenderer {
   // ================================================================
 
   // @set 白名单：仅这些键可被文档内配置覆盖
-  static SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables', 'terms', 'bibliography', 'captionPrefix'];
+  static SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables', 'terms', 'bibliography', 'captionPrefix', 'citeKeyAttr', 'termKeyAttr', 'refKeyAttr'];
+
+  // 引用/术语 data 属性名（工作台交互定位用；空串关闭）
+  static DEFAULT_KEY_ATTRS = { citeKeyAttr: 'data-cite-key', termKeyAttr: 'data-term-key', refKeyAttr: 'data-ref-label' };
 
   // caption 前缀（默认中文，可用 @set 覆盖）
   static DEFAULT_CAPTION_PREFIX = { fig: '图', tbl: '表' };
@@ -266,6 +250,8 @@ class HTMLRenderer {
         Object.assign(this._variables, config[key] || {});
       } else if (key === 'captionPrefix') {
         this._captionPrefix = { ...this._captionPrefix, ...config[key] };
+      } else if (key === 'citeKeyAttr' || key === 'termKeyAttr' || key === 'refKeyAttr') {
+        this[`_${key}`] = config[key] || '';
       } else {
         this[key] = config[key];
       }

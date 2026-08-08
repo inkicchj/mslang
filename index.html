@@ -108,6 +108,22 @@ function hello() {
 | HTML | 标记语言 | 网页结构 |
 | CSS  | 样式语言 | 视觉效果 |
 
+## 论文写作特性
+
+@set({ headingNumbering: "1.1", terms: { 词干提取: "词干提取 (Stemming)" } })
+
+如 @ref("sec:title") 所述，术语 @term("词干提取") 在此使用，条件渲染 @if(1 == 1, "已生效", "失败")。
+
+![示意图](/img.png){#fig:demo}
+
+{#fig:demo} 系统架构示意图
+
+| 方法 | 准确率 |{#tbl:demo}|
+|------|------|
+| A | 0.9 |
+
+{#tbl:demo} 实验结果对比
+
 ## 对齐
 
 -><- 居中对齐文本

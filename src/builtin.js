@@ -7,6 +7,8 @@
  * 由 renderer.render(source, { data, variables }) 注入数据。
  */
 
+import { escapeAttr } from './escape.js';
+
 // ================================================================
 // 显式编号提取（章节引用 @ref 用）
 // ================================================================
@@ -73,7 +75,9 @@ export function builtinFunctions(renderer) {
       if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
       renderer._registerCite(key); // 收集阶段未覆盖的键（如变量参数）在此动态编号
       const num = renderer._citeNumbers[key];
-      return `<sup><a href="#cite-${num}" id="ref-cite-${num}">[${esc(String(num))}]</a></sup>`;
+      const keyAttr = renderer._citeKeyAttr
+        ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(key))}"` : '';
+      return `<sup><a href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}">[${esc(String(num))}]</a></sup>`;
     },
 
     /** 交叉引用：图/表显示"图 N/表 N"（前缀随 captionPrefix 配置）；章节显示 显式编号 → 自动编号 → 标题全文 */
@@ -84,7 +88,9 @@ export function builtinFunctions(renderer) {
       if (r.kind === 'fig') text = `${renderer._captionPrefix.fig} ${r.number}`;
       else if (r.kind === 'tbl') text = `${renderer._captionPrefix.tbl} ${r.number}`;
       else text = r.display;
-      return `<a href="#${escAttr(String(label))}">${esc(text)}</a>`;
+      const keyAttr = renderer._refKeyAttr
+        ? ` ${renderer._refKeyAttr}="${escapeAttr(String(label))}" data-ref-kind="${r.kind}"` : '';
+      return `<a href="#${escAttr(String(label))}"${keyAttr}>${esc(text)}</a>`;
     },
 
     /** 文献表：列出全部被引用文献（按编号顺序），生成 <ol> 锚点与 cite 对应 */
@@ -106,7 +112,11 @@ export function builtinFunctions(renderer) {
       const label = typeof entry === 'string' ? entry : ((entry && entry.label) ? entry.label : name);
       const inner = `<span class="term">${esc(String(label))}</span>`;
       const url = (entry && typeof entry === 'object' && entry.url) ? entry.url : '';
-      return url ? `<a href="${escAttr(String(url))}">${inner}</a>` : inner;
+      const keyAttr = renderer._termKeyAttr
+        ? ` ${renderer._termKeyAttr}="${escapeAttr(String(name))}"` : '';
+      return url
+        ? `<a href="${escAttr(String(url))}"${keyAttr}>${inner}</a>`
+        : `<span class="term"${keyAttr}>${esc(String(label))}</span>`;
     },
   };
 }

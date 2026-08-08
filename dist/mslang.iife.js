@@ -27,6 +27,7 @@ var mslang = (() => {
     BlockQuote: () => BlockQuote,
     Bold: () => Bold,
     CHAR: () => CHAR,
+    Caption: () => Caption,
     CodeBlock: () => CodeBlock,
     Color: () => Color,
     Document: () => Document,
@@ -2100,6 +2101,26 @@ var mslang = (() => {
     return `${linePrefix}${name}`;
   }
 
+  // src/escape.js
+  var ESC_MAP = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;"
+  };
+  var ESC_ATTR_MAP = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  };
+  function escapeHTML(text) {
+    return text.replace(/[&<>]/g, (ch) => ESC_MAP[ch] || ch);
+  }
+  function escapeAttr(text) {
+    return text.replace(/[&<>"']/g, (ch) => ESC_ATTR_MAP[ch] || ch);
+  }
+
   // src/builtin.js
   var RE_NUM_ARABIC = /^(\d+(?:\.\d+)*)/;
   var RE_NUM_CN = /^(第[一二三四五六七八九十百]+[章节篇]|[一二三四五六七八九十百]+[、．.]|（[一二三四五六七八九十百]+）|\([一二三四五六七八九十百]+\))/;
@@ -2140,7 +2161,8 @@ var mslang = (() => {
         if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
         renderer._registerCite(key);
         const num = renderer._citeNumbers[key];
-        return `<sup><a href="#cite-${num}" id="ref-cite-${num}">[${esc(String(num))}]</a></sup>`;
+        const keyAttr = renderer._citeKeyAttr ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(key))}"` : "";
+        return `<sup><a href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}">[${esc(String(num))}]</a></sup>`;
       },
       /** 交叉引用：图/表显示"图 N/表 N"（前缀随 captionPrefix 配置）；章节显示 显式编号 → 自动编号 → 标题全文 */
       ref: (label) => {
@@ -2150,7 +2172,8 @@ var mslang = (() => {
         if (r.kind === "fig") text = `${renderer._captionPrefix.fig} ${r.number}`;
         else if (r.kind === "tbl") text = `${renderer._captionPrefix.tbl} ${r.number}`;
         else text = r.display;
-        return `<a href="#${escAttr(String(label))}">${esc(text)}</a>`;
+        const keyAttr = renderer._refKeyAttr ? ` ${renderer._refKeyAttr}="${escapeAttr(String(label))}" data-ref-kind="${r.kind}"` : "";
+        return `<a href="#${escAttr(String(label))}"${keyAttr}>${esc(text)}</a>`;
       },
       /** 文献表：列出全部被引用文献（按编号顺序），生成 <ol> 锚点与 cite 对应 */
       bibliography: () => {
@@ -2170,30 +2193,13 @@ ${items.join("\n")}
         const label = typeof entry === "string" ? entry : entry && entry.label ? entry.label : name;
         const inner = `<span class="term">${esc(String(label))}</span>`;
         const url = entry && typeof entry === "object" && entry.url ? entry.url : "";
-        return url ? `<a href="${escAttr(String(url))}">${inner}</a>` : inner;
+        const keyAttr = renderer._termKeyAttr ? ` ${renderer._termKeyAttr}="${escapeAttr(String(name))}"` : "";
+        return url ? `<a href="${escAttr(String(url))}"${keyAttr}>${inner}</a>` : `<span class="term"${keyAttr}>${esc(String(label))}</span>`;
       }
     };
   }
 
   // src/renderer.js
-  var ESC_MAP = {
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;"
-  };
-  var ESC_ATTR_MAP = {
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  };
-  function escapeHTML(text) {
-    return text.replace(/[&<>]/g, (ch) => ESC_MAP[ch] || ch);
-  }
-  function escapeAttr(text) {
-    return text.replace(/[&<>"']/g, (ch) => ESC_ATTR_MAP[ch] || ch);
-  }
   var _HTMLRenderer = class _HTMLRenderer {
     /**
      * @param {object} [opts]
@@ -2286,13 +2292,19 @@ ${items.join("\n")}
         variables = {},
         headingNumbering = "",
         refNumbering = "",
-        captionPrefix = {}
+        captionPrefix = {},
+        citeKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.citeKeyAttr,
+        termKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.termKeyAttr,
+        refKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.refKeyAttr
       } = opts;
       this._data = data || {};
       this._variables = variables || {};
       this._headingNumbering = headingNumbering === true ? "1.1" : headingNumbering || "";
       this._refNumbering = refNumbering || "";
       this._captionPrefix = { ..._HTMLRenderer.DEFAULT_CAPTION_PREFIX, ...captionPrefix };
+      this._citeKeyAttr = citeKeyAttr || "";
+      this._termKeyAttr = termKeyAttr || "";
+      this._refKeyAttr = refKeyAttr || "";
       this._evalCtx = { functions: this._functions, variables: this._variables };
       this._output = [];
       this._asyncSlots = null;
@@ -2386,6 +2398,8 @@ ${body}
           Object.assign(this._variables, config[key] || {});
         } else if (key === "captionPrefix") {
           this._captionPrefix = { ...this._captionPrefix, ...config[key] };
+        } else if (key === "citeKeyAttr" || key === "termKeyAttr" || key === "refKeyAttr") {
+          this[`_${key}`] = config[key] || "";
         } else {
           this[key] = config[key];
         }
@@ -2820,27 +2834,36 @@ ${body}
   // 文档内配置（@set）
   // ================================================================
   // @set 白名单：仅这些键可被文档内配置覆盖
-  __publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables", "terms", "bibliography", "captionPrefix"]);
+  __publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables", "terms", "bibliography", "captionPrefix", "citeKeyAttr", "termKeyAttr", "refKeyAttr"]);
+  // 引用/术语 data 属性名（工作台交互定位用；空串关闭）
+  __publicField(_HTMLRenderer, "DEFAULT_KEY_ATTRS", { citeKeyAttr: "data-cite-key", termKeyAttr: "data-term-key", refKeyAttr: "data-ref-label" });
   // caption 前缀（默认中文，可用 @set 覆盖）
   __publicField(_HTMLRenderer, "DEFAULT_CAPTION_PREFIX", { fig: "\u56FE", tbl: "\u8868" });
   var HTMLRenderer = _HTMLRenderer;
 
   // src/index.js
   function mslangToHTML(source, options = {}) {
-    const renderer = new HTMLRenderer({ functions: options.functions });
+    const renderer = new HTMLRenderer(_rendererOpts(options));
     return renderer.render(source, _renderOptions(options));
   }
   async function mslangToHTMLAsync(source, options = {}) {
-    const renderer = new HTMLRenderer({ functions: options.functions });
+    const renderer = new HTMLRenderer(_rendererOpts(options));
     return renderer.renderAsync(source, _renderOptions(options));
   }
   function mslangToHTMLAll(sources, options = {}) {
-    const renderer = new HTMLRenderer({ functions: options.functions });
+    const renderer = new HTMLRenderer(_rendererOpts(options));
     return renderer.renderAll(sources, _renderOptions(options));
   }
   async function mslangToHTMLAllAsync(sources, options = {}) {
-    const renderer = new HTMLRenderer({ functions: options.functions });
+    const renderer = new HTMLRenderer(_rendererOpts(options));
     return renderer.renderAllAsync(sources, _renderOptions(options));
+  }
+  function _rendererOpts(options) {
+    return {
+      functions: options.functions,
+      escapeHtml: options.escapeHtml,
+      pretty: options.pretty
+    };
   }
   function _renderOptions(options) {
     return {
@@ -2850,9 +2873,12 @@ ${body}
       variables: options.variables,
       headingNumbering: options.headingNumbering,
       refNumbering: options.refNumbering,
-      captionPrefix: options.captionPrefix
+      captionPrefix: options.captionPrefix,
+      citeKeyAttr: options.citeKeyAttr,
+      termKeyAttr: options.termKeyAttr,
+      refKeyAttr: options.refKeyAttr
     };
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-08T05:04:18.833Z */
+/*! built: 2026-08-08T05:19:21.692Z */

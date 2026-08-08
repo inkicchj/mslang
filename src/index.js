@@ -41,7 +41,7 @@ import {
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, FunctionCall, Color,
   Superscript, Subscript, RawHtml, FootnoteRef,
-  LineBreak,
+  LineBreak, Caption,
 } from './nodes.js';
 
 export {
@@ -56,31 +56,40 @@ export {
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, FunctionCall, Color,
   Superscript, Subscript, RawHtml, FootnoteRef,
-  LineBreak,
+  LineBreak, Caption,
 };
 
 // 便捷函数: 将 mslang 文本直接渲染为 HTML
 export function mslangToHTML(source, options = {}) {
-  const renderer = new HTMLRenderer({ functions: options.functions });
+  const renderer = new HTMLRenderer(_rendererOpts(options));
   return renderer.render(source, _renderOptions(options));
 }
 
 // 异步版: 支持返回 Promise 的自定义函数（如网络请求），其余语义与 mslangToHTML 相同
 export async function mslangToHTMLAsync(source, options = {}) {
-  const renderer = new HTMLRenderer({ functions: options.functions });
+  const renderer = new HTMLRenderer(_rendererOpts(options));
   return renderer.renderAsync(source, _renderOptions(options));
 }
 
 // 多文档合并渲染：跨文档连续编号、交叉引用、全局 @set（文档顺序即编号顺序）
 export function mslangToHTMLAll(sources, options = {}) {
-  const renderer = new HTMLRenderer({ functions: options.functions });
+  const renderer = new HTMLRenderer(_rendererOpts(options));
   return renderer.renderAll(sources, _renderOptions(options));
 }
 
 // 异步版 mslangToHTMLAll，语义与 mslangToHTMLAsync 相同
 export async function mslangToHTMLAllAsync(sources, options = {}) {
-  const renderer = new HTMLRenderer({ functions: options.functions });
+  const renderer = new HTMLRenderer(_rendererOpts(options));
   return renderer.renderAllAsync(sources, _renderOptions(options));
+}
+
+/** 渲染器构造选项（escapeHtml/pretty 仅构造时生效） */
+function _rendererOpts(options) {
+  return {
+    functions: options.functions,
+    escapeHtml: options.escapeHtml,
+    pretty: options.pretty,
+  };
 }
 
 /** mslangToHTML / mslangToHTMLAsync 共用选项透传 */
@@ -93,5 +102,8 @@ function _renderOptions(options) {
     headingNumbering: options.headingNumbering,
     refNumbering: options.refNumbering,
     captionPrefix: options.captionPrefix,
+    citeKeyAttr: options.citeKeyAttr,
+    termKeyAttr: options.termKeyAttr,
+    refKeyAttr: options.refKeyAttr,
   };
 }

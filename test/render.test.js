@@ -1,0 +1,149 @@
+// renderer 渲染测试：基础语法、表达式、内置函数、配置、异步
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mslangToHTML, mslangToHTMLAsync, HTMLRenderer } from '../src/index.js';
+
+const data = {
+  bibliography: {
+    doe2020: { number: 1, authors: 'Doe', year: 2020, title: 'Paper', journal: 'JML' },
+    smith2019: { number: 2, authors: 'Smith', year: 2019, title: 'Work', journal: 'ACL' },
+  },
+  terms: { '词干提取': { label: 'Stemming', url: 'https://stem.example' } },
+};
+
+test('基础块级渲染', () => {
+  assert.match(mslangToHTML('# 标题'), /<h1>标题<\/h1>/);
+  assert.match(mslangToHTML('---'), /<hr>/);
+  assert.match(mslangToHTML('> 引用'), /<blockquote>\n引用\n<\/blockquote>/);
+});
+
+test('行内语法', () => {
+  assert.match(mslangToHTML('**粗** *斜* ~删~ `码`'), /<strong>粗<\/strong> <em>斜<\/em> <sub>删<\/sub> <code>码<\/code>/);
+});
+
+test('wrapper 默认 class', () => {
+  assert.match(mslangToHTML('文本'), /^<div class="mslang">/);
+});
+
+test('表达式逻辑', () => {
+  assert.match(mslangToHTML('@if(1+2*3 == 7 && !(2>3), "ok", "no")'), /ok/);
+  assert.match(mslangToHTML('@if(false || true, "a", "b")'), /a/);
+});
+
+test('表达式短路不触发副作用', () => {
+  // false && cite("x")：cite 不求值，不报错
+  const h = mslangToHTML('@if(false && cite("x"), "a", "b")', { data });
+  assert.match(h, /b/);
+});
+
+test('数组与对象字面量', () => {
+  assert.match(mslangToHTML('@if(true, ["a", "b"], [])'), /ab/);
+  // 对象值非字符串/数组，String 化输出
+  const h = mslangToHTML('@if(true, {a: 1}, {})');
+  assert.ok(h.includes('[object Object]'));
+});
+
+test('cite 编号与文献表', () => {
+  const h = mslangToHTML('@cite("doe2020") 与 @cite("smith2019")\n\n@bibliography()', { data });
+  assert.match(h, /href="#cite-1"[^>]*>\[1\]<\/a>/);
+  assert.match(h, /href="#cite-2"[^>]*>\[2\]<\/a>/);
+  assert.match(h, /<li id="cite-1">Doe \(2020\) Paper JML<\/li>/);
+});
+
+test('缺失文献占位', () => {
+  assert.match(mslangToHTML('@cite("nope")', { data }), /\[nope\?\]/);
+});
+
+test('term 渲染（对象带 url）', () => {
+  const h = mslangToHTML('@term("词干提取")', { data });
+  assert.match(h, /<a href="https:\/\/stem\.example"[^>]*><span class="term">Stemming<\/span><\/a>/);
+});
+
+test('term 字符串简写', () => {
+  const h = mslangToHTML('@term("缩写")', { data: { terms: { 缩写: '全称' } } });
+  assert.match(h, /<span class="term"[^>]*>全称<\/span>/);
+});
+
+test('ref 章节（默认标题全文）', () => {
+  const h = mslangToHTML('## 方法 {#sec:m}\n\n见 @ref("sec:m")');
+  assert.match(h, /href="#sec:m"[^>]*>方法<\/a>/);
+});
+
+test('ref 图/表编号', () => {
+  const h = mslangToHTML('![图](/a.png){#fig:1}\n\n见 @ref("fig:1")');
+  assert.match(h, /href="#fig:1"[^>]*>图 1<\/a>/);
+});
+
+test('标题自动编号', () => {
+  const h = mslangToHTML('# 一\n\n## 二\n\n### 三', { headingNumbering: '1.1' });
+  assert.match(h, /<h1>1 一<\/h1>/);
+  assert.match(h, /<h2>1\.1 二<\/h2>/);
+  assert.match(h, /<h3>1\.1\.1 三<\/h3>/);
+});
+
+test('图片 caption 渲染 figure', () => {
+  const h = mslangToHTML('![图A](/a.png){#fig:1}\n\n{#fig:1} 装置');
+  assert.match(h, /<figure id="fig:1">\n<img src="\/a\.png" alt="图A" referrerpolicy="no-referrer">\n<figcaption>图 1：装置<\/figcaption>\n<\/figure>/);
+});
+
+test('表格 caption 在表头上方', () => {
+  const h = mslangToHTML('| x |{#tbl:t}|\n|---|\n| 1 |\n\n{#tbl:t} 数据');
+  assert.match(h, /<table id="tbl:t">\n<caption>表 1：数据<\/caption>\n<thead>/);
+});
+
+test('captionPrefix @set 配置', () => {
+  const h = mslangToHTML('@set({ captionPrefix: { fig: "Figure" } })\n\n![图](/a.png){#fig:1}\n\n{#fig:1} 装置\n\n见 @ref("fig:1")');
+  assert.match(h, /<figcaption>Figure 1：装置<\/figcaption>/);
+  assert.match(h, />Figure 1<\/a>/);
+});
+
+test('引用元数据默认属性', () => {
+  const h = mslangToHTML('@cite("doe2020") @term("词干提取")', { data });
+  assert.match(h, /data-cite-key="doe2020" data-cite-index="0"/);
+  assert.match(h, /data-term-key="词干提取"/);
+});
+
+test('引用元数据自定义属性名与关闭', () => {
+  const h = mslangToHTML('@cite("doe2020")', { data, citeKeyAttr: 'data-doc' });
+  assert.match(h, /data-doc="doe2020"/);
+  const h2 = mslangToHTML('@cite("doe2020")', { data, citeKeyAttr: '' });
+  assert.ok(!h2.includes('data-cite-key'));
+});
+
+test('引用元数据值恒转义', () => {
+  const h = mslangToHTML('@cite("a\\"b")', {
+    data: { bibliography: { 'a"b': { number: 1 } } }, escapeHtml: false,
+  });
+  assert.match(h, /data-cite-key="a&quot;b"/);
+});
+
+test('escapeHtml 默认转义正文特殊字符', () => {
+  const h = mslangToHTML('a < b & c');
+  assert.match(h, /a &lt; b &amp; c/);
+  const h2 = mslangToHTML('a < b & c', { escapeHtml: false });
+  assert.match(h2, /a < b & c/);
+});
+
+test('RAW_HTML 标签透传（不转义）', () => {
+  assert.match(mslangToHTML('<b>x</b>'), /<p><b>x<\/b><\/p>/);
+});
+
+test('异步渲染与同步一致', async () => {
+  const src = '@cite("doe2020") 与 @term("词干提取")';
+  const [a, b] = [await mslangToHTMLAsync(src, { data }), mslangToHTML(src, { data })];
+  assert.equal(a, b);
+});
+
+test('异步自定义函数（Promise）', async () => {
+  const renderer = new HTMLRenderer();
+  renderer.addFunction('fetch', async (url) => `数据:${url}`);
+  const h = await renderer.renderAsync('@fetch("api")', { escapeHtml: false });
+  assert.match(h, /数据:api/);
+});
+
+test('同步渲染 Promise 输出提示注释', () => {
+  const renderer = new HTMLRenderer();
+  renderer.addFunction('fetch', async (url) => `数据`);
+  const h = renderer.render('@fetch("api")');
+  assert.match(h, /需使用 renderAsync/);
+});
