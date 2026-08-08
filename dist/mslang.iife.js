@@ -66,9 +66,7 @@ var mslang = (() => {
     mslangToHTMLAllAsync: () => mslangToHTMLAllAsync,
     mslangToHTMLAsync: () => mslangToHTMLAsync,
     parseArgs: () => parseArgs,
-    parseExpression: () => parseExpression,
-    parseFunctionArgs: () => parseFunctionArgs,
-    unquote: () => unquote
+    parseExpression: () => parseExpression
   });
 
   // src/tokens.js
@@ -162,75 +160,6 @@ var mslang = (() => {
   });
 
   // src/lexer.js
-  function parseFunctionArgs(raw) {
-    const args = [];
-    const kwargs = {};
-    raw = raw.trim();
-    if (!raw) return { args, kwargs };
-    let current = "";
-    let inSingle = false;
-    let inDouble = false;
-    const parts = [];
-    for (const ch of raw) {
-      if (ch === "'" && !inDouble) {
-        inSingle = !inSingle;
-        current += ch;
-        continue;
-      }
-      if (ch === '"' && !inSingle) {
-        inDouble = !inDouble;
-        current += ch;
-        continue;
-      }
-      if (ch === "," && !inSingle && !inDouble) {
-        parts.push(current.trim());
-        current = "";
-        continue;
-      }
-      current += ch;
-    }
-    if (current.trim()) parts.push(current.trim());
-    for (const part of parts) {
-      let eqPos = -1;
-      for (let j = 0; j < part.length; j++) {
-        if (part[j] === "=") {
-          let inQ = false;
-          let qCh = null;
-          for (let k = 0; k < j; k++) {
-            if (part[k] === '"' || part[k] === "'") {
-              if (inQ && part[k] === qCh) inQ = false;
-              else if (!inQ) {
-                inQ = true;
-                qCh = part[k];
-              }
-            }
-          }
-          if (!inQ) {
-            eqPos = j;
-            break;
-          }
-        }
-      }
-      if (eqPos > 0) {
-        const key = part.slice(0, eqPos).trim();
-        let val = part.slice(eqPos + 1).trim();
-        val = unquote(val);
-        kwargs[key] = val;
-      } else {
-        args.push(unquote(part));
-      }
-    }
-    return { args, kwargs };
-  }
-  function unquote(s) {
-    s = s.trim();
-    if (s.length >= 2) {
-      if (s[0] === '"' && s[s.length - 1] === '"' || s[0] === "'" && s[s.length - 1] === "'") {
-        return s.slice(1, -1);
-      }
-    }
-    return s;
-  }
   var LexerError = class extends Error {
     constructor(message, position) {
       super(`[${position}] ${message}`);
@@ -2926,4 +2855,4 @@ ${body}
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-08T05:02:15.191Z */
+/*! built: 2026-08-08T05:04:18.833Z */

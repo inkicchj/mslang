@@ -29,7 +29,7 @@
  *   const tokens = lexer.tokenize();
  */
 
-import { Lexer, LexerError, parseFunctionArgs, unquote } from './lexer.js';
+import { Lexer, LexerError } from './lexer.js';
 import { Parser, ParserError, dumpAST, mergeDocuments } from './parser.js';
 import { HTMLRenderer } from './renderer.js';
 import { TokenType, Position, Token, CHAR } from './tokens.js';
@@ -45,7 +45,7 @@ import {
 } from './nodes.js';
 
 export {
-  Lexer, LexerError, parseFunctionArgs, unquote,
+  Lexer, LexerError,
   Parser, ParserError, dumpAST, mergeDocuments,
   HTMLRenderer,
   parseExpression, parseArgs, evaluate, EvalError,
