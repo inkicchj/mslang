@@ -75,8 +75,10 @@ export function builtinFunctions(renderer) {
       if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
       renderer._registerCite(key); // 收集阶段未覆盖的键（如变量参数）在此动态编号
       const num = renderer._citeNumbers[key];
+      // 条目可定义 key 字段（如数据库主键）：data 属性输出条目 key，与引用名解耦
+      const dataKey = entry && entry.key !== undefined ? entry.key : key;
       const keyAttr = renderer._citeKeyAttr
-        ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(key))}"` : '';
+        ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(dataKey))}"` : '';
       return `<sup><a href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}">[${esc(String(num))}]</a></sup>`;
     },
 
@@ -106,14 +108,16 @@ export function builtinFunctions(renderer) {
       return `<ol class="bibliography">\n${items.join('\n')}\n</ol>`;
     },
 
-    /** 术语引用：字符串值为 label 简写；对象可带 label / url */
+    /** 术语引用：字符串值为 label 简写；对象可带 label / url / key */
     term: (name, kwargs) => {
       const entry = renderer._data.terms && renderer._data.terms[name];
       const label = typeof entry === 'string' ? entry : ((entry && entry.label) ? entry.label : name);
       const inner = `<span class="term">${esc(String(label))}</span>`;
       const url = (entry && typeof entry === 'object' && entry.url) ? entry.url : '';
+      // 条目可定义 key 字段（如数据库主键）：data 属性输出条目 key，与引用名解耦
+      const dataKey = entry && typeof entry === 'object' && entry.key !== undefined ? entry.key : name;
       const keyAttr = renderer._termKeyAttr
-        ? ` ${renderer._termKeyAttr}="${escapeAttr(String(name))}"` : '';
+        ? ` ${renderer._termKeyAttr}="${escapeAttr(String(dataKey))}"` : '';
       return url
         ? `<a href="${escAttr(String(url))}"${keyAttr}>${inner}</a>`
         : `<span class="term"${keyAttr}>${esc(String(label))}</span>`;

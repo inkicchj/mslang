@@ -117,6 +117,30 @@ test('引用元数据值恒转义', () => {
   assert.match(h, /data-cite-key="a&quot;b"/);
 });
 
+test('条目 key 字段：data 属性输出条目 key（与引用名解耦）', () => {
+  // 文献条目 key 字段（如数据库主键）
+  const h = mslangToHTML('@cite("doe2020")', {
+    data: { bibliography: { doe2020: { number: 1, key: 'uuid-abc-123' } } },
+  });
+  assert.match(h, /data-cite-key="uuid-abc-123"/);
+  // 术语条目 key 字段
+  const h2 = mslangToHTML('@term("词干提取")', {
+    data: { terms: { 词干提取: { label: 'Stemming', key: 'wqdwqr32r234' } } },
+  });
+  assert.match(h2, /data-term-key="wqdwqr32r234"/);
+});
+
+test('条目无 key 字段时回退引用名', () => {
+  const h = mslangToHTML('@cite("doe2020") @term("词干提取")', {
+    data: {
+      bibliography: { doe2020: { number: 1 } },
+      terms: { 词干提取: '词干提取 (Stemming)' },
+    },
+  });
+  assert.match(h, /data-cite-key="doe2020"/);
+  assert.match(h, /data-term-key="词干提取"/);
+});
+
 test('escapeHtml 默认转义正文特殊字符', () => {
   const h = mslangToHTML('a < b & c');
   assert.match(h, /a &lt; b &amp; c/);

@@ -2094,7 +2094,8 @@ function builtinFunctions(renderer) {
       if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
       renderer._registerCite(key);
       const num = renderer._citeNumbers[key];
-      const keyAttr = renderer._citeKeyAttr ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(key))}"` : "";
+      const dataKey = entry && entry.key !== void 0 ? entry.key : key;
+      const keyAttr = renderer._citeKeyAttr ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(dataKey))}"` : "";
       return `<sup><a href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}">[${esc(String(num))}]</a></sup>`;
     },
     /** 交叉引用：图/表显示"图 N/表 N"（前缀随 captionPrefix 配置）；章节显示 显式编号 → 自动编号 → 标题全文 */
@@ -2120,13 +2121,14 @@ function builtinFunctions(renderer) {
 ${items.join("\n")}
 </ol>`;
     },
-    /** 术语引用：字符串值为 label 简写；对象可带 label / url */
+    /** 术语引用：字符串值为 label 简写；对象可带 label / url / key */
     term: (name, kwargs) => {
       const entry = renderer._data.terms && renderer._data.terms[name];
       const label = typeof entry === "string" ? entry : entry && entry.label ? entry.label : name;
       const inner = `<span class="term">${esc(String(label))}</span>`;
       const url = entry && typeof entry === "object" && entry.url ? entry.url : "";
-      const keyAttr = renderer._termKeyAttr ? ` ${renderer._termKeyAttr}="${escapeAttr(String(name))}"` : "";
+      const dataKey = entry && typeof entry === "object" && entry.key !== void 0 ? entry.key : name;
+      const keyAttr = renderer._termKeyAttr ? ` ${renderer._termKeyAttr}="${escapeAttr(String(dataKey))}"` : "";
       return url ? `<a href="${escAttr(String(url))}"${keyAttr}>${inner}</a>` : `<span class="term"${keyAttr}>${esc(String(label))}</span>`;
     }
   };
@@ -2859,4 +2861,4 @@ export {
   parseArgs,
   parseExpression
 };
-/*! built: 2026-08-08T05:19:21.692Z */
+/*! built: 2026-08-08T05:21:49.803Z */
