@@ -114,6 +114,18 @@ function hello() {
 
 如 @ref("sec:title") 所述，术语 @term("词干提取") 在此使用，条件渲染 @if(1 == 1, "已生效", "失败")。
 
+## 流程图
+
+```mermaid {#fig:demoflow}
+graph TD
+  A[采集数据] --> B{数据清洗}
+  B -->|通过| C[特征提取]
+  B -->|异常| D[丢弃]
+  C --> E[模型训练]
+```
+
+{#fig:demoflow} 数据处理流程
+
 ![示意图](data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7){#fig:demo}
 
 {#fig:demo} 系统架构示意图
@@ -198,6 +210,7 @@ window.renderMSL = function() {
     const html = renderer.render(source);
     const elapsed = (performance.now() - start).toFixed(1);
     output.innerHTML = html;
+    renderMermaid();
     modeLabel.textContent = 'HTML';
     status.innerHTML = `✅ 渲染成功 &mdash; 耗时 ${elapsed}ms`;
   } catch (err) {
@@ -205,6 +218,15 @@ window.renderMSL = function() {
     status.textContent = '❌ ' + err.message;
   }
 };
+
+// mermaid 流程图渲染（CDN 加载失败时静默跳过）
+function renderMermaid() {
+  if (!window.mermaid) return;
+  try {
+    mermaid.initialize({ startOnLoad: false, theme: 'default' });
+    mermaid.run({ nodes: output.querySelectorAll('.mermaid') });
+  } catch (err) { /* mermaid 渲染失败不阻塞页面 */ }
+}
 
 window.showTokens = function() {
   try {
@@ -247,6 +269,9 @@ window.escapeHTML = escapeHTML;
 // 初始渲染
 renderMSL();
 </script>
+
+<!-- mermaid 流程图渲染引擎（CDN；renderMSL 内对 .mermaid 元素调用 run()） -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 
 </body>
 </html>
