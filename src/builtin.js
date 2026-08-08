@@ -65,22 +65,18 @@ export function builtinFunctions(renderer) {
     cite: (key) => {
       const entry = renderer._data.bibliography && renderer._data.bibliography[key];
       if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
-      // 收集阶段未覆盖的键（如变量参数）在此动态编号
-      if (!(key in renderer._citeNumbers)) {
-        renderer._citeNumbers[key] = renderer._citeOrder.length + 1;
-        renderer._citeOrder.push(key);
-      }
+      renderer._registerCite(key); // 收集阶段未覆盖的键（如变量参数）在此动态编号
       const num = renderer._citeNumbers[key];
       return `<sup><a href="#cite-${num}" id="ref-cite-${num}">[${esc(String(num))}]</a></sup>`;
     },
 
-    /** 交叉引用：图/表显示"图 N/表 N"；章节显示 显式编号 → 自动编号 → 标题全文 */
+    /** 交叉引用：图/表显示"图 N/表 N"（前缀随 captionPrefix 配置）；章节显示 显式编号 → 自动编号 → 标题全文 */
     ref: (label) => {
       const r = renderer._refs[label];
       if (!r) return `<a href="#${escAttr(String(label))}">[${esc(String(label))}?]</a>`;
       let text;
-      if (r.kind === 'fig') text = `图 ${r.number}`;
-      else if (r.kind === 'tbl') text = `表 ${r.number}`;
+      if (r.kind === 'fig') text = `${renderer._captionPrefix.fig} ${r.number}`;
+      else if (r.kind === 'tbl') text = `${renderer._captionPrefix.tbl} ${r.number}`;
       else text = r.display;
       return `<a href="#${escAttr(String(label))}">${esc(text)}</a>`;
     },

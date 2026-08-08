@@ -2136,20 +2136,17 @@ function builtinFunctions(renderer) {
     cite: (key) => {
       const entry = renderer._data.bibliography && renderer._data.bibliography[key];
       if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
-      if (!(key in renderer._citeNumbers)) {
-        renderer._citeNumbers[key] = renderer._citeOrder.length + 1;
-        renderer._citeOrder.push(key);
-      }
+      renderer._registerCite(key);
       const num = renderer._citeNumbers[key];
       return `<sup><a href="#cite-${num}" id="ref-cite-${num}">[${esc(String(num))}]</a></sup>`;
     },
-    /** 交叉引用：图/表显示"图 N/表 N"；章节显示 显式编号 → 自动编号 → 标题全文 */
+    /** 交叉引用：图/表显示"图 N/表 N"（前缀随 captionPrefix 配置）；章节显示 显式编号 → 自动编号 → 标题全文 */
     ref: (label) => {
       const r = renderer._refs[label];
       if (!r) return `<a href="#${escAttr(String(label))}">[${esc(String(label))}?]</a>`;
       let text;
-      if (r.kind === "fig") text = `\u56FE ${r.number}`;
-      else if (r.kind === "tbl") text = `\u8868 ${r.number}`;
+      if (r.kind === "fig") text = `${renderer._captionPrefix.fig} ${r.number}`;
+      else if (r.kind === "tbl") text = `${renderer._captionPrefix.tbl} ${r.number}`;
       else text = r.display;
       return `<a href="#${escAttr(String(label))}">${esc(text)}</a>`;
     },
@@ -2416,17 +2413,11 @@ ${body}
       for (let i = 0; i < level; i++) parts.push(levelCounts[i]);
       return parts.join(sep);
     };
-    const collectCite = (key) => {
-      if (!(key in this._citeNumbers)) {
-        this._citeNumbers[key] = this._citeOrder.length + 1;
-        this._citeOrder.push(key);
-      }
-    };
     const walkExpr = (node) => {
       if (!node || typeof node !== "object") return;
       if (node.type === "call") {
         if (node.name === "cite" && node.args[0] && node.args[0].type === "string") {
-          collectCite(node.args[0].value);
+          this._registerCite(node.args[0].value);
         }
         node.args.forEach(walkExpr);
         Object.values(node.kwargs).forEach(walkExpr);
@@ -2448,7 +2439,7 @@ ${body}
       }
       if (n instanceof FunctionCall) {
         if (n.name === "cite" && n.args[0] && n.args[0].type === "string") {
-          collectCite(n.args[0].value);
+          this._registerCite(n.args[0].value);
         }
         n.args.forEach(walkExpr);
       }
@@ -2482,6 +2473,16 @@ ${body}
         counters.tbl++;
         this._refs[block.label] = { kind: "tbl", number: counters.tbl };
       }
+    }
+  }
+  /**
+   * 文献键编号：首次出现分配顺序号（_collectRefs 预收集与运行时 cite 共用）。
+   * @param {string} key
+   */
+  _registerCite(key) {
+    if (!(key in this._citeNumbers)) {
+      this._citeNumbers[key] = this._citeOrder.length + 1;
+      this._citeOrder.push(key);
     }
   }
   /** 文献条目格式化：字符串原样转义；对象拼接 authors (year). title. journal. */
@@ -2883,4 +2884,4 @@ export {
   parseFunctionArgs,
   unquote
 };
-/*! built: 2026-08-07T19:35:02.769Z */
+/*! built: 2026-08-08T04:59:32.783Z */

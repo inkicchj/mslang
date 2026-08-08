@@ -298,19 +298,12 @@ class HTMLRenderer {
       return parts.join(sep);
     };
 
-    const collectCite = (key) => {
-      if (!(key in this._citeNumbers)) {
-        this._citeNumbers[key] = this._citeOrder.length + 1;
-        this._citeOrder.push(key);
-      }
-    };
-
     // 表达式树中的 cite 调用（嵌套于 if 等函数参数）
     const walkExpr = (node) => {
       if (!node || typeof node !== 'object') return;
       if (node.type === 'call') {
         if (node.name === 'cite' && node.args[0] && node.args[0].type === 'string') {
-          collectCite(node.args[0].value);
+          this._registerCite(node.args[0].value);
         }
         node.args.forEach(walkExpr);
         Object.values(node.kwargs).forEach(walkExpr);
@@ -334,7 +327,7 @@ class HTMLRenderer {
       if (n instanceof FunctionCall) {
         // 顶层 @cite("key") 调用
         if (n.name === 'cite' && n.args[0] && n.args[0].type === 'string') {
-          collectCite(n.args[0].value);
+          this._registerCite(n.args[0].value);
         }
         // 嵌套在参数表达式中的 cite
         n.args.forEach(walkExpr);
@@ -375,6 +368,17 @@ class HTMLRenderer {
         counters.tbl++;
         this._refs[block.label] = { kind: 'tbl', number: counters.tbl };
       }
+    }
+  }
+
+  /**
+   * 文献键编号：首次出现分配顺序号（_collectRefs 预收集与运行时 cite 共用）。
+   * @param {string} key
+   */
+  _registerCite(key) {
+    if (!(key in this._citeNumbers)) {
+      this._citeNumbers[key] = this._citeOrder.length + 1;
+      this._citeOrder.push(key);
     }
   }
 
