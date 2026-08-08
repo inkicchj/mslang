@@ -3766,6 +3766,11 @@ var mslang = (() => {
         if (config && typeof config === "object") renderer._mergeSet(config);
         return "";
       },
+      /** 插件注册：@plugin("name", "(args, kwargs) => ...")，无输出；文档内定义可复用函数（new Function 全局作用域） */
+      plugin: (name, body) => {
+        if (typeof name === "string" && typeof body === "string") renderer._registerPlugin(name, body);
+        return "";
+      },
       /** 变量声明：@let("name", value)，无输出；变量全文档可见（预扫描注册） */
       let: (name, value) => {
         if (typeof name === "string") renderer._variables[name] = value;
@@ -23937,6 +23942,17 @@ ${items.join("\n")}
   // src/renderer.js
   var HLJS_LANGUAGES = { javascript, typescript, python, java, c, cpp, go, rust, bash, json, sql, xml, css, markdown };
   for (const [name, lang] of Object.entries(HLJS_LANGUAGES)) core_default.registerLanguage(name, lang);
+  var MATH_CACHE = /* @__PURE__ */ new Map();
+  var CODE_CACHE = /* @__PURE__ */ new Map();
+  var CACHE_LIMIT = 500;
+  function cacheGet(map, key) {
+    return map.get(key);
+  }
+  function cacheSet(map, key, value) {
+    if (map.size >= CACHE_LIMIT) map.delete(map.keys().next().value);
+    map.set(key, value);
+    return value;
+  }
   var katexCss = "";
   try {
     if (true) {
@@ -24061,7 +24077,8 @@ ${items.join("\n")}
         mathRenderer = null,
         mathFontsPath = "",
         codeRenderer = null,
-        citeStyle = "numeric"
+        citeStyle = "numeric",
+        allowPlugins = true
       } = opts;
       this._data = data || {};
       this._variables = variables || {};
@@ -24075,6 +24092,7 @@ ${items.join("\n")}
       this._mathFontsPath = mathFontsPath || "";
       this._codeRenderer = codeRenderer || null;
       this._citeStyle = citeStyle || "numeric";
+      this._allowPlugins = allowPlugins !== false;
       this._evalCtx = { functions: this._functions, variables: this._variables };
       this._output = [];
       this._asyncSlots = null;
@@ -24082,6 +24100,7 @@ ${items.join("\n")}
       this._mathRendererCustom = !!mathRenderer;
       this._termOrder = [];
       this._hasHighlight = false;
+      this._pluginCache = /* @__PURE__ */ new Map();
     }
     /** 解析输入为 Document（render / renderAsync 共用） */
     _parseDoc(source) {
@@ -24134,6 +24153,7 @@ ${body}
       this._eachInline(doc, (n) => {
         if (n instanceof FunctionCall && n.name === "set") this._applySet(n);
         else if (n instanceof FunctionCall && n.name === "let") this._applyLet(n);
+        else if (n instanceof FunctionCall && n.name === "plugin") this._applyPlugin(n);
       });
     }
     _applySet(node) {
@@ -24158,6 +24178,36 @@ ${body}
       } catch (e) {
       }
     }
+    /**
+     * 预扫描注册 @plugin 声明的函数（与 @set/@let 同步执行）。
+     * 编译失败/未开启时忽略，渲染阶段由函数调用输出错误注释。
+     */
+    _applyPlugin(node) {
+      if (node.error || node.args.length < 2) return;
+      try {
+        const name = evaluate(node.args[0], this._evalCtx);
+        const body = evaluate(node.args[1], this._evalCtx);
+        if (typeof name === "string" && typeof body === "string") this._registerPlugin(name, body);
+      } catch (e) {
+      }
+    }
+    /**
+     * 插件编译注册：new Function 编译函数表达式（全局作用域，签名与内置一致 ...args, kwargs）。
+     * 同 body 编译缓存；allowPlugins 关闭时不注册。
+     */
+    _registerPlugin(name, body) {
+      if (!this._allowPlugins) return;
+      let fn = this._pluginCache.get(body);
+      if (fn === void 0) {
+        try {
+          fn = new Function(`return (${body});`)();
+        } catch (e) {
+          fn = null;
+        }
+        this._pluginCache.set(body, fn);
+      }
+      if (typeof fn === "function") this._functions[name] = fn;
+    }
     /** 白名单合并：@set 覆盖同名选项；terms/bibliography 增量合并（可多次设置） */
     _mergeSet(config) {
       for (const key of _HTMLRenderer.SET_KEYS) {
@@ -24178,6 +24228,8 @@ ${body}
           this[`_${key}`] = config[key] || "";
         } else if (key === "citeStyle") {
           this._citeStyle = config[key] || "numeric";
+        } else if (key === "allowPlugins") {
+          this._allowPlugins = config[key] !== false;
         } else {
           this[key] = config[key];
         }
@@ -24453,7 +24505,11 @@ ${body}
       let hljsClass = "";
       if (node.language && core_default.getLanguage(node.language)) {
         this._hasHighlight = true;
-        codeHtml = core_default.highlight(node.code, { language: node.language }).value;
+        const key = `${node.language}|${node.code}`;
+        codeHtml = cacheGet(CODE_CACHE, key);
+        if (codeHtml === void 0) {
+          codeHtml = cacheSet(CODE_CACHE, key, core_default.highlight(node.code, { language: node.language }).value);
+        }
         hljsClass = ` class="hljs language-${this._escAttr(node.language)}"`;
       }
       this._write(`<pre${langAttr}><code${hljsClass}>${codeHtml}</code></pre>`);
@@ -24533,11 +24589,21 @@ ${body}
     /**
      * 公式：行内 <span class="math-inline">，块级 <div class="math">。
      * mathRenderer 选项存在时调用其渲染（返回 HTML 不转义），否则源码转义透传。
+     * 内置 KaTeX 渲染结果按 (inline, 源码) 缓存，跨实例复用。
      * 块级公式带 caption 时包 <figure>（与图片一致）。
      */
     visit_Equation(node) {
       this._hasMath = true;
-      const html = this._mathRenderer ? this._mathRenderer(node.source, node.inline) : this._esc(node.source);
+      let html;
+      if (this._mathRendererCustom) {
+        html = this._mathRenderer(node.source, node.inline);
+      } else {
+        const key = `${node.inline ? "i" : "b"}|${node.source}`;
+        html = cacheGet(MATH_CACHE, key);
+        if (html === void 0) {
+          html = cacheSet(MATH_CACHE, key, this._mathRenderer(node.source, node.inline));
+        }
+      }
       const id = node.label ? ` id="${this._escAttr(node.label)}"` : "";
       if (node.inline) {
         this._write(`<span class="math-inline"${id}>${html}</span>`);
@@ -24712,7 +24778,7 @@ ${body}
   // 文档内配置（@set）
   // ================================================================
   // @set 白名单：仅这些键可被文档内配置覆盖
-  __publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables", "terms", "bibliography", "captionPrefix", "citeKeyAttr", "termKeyAttr", "refKeyAttr", "citeStyle"]);
+  __publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables", "terms", "bibliography", "captionPrefix", "citeKeyAttr", "termKeyAttr", "refKeyAttr", "citeStyle", "allowPlugins"]);
   // 引用/术语 data 属性名（工作台交互定位用；空串关闭）
   __publicField(_HTMLRenderer, "DEFAULT_KEY_ATTRS", { citeKeyAttr: "data-cite-key", termKeyAttr: "data-term-key", refKeyAttr: "data-ref-label" });
   // caption 前缀（默认中文，可用 @set 覆盖）
@@ -24758,9 +24824,10 @@ ${body}
       mathRenderer: options.mathRenderer,
       mathFontsPath: options.mathFontsPath,
       codeRenderer: options.codeRenderer,
-      citeStyle: options.citeStyle
+      citeStyle: options.citeStyle,
+      allowPlugins: options.allowPlugins
     };
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-08T06:52:19.602Z */
+/*! built: 2026-08-08T07:07:18.237Z */

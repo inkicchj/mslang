@@ -39,6 +39,20 @@ import markdown from 'highlight.js/lib/languages/markdown';
 const HLJS_LANGUAGES = { javascript, typescript, python, java, c, cpp, go, rust, bash, json, sql, xml, css, markdown };
 for (const [name, lang] of Object.entries(HLJS_LANGUAGES)) hljs.registerLanguage(name, lang);
 
+// KaTeX / hljs 渲染结果缓存（跨 render 实例共享，供工作台增量重渲复用）。
+// 二者输出是确定性纯函数，memoization 安全；上限防内存膨胀（超限淘汰最早插入）。
+const MATH_CACHE = new Map();
+const CODE_CACHE = new Map();
+const CACHE_LIMIT = 500;
+function cacheGet(map, key) {
+  return map.get(key);
+}
+function cacheSet(map, key, value) {
+  if (map.size >= CACHE_LIMIT) map.delete(map.keys().next().value);
+  map.set(key, value);
+  return value;
+}
+
 // KaTeX CSS 内容：dist 由 esbuild define 注入；Node 直接运行 src/ 时读取依赖包内文件。
 // 文档含公式且未自定义 mathRenderer 时内联 <style>（katex 输出依赖此 CSS 排版）。
 let katexCss = '';
@@ -670,12 +684,17 @@ class HTMLRenderer {
       return;
     }
     const langAttr = node.language ? ` data-language="${this._escAttr(node.language)}"` : '';
-    // 代码高亮：语言在 hljs 子集内时输出 hljs 渲染（已转义，class 带语言标记）
+    // 代码高亮：语言在 hljs 子集内时输出 hljs 渲染（已转义，class 带语言标记）；
+    // 结果按 (language, code) 缓存，跨实例复用
     let codeHtml = this._esc(node.code);
     let hljsClass = '';
     if (node.language && hljs.getLanguage(node.language)) {
       this._hasHighlight = true;
-      codeHtml = hljs.highlight(node.code, { language: node.language }).value;
+      const key = `${node.language}|${node.code}`;
+      codeHtml = cacheGet(CODE_CACHE, key);
+      if (codeHtml === undefined) {
+        codeHtml = cacheSet(CODE_CACHE, key, hljs.highlight(node.code, { language: node.language }).value);
+      }
       hljsClass = ` class="hljs language-${this._escAttr(node.language)}"`;
     }
     this._write(`<pre${langAttr}><code${hljsClass}>${codeHtml}</code></pre>`);
@@ -763,13 +782,21 @@ class HTMLRenderer {
   /**
    * 公式：行内 <span class="math-inline">，块级 <div class="math">。
    * mathRenderer 选项存在时调用其渲染（返回 HTML 不转义），否则源码转义透传。
+   * 内置 KaTeX 渲染结果按 (inline, 源码) 缓存，跨实例复用。
    * 块级公式带 caption 时包 <figure>（与图片一致）。
    */
   visit_Equation(node) {
     this._hasMath = true;
-    const html = this._mathRenderer
-      ? this._mathRenderer(node.source, node.inline)
-      : this._esc(node.source);
+    let html;
+    if (this._mathRendererCustom) {
+      html = this._mathRenderer(node.source, node.inline);
+    } else {
+      const key = `${node.inline ? 'i' : 'b'}|${node.source}`;
+      html = cacheGet(MATH_CACHE, key);
+      if (html === undefined) {
+        html = cacheSet(MATH_CACHE, key, this._mathRenderer(node.source, node.inline));
+      }
+    }
     const id = node.label ? ` id="${this._escAttr(node.label)}"` : '';
     if (node.inline) {
       this._write(`<span class="math-inline"${id}>${html}</span>`);

@@ -292,6 +292,17 @@ test('公式：字体 URL 重写为 CDN（默认）与 mathFontsPath（本地托
   assert.ok(!h2.includes('jsdelivr'));
 });
 
+test('公式/代码渲染缓存：输出一致且跨实例复用', () => {
+  const doc = '$a^2$ 与 $a^2$ 与 ```js\nvar x = 1;\n``` 与 ```js\nvar x = 1;\n```';
+  // 冷渲染与缓存命中渲染输出逐字节一致
+  const h1 = mslangToHTML(doc);
+  const h2 = mslangToHTML(doc);
+  assert.strictEqual(h1, h2);
+  // 自定义 mathRenderer 不走缓存（不影响输出）
+  const h3 = mslangToHTML('$x$ $x$', { mathRenderer: (s) => `[${s}]` });
+  assert.match(h3, /\[x\]<\/span> <span class="math-inline">\[x\]/);
+});
+
 test('escapeHtml 默认转义正文特殊字符', () => {
   const h = mslangToHTML('a < b & c');
   assert.match(h, /a &lt; b &amp; c/);
