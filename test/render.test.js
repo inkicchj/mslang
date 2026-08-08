@@ -199,6 +199,15 @@ test('公式：文档自动内联 KaTeX CSS（wrapper 外）', () => {
   assert.ok(!mslangToHTML('$x$', { mathRenderer: (s, i) => 'X' }).includes('<style>'));
 });
 
+test('公式：字体 URL 重写为 CDN（默认）与 mathFontsPath（本地托管）', () => {
+  const h = mslangToHTML('$x$');
+  assert.match(h, /url\(https:\/\/cdn\.jsdelivr\.net\/npm\/katex@[\d.]+\/dist\/fonts\//);
+  // 本地托管：mathFontsPath 覆盖
+  const h2 = mslangToHTML('$x$', { mathFontsPath: '/assets/katex-fonts/' });
+  assert.match(h2, /url\(\/assets\/katex-fonts\//);
+  assert.ok(!h2.includes('jsdelivr'));
+});
+
 test('escapeHtml 默认转义正文特殊字符', () => {
   const h = mslangToHTML('a < b & c');
   assert.match(h, /a &lt; b &amp; c/);

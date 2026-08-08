@@ -106,5 +106,6 @@ function _renderOptions(options) {
     termKeyAttr: options.termKeyAttr,
     refKeyAttr: options.refKeyAttr,
     mathRenderer: options.mathRenderer,
+    mathFontsPath: options.mathFontsPath,
   };
 }

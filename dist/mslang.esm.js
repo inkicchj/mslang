@@ -16313,6 +16313,7 @@ try {
 } catch {
   katexCss = "";
 }
+var KATEX_FONTS_CDN = `https://cdn.jsdelivr.net/npm/katex@${katex.version}/dist/fonts/`;
 var _HTMLRenderer = class _HTMLRenderer {
   /**
    * @param {object} [opts]
@@ -16409,7 +16410,8 @@ var _HTMLRenderer = class _HTMLRenderer {
       citeKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.citeKeyAttr,
       termKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.termKeyAttr,
       refKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.refKeyAttr,
-      mathRenderer = null
+      mathRenderer = null,
+      mathFontsPath = ""
     } = opts;
     this._data = data || {};
     this._variables = variables || {};
@@ -16420,6 +16422,7 @@ var _HTMLRenderer = class _HTMLRenderer {
     this._termKeyAttr = termKeyAttr || "";
     this._refKeyAttr = refKeyAttr || "";
     this._mathRenderer = mathRenderer || ((src, inline) => katex.renderToString(src, { displayMode: !inline, throwOnError: false }));
+    this._mathFontsPath = mathFontsPath || "";
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
@@ -16970,10 +16973,14 @@ ${body}
   // ================================================================
   // 辅助方法
   // ================================================================
-  /** 文档含公式且未自定义 mathRenderer 时，返回内联的 KaTeX CSS <style>（置于 wrapper 外） */
+  /** 文档含公式且未自定义 mathRenderer 时，返回内联的 KaTeX CSS <style>（置于 wrapper 外）
+   * 字体 URL 重写：默认 jsdelivr CDN，mathFontsPath 选项可指向本地托管目录。 */
   _mathStyle() {
-    return this._hasMath && !this._mathRendererCustom && katexCss ? `<style>${katexCss}</style>
-` : "";
+    if (!(this._hasMath && !this._mathRendererCustom && katexCss)) return "";
+    const fontsPath = this._mathFontsPath || KATEX_FONTS_CDN;
+    const css = katexCss.replace(/url\(fonts\//g, `url(${fontsPath}`);
+    return `<style>${css}</style>
+`;
   }
   _write(text2) {
     this._output.push(text2);
@@ -17034,7 +17041,8 @@ function _renderOptions(options) {
     citeKeyAttr: options.citeKeyAttr,
     termKeyAttr: options.termKeyAttr,
     refKeyAttr: options.refKeyAttr,
-    mathRenderer: options.mathRenderer
+    mathRenderer: options.mathRenderer,
+    mathFontsPath: options.mathFontsPath
   };
 }
 export {
@@ -17085,4 +17093,4 @@ export {
   parseArgs,
   parseExpression
 };
-/*! built: 2026-08-08T06:15:12.622Z */
+/*! built: 2026-08-08T06:17:49.563Z */

@@ -32,6 +32,9 @@ try {
   }
 } catch { katexCss = ''; }
 
+// KaTeX 字体默认 CDN（与内联 CSS 的 @font-face 对应；可用 mathFontsPath 选项本地托管）
+const KATEX_FONTS_CDN = `https://cdn.jsdelivr.net/npm/katex@${katex.version}/dist/fonts/`;
+
 // ================================================================
 // HTMLRenderer
 // ================================================================
@@ -139,6 +142,7 @@ class HTMLRenderer {
       termKeyAttr = HTMLRenderer.DEFAULT_KEY_ATTRS.termKeyAttr,
       refKeyAttr = HTMLRenderer.DEFAULT_KEY_ATTRS.refKeyAttr,
       mathRenderer = null,
+      mathFontsPath = '',
     } = opts;
     this._data = data || {};
     this._variables = variables || {};
@@ -151,6 +155,7 @@ class HTMLRenderer {
     // mathRenderer 默认使用内置 KaTeX 渲染（可传选项覆盖）
     this._mathRenderer = mathRenderer || ((src, inline) =>
       katex.renderToString(src, { displayMode: !inline, throwOnError: false }));
+    this._mathFontsPath = mathFontsPath || '';
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
@@ -781,11 +786,13 @@ class HTMLRenderer {
   // 辅助方法
   // ================================================================
 
-  /** 文档含公式且未自定义 mathRenderer 时，返回内联的 KaTeX CSS <style>（置于 wrapper 外） */
+  /** 文档含公式且未自定义 mathRenderer 时，返回内联的 KaTeX CSS <style>（置于 wrapper 外）
+   * 字体 URL 重写：默认 jsdelivr CDN，mathFontsPath 选项可指向本地托管目录。 */
   _mathStyle() {
-    return (this._hasMath && !this._mathRendererCustom && katexCss)
-      ? `<style>${katexCss}</style>\n`
-      : '';
+    if (!(this._hasMath && !this._mathRendererCustom && katexCss)) return '';
+    const fontsPath = this._mathFontsPath || KATEX_FONTS_CDN;
+    const css = katexCss.replace(/url\(fonts\//g, `url(${fontsPath}`);
+    return `<style>${css}</style>\n`;
   }
 
   _write(text) { this._output.push(text); }
