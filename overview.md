@@ -110,6 +110,23 @@ const html = mslangToHTMLAll(['引言.md', '方法.md', '参考文献.md'], { da
 - `mathRenderer` 选项可覆盖默认渲染（如自定义 KaTeX 选项或换其他引擎）；`throwOnError: false` 容错渲染错误公式
 - 编号体系与图/表统一：`captionPrefix` 默认含 `eq: '式'`，跨文档合并自动连续
 
+### 插件（文档内自定义函数，默认开启）
+
+```md
+@plugin("double", "(x, kwargs) => x * 2")     // new Function 编译，签名与内置一致 (...args, kwargs)
+@double(21)                                    →  42
+
+@plugin("ul", `(items) => items.map(i => "<li>" + i + "</li>").join("")`)
+@ul(["a", "b"])                                →  <li>a</li><li>b</li>
+
+@plugin("fetch", `async (u) => "<b>" + u + "</b>"`)   // 异步插件需 mslangToHTMLAsync
+```
+
+- 预扫描阶段注册（与 `@set`/`@let` 同机制），**全文档可见、跨文档合并可用**；可覆盖内置/宿主同名函数；同 body 编译缓存
+- **默认开启**；`allowPlugins: false`（API 或 `@set`）可关闭——关闭后 `@plugin` 不注册，调用输出错误注释
+- ⚠️ **安全提示**：插件函数体是真实 JS（`new Function` 全局作用域），文档即代码——仅在可信文档上开启
+- 函数体无法捕获文档内 `@let` 变量（全局作用域），请通过参数/kwargs 传值
+
 ### 引用样式与术语表
 
 ```js

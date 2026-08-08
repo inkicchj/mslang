@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mslangToHTML, mslangToHTMLAll, mslangToHTMLAllAsync,
+  mslangToHTML, mslangToHTMLAsync, mslangToHTMLAll, mslangToHTMLAllAsync,
   HTMLRenderer, mergeDocuments, Parser, Lexer, dumpAST,
 } from '../src/index.js';
 
@@ -109,4 +109,36 @@ test('dumpAST 输出树形结构', () => {
 test('错误容错：表达式语法错误输出注释不崩溃', () => {
   const h = mslangToHTML('@if(, "a", "b")');
   assert.match(h, /参数解析错误/);
+});
+
+test('插件：@plugin 注册与调用', () => {
+  assert.match(mslangToHTML('@plugin("double", "(x) => x * 2")\n\n@double(21)'), /42/);
+  // kwargs
+  const h = mslangToHTML('@plugin("wrap", "(x, kwargs) => \\"<\\" + kwargs.tag + \\">\\" + x + \\"</\\" + kwargs.tag + \\">\\"")\n\n@wrap("hi", tag="em")');
+  assert.match(h, /<em>hi<\/em>/);
+  // 动态 HTML 渲染
+  const h2 = mslangToHTML('@plugin("ul", "(items) => items.map(i => \\"<li>\\" + i + \\"</li>\\").join(\\"\\")")\n\n@ul(["a", "b"])');
+  assert.match(h2, /<li>a<\/li><li>b<\/li>/);
+});
+
+test('插件：覆盖内置/宿主函数、错误容错、开关', () => {
+  // 覆盖内置 cite
+  const h = mslangToHTML('@plugin("cite", "(x) => \\"X\\"") 与 @cite("k")', {
+    data: { bibliography: { k: { number: 1 } } },
+  });
+  assert.match(h, /X/);
+  assert.ok(!h.includes('cite-1'));
+  // 编译错误容错（不崩溃）
+  assert.match(mslangToHTML('@plugin("bad", "((")\n\n@bad(1)'), /<!-- mslang/);
+  // allowPlugins 默认开启；可关闭（API 与 @set）
+  assert.match(mslangToHTML('@plugin("f", "(x) => 1")\n\n@f(1)', { allowPlugins: false }), /<!-- mslang/);
+  assert.match(mslangToHTML('@set({ allowPlugins: false })\n@plugin("f", "(x) => 1")\n\n@f(1)'), /<!-- mslang/);
+});
+
+test('插件：异步与跨文档合并', async () => {
+  const ah = await mslangToHTMLAsync('@plugin("fetch", "async (u) => \\"<b>\\" + u + \\"</b>\\"")\n\n@fetch("api")');
+  assert.match(ah, /<b>api<\/b>/);
+  // 文档1注册，文档2调用
+  const h = mslangToHTMLAll(['@plugin("inc", "(x) => x + 1")', '@inc(41)']);
+  assert.match(h, /42/);
 });

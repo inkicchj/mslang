@@ -109,5 +109,6 @@ function _renderOptions(options) {
     mathFontsPath: options.mathFontsPath,
     codeRenderer: options.codeRenderer,
     citeStyle: options.citeStyle,
+    allowPlugins: options.allowPlugins,
   };
 }

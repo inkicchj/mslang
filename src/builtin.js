@@ -57,6 +57,12 @@ export function builtinFunctions(renderer) {
       return '';
     },
 
+    /** 插件注册：@plugin("name", "(args, kwargs) => ...")，无输出；文档内定义可复用函数（new Function 全局作用域） */
+    plugin: (name, body) => {
+      if (typeof name === 'string' && typeof body === 'string') renderer._registerPlugin(name, body);
+      return '';
+    },
+
     /** 变量声明：@let("name", value)，无输出；变量全文档可见（预扫描注册） */
     let: (name, value) => {
       if (typeof name === 'string') renderer._variables[name] = value;

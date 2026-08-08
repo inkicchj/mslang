@@ -178,6 +178,7 @@ class HTMLRenderer {
       mathFontsPath = '',
       codeRenderer = null,
       citeStyle = 'numeric',
+      allowPlugins = true,
     } = opts;
     this._data = data || {};
     this._variables = variables || {};
@@ -193,6 +194,7 @@ class HTMLRenderer {
     this._mathFontsPath = mathFontsPath || '';
     this._codeRenderer = codeRenderer || null;
     this._citeStyle = citeStyle || 'numeric';
+    this._allowPlugins = allowPlugins !== false;
     this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
@@ -200,6 +202,7 @@ class HTMLRenderer {
     this._mathRendererCustom = !!mathRenderer;
     this._termOrder = [];
     this._hasHighlight = false;
+    this._pluginCache = new Map();
   }
 
   /** 解析输入为 Document（render / renderAsync 共用） */
@@ -223,7 +226,7 @@ class HTMLRenderer {
   // ================================================================
 
   // @set 白名单：仅这些键可被文档内配置覆盖
-  static SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables', 'terms', 'bibliography', 'captionPrefix', 'citeKeyAttr', 'termKeyAttr', 'refKeyAttr', 'citeStyle'];
+  static SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables', 'terms', 'bibliography', 'captionPrefix', 'citeKeyAttr', 'termKeyAttr', 'refKeyAttr', 'citeStyle', 'allowPlugins'];
 
   // 引用/术语 data 属性名（工作台交互定位用；空串关闭）
   static DEFAULT_KEY_ATTRS = { citeKeyAttr: 'data-cite-key', termKeyAttr: 'data-term-key', refKeyAttr: 'data-ref-label' };
@@ -270,6 +273,7 @@ class HTMLRenderer {
     this._eachInline(doc, (n) => {
       if (n instanceof FunctionCall && n.name === 'set') this._applySet(n);
       else if (n instanceof FunctionCall && n.name === 'let') this._applyLet(n);
+      else if (n instanceof FunctionCall && n.name === 'plugin') this._applyPlugin(n);
     });
   }
 
@@ -299,6 +303,39 @@ class HTMLRenderer {
     }
   }
 
+  /**
+   * 预扫描注册 @plugin 声明的函数（与 @set/@let 同步执行）。
+   * 编译失败/未开启时忽略，渲染阶段由函数调用输出错误注释。
+   */
+  _applyPlugin(node) {
+    if (node.error || node.args.length < 2) return;
+    try {
+      const name = evaluate(node.args[0], this._evalCtx);
+      const body = evaluate(node.args[1], this._evalCtx);
+      if (typeof name === 'string' && typeof body === 'string') this._registerPlugin(name, body);
+    } catch (e) {
+      // 求值失败忽略（如参数非字面量）
+    }
+  }
+
+  /**
+   * 插件编译注册：new Function 编译函数表达式（全局作用域，签名与内置一致 ...args, kwargs）。
+   * 同 body 编译缓存；allowPlugins 关闭时不注册。
+   */
+  _registerPlugin(name, body) {
+    if (!this._allowPlugins) return;
+    let fn = this._pluginCache.get(body);
+    if (fn === undefined) {
+      try {
+        fn = new Function(`return (${body});`)();
+      } catch (e) {
+        fn = null; // 编译失败：调用时输出错误注释
+      }
+      this._pluginCache.set(body, fn);
+    }
+    if (typeof fn === 'function') this._functions[name] = fn;
+  }
+
   /** 白名单合并：@set 覆盖同名选项；terms/bibliography 增量合并（可多次设置） */
   _mergeSet(config) {
     for (const key of HTMLRenderer.SET_KEYS) {
@@ -320,6 +357,8 @@ class HTMLRenderer {
         this[`_${key}`] = config[key] || '';
       } else if (key === 'citeStyle') {
         this._citeStyle = config[key] || 'numeric';
+      } else if (key === 'allowPlugins') {
+        this._allowPlugins = config[key] !== false;
       } else {
         this[key] = config[key];
       }
