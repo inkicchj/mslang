@@ -499,26 +499,46 @@ const html = render(['引言.md', '方法.md', '参考文献.md'], { data: {...}
 
 ## 块级编辑
 
-用于块级编辑器（类 Notion）：只更新变化的块 DOM。
+用于块级编辑器（类 Notion）：只更新变化的块 DOM。**首选 `BlockEditor` 封装**（单一接口，状态/降级内置）；底层 API（哨兵/diffBlocks/renderBlock）也公开可用。
+
+### BlockEditor（推荐）
+
+```javascript
+import { BlockEditor } from 'mslang';
+
+const ed = new BlockEditor(source, { data, headingNumbering: '1' });
+
+// ① 初始渲染：切分每块 html + 脚注区（已剥离 wrapper），宿主直接铺 DOM
+const { blocks, footnotes } = ed.render();
+// blocks = { 0: '<h1>…</h1>', 1: '<p>…</p>', ... }   footnotes = '<hr>…'
+
+// ② 编辑块 i（内部：拼源码 → 全量重渲 → diff → 局部/全量决策）
+const r = ed.update(3, '新文本');
+// r.changed = [3]（或 [1,4] 编号传播）；r.blocks = { 3: '<p>…</p>' }
+// r.full = true 时 r.blocks 为全量（块数变化/变化多 > 3 时降级）
+// r.blocks.footnotes 存在 = 脚注区也变化
+
+// ③ 脚注定义行不属于任何块：用 updateSource 逃生口改全文
+const r2 = ed.updateSource(source.replace('[^n]: 旧', '[^n]: 新'));
+
+// ④ 数据更新后重渲
+ed.setOptions({ data: newData });
+ed.render();
+```
+
+- 内部状态机（source/hashes/块区间）自动同步，宿主无需维护
+- 块 raw 含块间空行分隔，编辑时自动保留（防块合并）；宿主存回文本原样即可
+- 降级规则：块数变化或变化块 > 3 → `full: true` 全量重建
+
+### 底层 API（自定义流程用）
 
 ```javascript
 import { render, Parser, diffBlocks, HTMLRenderer } from 'mslang';
-
 const { html, blockHashes } = render(source, { blocks: true });
 // html: 含 <!--mslang:N--> 块哨兵（脚注区为 <!--mslang:footnotes-->）
-// blockHashes[N] = 块源 + 编号前缀快照哈希
-
-// 编辑块 i 后的宿主侧闭环：
-//   1. 替换 source 中 [startPos, endPos) 区间（Parser.parseText(source).blocks[i]）
-//   2. 重渲全文档 render(source, { blocks: true })（parse 微秒级；公式/代码命中缓存）
-//   3. diffBlocks(oldHashes, newHashes) → 变化块索引数组（含 'footnotes'）
-//   4. 单块重渲 renderer.renderBlock(source, i) → 只替换该块 DOM
-const renderer = new HTMLRenderer();
-const changed = diffBlocks(beforeHashes, afterHashes);
-for (const i of changed.filter(x => typeof x === 'number')) {
-  const blockHtml = renderer.renderBlock(source, i);
-  // 替换 <div data-block="i"> 内容
-}
+// blockHashes[N] = 块源 + 编号前缀快照 + 渲染依赖哈希
+const changed = diffBlocks(oldHashes, newHashes);        // 变化块索引（含 'footnotes'）
+renderer.renderBlock(source, i);                          // 单块重渲
 ```
 
 - 块区间连续覆盖文档源；caption 归并行并入前块；脚注定义行不属于任何块（截断）
@@ -593,7 +613,7 @@ onInput(i, newText) {
 ## API 参考
 
 ```javascript
-import { render, HTMLRenderer, Parser, dumpAST } from 'mslang';
+import { render, HTMLRenderer, Parser, dumpAST, diffBlocks, BlockEditor } from 'mslang';
 ```
 
 ### `render(source, options)`

@@ -28,9 +28,10 @@
 
 import { Parser, dumpAST, mergeDocuments } from './parser.js';
 import { HTMLRenderer, diffBlocks } from './renderer.js';
+import { BlockEditor } from './blockeditor.js';
 import { Document } from './nodes.js';
 
-export { HTMLRenderer, Parser, dumpAST, diffBlocks };
+export { HTMLRenderer, Parser, dumpAST, diffBlocks, BlockEditor };
 
 /**
  * mslang 唯一渲染入口。

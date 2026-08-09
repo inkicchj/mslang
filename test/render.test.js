@@ -1,7 +1,7 @@
 // renderer 渲染测试：基础语法、表达式、内置函数、配置、异步
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { render, HTMLRenderer, diffBlocks, Parser } from '../src/index.js';
+import { render, HTMLRenderer, diffBlocks, Parser, BlockEditor } from '../src/index.js';
 
 const data = {
   bibliography: {
@@ -439,7 +439,39 @@ test('数组 + blocks：多文档合并块级渲染', () => {
   assert.ok(typeof r.blockHashes === 'object');
 });
 
+test('BlockEditor：分块渲染单一接口', () => {
+  const ed = new BlockEditor('# 标题\n\n段落\n\n注[^n]\n\n[^n]: 脚注');
+  const init = ed.render();
+  assert.strictEqual(Object.keys(init.blocks).length, 3);
+  assert.ok(init.blocks[0].includes('<h1>标题</h1>') && init.footnotes.includes('脚注'));
+  // 局部更新（纯文本）
+  const u = ed.update(1, '改后的段落');
+  assert.strictEqual(u.full, false);
+  assert.deepStrictEqual(u.changed, [1]);
+  assert.ok(u.blocks[1].includes('改后的段落') && ed.source.includes('改后的段落'));
+  // 连续更新（状态保持）
+  const u2 = ed.update(1, '再改');
+  assert.ok(u2.blocks[1].includes('再改'));
+  // 块数变化 → full
+  const ed3 = new BlockEditor('# 一\n\n二');
+  ed3.render();
+  const r3 = ed3.update(1, '二\n\n三');
+  assert.strictEqual(r3.full, true);
+  assert.strictEqual(Object.keys(r3.blocks).length, 3);
+  // 脚注定义行不属于块 → updateSource 逃生口
+  const ed4 = new BlockEditor('正文[^n]\n\n[^n]: 旧注');
+  ed4.render();
+  const r4 = ed4.updateSource('正文[^n]\n\n[^n]: 新注');
+  assert.ok(r4.changed.includes('footnotes') && r4.blocks.footnotes.includes('新注'));
+  // 依赖触发（@let 变 → 引用块）
+  const ed5 = new BlockEditor('@let("s", 1)\n\n值 @if(s == 1, "a", "b")');
+  ed5.render();
+  const r5 = ed5.update(0, '@let("s", 2)');
+  assert.ok(!r5.full && r5.changed.includes(1) && r5.blocks[1].includes('b'));
+});
+
 test('公式/代码渲染缓存：输出一致且跨实例复用', () => {
+
   const doc = '$a^2$ 与 $a^2$ 与 ```js\nvar x = 1;\n``` 与 ```js\nvar x = 1;\n```';
   // 冷渲染与缓存命中渲染输出逐字节一致
   const h1 = render(doc);

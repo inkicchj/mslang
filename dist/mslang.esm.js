@@ -28089,6 +28089,108 @@ function diffBlocks(oldHashes, newHashes) {
   });
 }
 
+// src/blockeditor.js
+var FULL_REBUILD_THRESHOLD = 3;
+function splitBlockHTML(html) {
+  const blocks = {};
+  const markers = [...html.matchAll(/<!--mslang:(\d+)-->/g)].map((m) => ({ i: Number(m[1]), start: m.index, end: m.index + m[0].length }));
+  const fm = html.indexOf("<!--mslang:footnotes-->");
+  const fmEnd = fm === -1 ? -1 : fm + "<!--mslang:footnotes-->".length;
+  for (let k = 0; k < markers.length; k++) {
+    const start = markers[k].end;
+    const end = k + 1 < markers.length ? markers[k + 1].start : fm !== -1 ? fm : html.length;
+    blocks[markers[k].i] = html.slice(start, end);
+  }
+  let footnotes = "";
+  if (fm !== -1) {
+    footnotes = html.slice(fmEnd).replace(/<\/div>\s*$/, "");
+  }
+  return { blocks, footnotes };
+}
+var BlockEditor = class {
+  /**
+   * @param {string} source - mslang 全文
+   * @param {object} [options] - 与 render() 相同（data/variables/headingNumbering/…）
+   */
+  constructor(source2, options = {}) {
+    this.source = source2;
+    this.options = { ...options };
+    this.renderer = new HTMLRenderer({
+      functions: options.functions,
+      escapeHtml: options.escapeHtml,
+      pretty: options.pretty
+    });
+    this.parser = new Parser();
+    this.hashes = null;
+    this.blocks = [];
+    this._blockHtml = {};
+    this._footnotesHtml = "";
+  }
+  /** 初始渲染：切分每块 html + 脚注区 + 哈希。必须先调用，之后才可 update。 */
+  render() {
+    const { html, blockHashes } = this.renderer.renderBlocks(this.source, this.options);
+    const { blocks, footnotes } = splitBlockHTML(html);
+    this.hashes = blockHashes;
+    this.blocks = this.parser.parseText(this.source).blocks;
+    this._blockHtml = blocks;
+    this._footnotesHtml = footnotes;
+    return { blocks, footnotes, hashes: blockHashes };
+  }
+  /**
+   * 编辑块 i：替换源码区间 → 全量重渲 → diff → 局部/全量决策。
+   * @param {number} i - 块索引
+   * @param {string} newText - 块新文本（原样保存，勿 trim）
+   * @returns {{ changed: Array<number|string>, blocks: Object, footnotes?: string, full: boolean }}
+   */
+  update(i, newText) {
+    const b = this.blocks[i];
+    if (!b) throw new Error(`\u5757 ${i} \u4E0D\u5B58\u5728\uFF08\u5171 ${this.blocks.length} \u5757\uFF09`);
+    const raw = b.raw || "";
+    let contentEnd = b.endPos;
+    if (raw.endsWith("\n")) contentEnd -= (raw.match(/\n+$/)[0] || "").length;
+    const newSource = this.source.slice(0, b.startPos) + newText + this.source.slice(contentEnd);
+    return this.updateSource(newSource);
+  }
+  /**
+   * 以新源码重渲（逃生口：可改任意部分，含脚注定义行——它不属于任何块）。
+   * 与 update() 相同的局部/全量决策。
+   * @param {string} newSource
+   * @returns {{ changed: Array<number|string>, blocks: Object, footnotes?: string, full: boolean }}
+   */
+  updateSource(newSource) {
+    const { html, blockHashes } = this.renderer.renderBlocks(newSource, this.options);
+    const changed = diffBlocks(this.hashes, blockHashes);
+    const nextBlocks = this.parser.parseText(newSource).blocks;
+    const full = nextBlocks.length !== this.blocks.length || changed.length > FULL_REBUILD_THRESHOLD;
+    this.source = newSource;
+    this.hashes = blockHashes;
+    this.blocks = nextBlocks;
+    if (full) {
+      const split = splitBlockHTML(html);
+      this._blockHtml = split.blocks;
+      this._footnotesHtml = split.footnotes;
+      return { changed, blocks: split.blocks, footnotes: split.footnotes, full: true };
+    }
+    const out = {};
+    for (const j of changed) {
+      if (j === "footnotes") {
+        const split = splitBlockHTML(html);
+        this._footnotesHtml = split.footnotes;
+        out.footnotes = split.footnotes;
+      } else {
+        const blockHtml = this.renderer.renderBlock(newSource, j, this.options);
+        out[j] = blockHtml;
+        this._blockHtml[j] = blockHtml;
+      }
+    }
+    return { changed, blocks: out, full: false };
+  }
+  /** 更新渲染选项（如 data 变化后重渲）：merge 后需重新 render() */
+  setOptions(overrides) {
+    this.options = { ...this.options, ...overrides };
+  }
+};
+
 // src/index.js
 function render3(source2, options = {}) {
   const renderer = new HTMLRenderer(_rendererOpts(options));
@@ -28132,10 +28234,11 @@ function _renderOptions(options) {
   };
 }
 export {
+  BlockEditor,
   HTMLRenderer,
   Parser,
   diffBlocks,
   dumpAST,
   render3 as render
 };
-/*! built: 2026-08-09T04:52:24.256Z */
+/*! built: 2026-08-09T05:01:54.774Z */
