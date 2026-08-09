@@ -523,8 +523,54 @@ for (const i of changed.filter(x => typeof x === 'number')) {
 
 - 块区间连续覆盖文档源；caption 归并行并入前块；脚注定义行不属于任何块（截断）
 - 编号依赖自动传播：块 i 加图 → 块 i..N 的哈希全变（哈希含编号前缀快照 fig/tbl/sec/eq/cite/term/thm 计数）
+- 渲染依赖自动传播：`@let` 变量值、`@define` 模板、`data` 条目内容变化 → **引用它们的块**哈希变（按块收集依赖，非全量）
 - 纯文本编辑只影响 1 块；默认 `render` 无哨兵（零回归）
 - 代码高亮语言：`javascript typescript python java c cpp go rust bash json sql xml css markdown kotlin swift ruby php perl yaml dockerfile diff`
+
+### 宿主端接入（哨兵切分 + 局部替换）
+
+**初始化**：按哨兵切分建块容器（"容器即映射"，不用注释节点定位）：
+
+```javascript
+const { html, blockHashes } = render(source, { blocks: true });
+const blockEls = [];                       // blockEls[N] = <div data-block="N">…</div>
+let last = 0;
+for (const m of html.matchAll(/<!--mslang:(\d+)-->/g)) {
+  blockEls[Number(m[1])] = document.createElement('div');
+  blockEls[Number(m[1])].innerHTML = html.slice(last, m.index);
+  last = m.index + m[0].length;
+}
+const footnotesEl = /* <!--mslang:footnotes--> 之后到末尾的容器 */;
+```
+
+**编辑保存流**（文本微调，高频）：替换源码区间 → 全量重渲（parse 微秒级，公式/代码命中缓存）→ diffBlocks → 单块重渲替换：
+
+```javascript
+function saveBlock(i, newText) {
+  const b = Parser.parseText(source).blocks[i];
+  const newSource = source.slice(0, b.startPos) + newText + source.slice(b.endPos);
+  const { blockHashes: newHashes } = render(newSource, { blocks: true });
+  for (const j of diffBlocks(oldHashes, newHashes)) {
+    if (j === 'footnotes') footnotesEl.innerHTML = /* 脚注区片段 */;
+    else blockEls[j].innerHTML = renderer.renderBlock(newSource, j);
+  }
+  source = newSource; oldHashes = newHashes;
+}
+```
+
+**实时预览流**（编辑期间，最高频）：只重渲正在编辑的块，不干扰其他块 DOM 与光标：
+
+```javascript
+onInput(i, newText) {
+  const b = Parser.parseText(source).blocks[i];
+  const tmp = source.slice(0, b.startPos) + newText + source.slice(b.endPos);
+  blockEls[i].innerHTML = renderer.renderBlock(tmp, i);   // 单块渲染
+}
+```
+
+**降级策略（全量重建）**：块数变化（增/删块导致索引偏移）、变化块数量大（阈值 > 3）、`@plugin` 函数体重写（函数调用块的依赖无法静态追踪）→ 直接 `render(newSource)` 整体替换。前两类罕见，第三类属配置类变更。
+
+**多文档合并**：`render(docArray, { blocks: true })` 同样返回哨兵 html + blockHashes（跨文档连续编号），宿主流程一致。
 
 ---
 

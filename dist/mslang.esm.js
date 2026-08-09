@@ -27160,12 +27160,16 @@ var _HTMLRenderer = class _HTMLRenderer {
    */
   renderAll(sources, opts = {}) {
     const docs = sources.map((s) => this._parseDoc(s));
-    return this.render(mergeDocuments(...docs), opts);
+    const merged = mergeDocuments(...docs);
+    if (opts.blocks) return this.renderBlocks(merged, opts);
+    return this.render(merged, opts);
   }
   /** 异步版 renderAll，语义与 renderAsync 相同 */
   async renderAllAsync(sources, opts = {}) {
     const docs = sources.map((s) => this._parseDoc(s));
-    return this.renderAsync(mergeDocuments(...docs), opts);
+    const merged = mergeDocuments(...docs);
+    if (opts.blocks) return this.renderBlocks(merged, opts);
+    return this.renderAsync(merged, opts);
   }
   /** 渲染管线公共部分：选项应用 + 解析 + 预扫描 + 编号收集（render / renderAsync 共用） */
   _prepare(source2, opts) {
@@ -27420,13 +27424,28 @@ ${body}
       for (let i = 0; i < level; i++) parts.push(levelCounts[i]);
       return parts.join(sep);
     };
+    let currentDeps = null;
     const handleCall = (call) => {
+      var _a, _b;
       if (call.name === "cite") {
-        for (const a of call.args) if (a.type === "string") this._registerCite(a.value);
+        for (const a of call.args) {
+          if (a.type !== "string") continue;
+          this._registerCite(a.value);
+          const entry = this._data.bibliography && this._data.bibliography[a.value];
+          if (entry !== void 0) ((_a = currentDeps.d).cite || (_a.cite = {}))[a.value] = entry;
+        }
       }
       if (call.name === "term" && call.args[0] && call.args[0].type === "string") {
         this._registerTerm(call.args[0].value);
+        const entry = this._data.terms && this._data.terms[call.args[0].value];
+        if (entry !== void 0) ((_b = currentDeps.d).term || (_b.term = {}))[call.args[0].value] = entry;
       }
+      if (call.name === "use" && call.args[0] && call.args[0].type === "string") {
+        const t = this._macros[call.args[0].value];
+        if (t !== void 0) currentDeps.m[call.args[0].value] = t;
+      }
+      if (call.name === "bibliography") currentDeps["bib-all"] = this._data.bibliography;
+      if (call.name === "glossary") currentDeps["term-all"] = this._data.terms;
     };
     const walkInlineList = (n) => {
       if (n instanceof Image && n.label) {
@@ -27435,7 +27454,9 @@ ${body}
       }
       if (n instanceof FunctionCall) {
         handleCall(n);
-        n.args.forEach((a) => this._walkExprTree(a, handleCall));
+        n.args.forEach((a) => this._walkExprTree(a, handleCall, (v) => {
+          if (v.name in this._variables) currentDeps.v[v.name] = this._variables[v.name];
+        }));
       }
     };
     const headingText = (nodes) => {
@@ -27447,6 +27468,9 @@ ${body}
       return out;
     };
     for (const block of doc.blocks) {
+      const deps = { v: {}, m: {}, d: {} };
+      block._deps = deps;
+      currentDeps = deps;
       block._prefixCounts = {
         fig: counters.fig,
         tbl: counters.tbl,
@@ -27489,6 +27513,7 @@ ${body}
       }
       if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
     }
+    currentDeps = null;
     this._citeYearSuffix = {};
     if (this._citeStyle !== "numeric") {
       const counts = {};
@@ -27555,26 +27580,30 @@ ${body}
     return issues;
   }
   /**
-   * 遍历表达式树（嵌套在函数参数中的 call/unary/binary/object/array），
-   * 对每个 call 节点调用 onCall。_collectRefs / _checkIntegrity / visit 共用。
+   * 遍历表达式树（嵌套在函数参数中的 call/var/unary/binary/object/array），
+   * 对每个 call 节点调用 onCall、每个变量节点调用 onVar。
+   * _collectRefs / _checkIntegrity 共用。
    * @param {object} node
-   * @param {function} onCall
+   * @param {function} [onCall]
+   * @param {function} [onVar]
    */
-  _walkExprTree(node, onCall) {
+  _walkExprTree(node, onCall, onVar) {
     if (!node || typeof node !== "object") return;
     if (node.type === "call") {
-      onCall(node);
-      node.args.forEach((a) => this._walkExprTree(a, onCall));
-      Object.values(node.kwargs).forEach((a) => this._walkExprTree(a, onCall));
+      if (onCall) onCall(node);
+      node.args.forEach((a) => this._walkExprTree(a, onCall, onVar));
+      Object.values(node.kwargs).forEach((a) => this._walkExprTree(a, onCall, onVar));
+    } else if (node.type === "var") {
+      if (onVar) onVar(node);
     } else if (node.type === "unary") {
-      this._walkExprTree(node.operand, onCall);
+      this._walkExprTree(node.operand, onCall, onVar);
     } else if (node.type === "binary") {
-      this._walkExprTree(node.left, onCall);
-      this._walkExprTree(node.right, onCall);
+      this._walkExprTree(node.left, onCall, onVar);
+      this._walkExprTree(node.right, onCall, onVar);
     } else if (node.type === "object") {
-      Object.values(node.value).forEach((a) => this._walkExprTree(a, onCall));
+      Object.values(node.value).forEach((a) => this._walkExprTree(a, onCall, onVar));
     } else if (node.type === "array") {
-      node.items.forEach((a) => this._walkExprTree(a, onCall));
+      node.items.forEach((a) => this._walkExprTree(a, onCall, onVar));
     }
   }
   /**
@@ -27624,7 +27653,9 @@ ${body}
       if (this._blockMarkers) {
         this._write(`<!--mslang:${i}-->
 `);
-        this._blockHashes[i] = djb2(`${block.raw || ""}|${JSON.stringify(block._prefixCounts || {})}`);
+        this._blockHashes[i] = djb2(
+          `${block.raw || ""}|${JSON.stringify(block._prefixCounts || {})}|${JSON.stringify(block._deps || {})}`
+        );
       }
       block.accept(this);
       if (this.pretty && i < doc.blocks.length - 1) this._write("\n");
@@ -28094,6 +28125,7 @@ function _renderOptions(options) {
     codeRenderer: options.codeRenderer,
     check: options.check,
     bibStyle: options.bibStyle,
+    blocks: options.blocks,
     citeStyle: options.citeStyle,
     allowPlugins: options.allowPlugins,
     blockMarkers: options.blockMarkers
@@ -28106,4 +28138,4 @@ export {
   dumpAST,
   render3 as render
 };
-/*! built: 2026-08-09T04:40:40.600Z */
+/*! built: 2026-08-09T04:52:24.256Z */

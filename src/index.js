@@ -100,6 +100,7 @@ function _renderOptions(options) {
     codeRenderer: options.codeRenderer,
     check: options.check,
     bibStyle: options.bibStyle,
+    blocks: options.blocks,
     citeStyle: options.citeStyle,
     allowPlugins: options.allowPlugins,
     blockMarkers: options.blockMarkers,

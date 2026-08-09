@@ -414,7 +414,33 @@ test('宏/模板：@define + @use', () => {
   assert.match(h, /H=x/); // 跨文档可见
 });
 
-test('公式/代码渲染缓存：输出一致且跨实例复用', () => {  const doc = '$a^2$ 与 $a^2$ 与 ```js\nvar x = 1;\n``` 与 ```js\nvar x = 1;\n```';
+test('块哈希依赖：@let/@define/data 变化触发引用块', () => {
+  let src = '@let("score", 10)\n\n得分 @if(score > 5, "高", "低")';
+  const b1 = render(src, { blocks: true });
+  const b2 = render(src.replace('@let("score", 10)', '@let("score", 1)'), { blocks: true });
+  const d1 = diffBlocks(b1.blockHashes, b2.blockHashes);
+  assert.deepStrictEqual(d1.sort(), [0, 1]); // @let 行 + 引用块
+  assert.ok(b1.html.includes('得分 高') && b2.html.includes('得分 低'));
+  // 未引用变量块不受影响
+  src = '@let("x", 1)\n\n纯文本块\n\n值 @if(x == 1, "a", "b")';
+  const b3 = render(src, { blocks: true });
+  const b4 = render(src.replace('@let("x", 1)', '@let("x", 2)'), { blocks: true });
+  assert.ok(!diffBlocks(b3.blockHashes, b4.blockHashes).includes(1));
+  // data 条目变化 → cite 块 + bibliography 块
+  src = '@cite("a")\n\n@bibliography()';
+  const b5 = render(src, { data: { bibliography: { a: { authors: 'A' } } }, blocks: true });
+  const b6 = render(src, { data: { bibliography: { a: { authors: 'B' } } }, blocks: true });
+  assert.deepStrictEqual(diffBlocks(b5.blockHashes, b6.blockHashes).sort(), [0, 1]);
+});
+
+test('数组 + blocks：多文档合并块级渲染', () => {
+  const r = render(['# 一', '段落'], { blocks: true });
+  assert.ok(r.html.includes('<!--mslang:0-->') && r.html.includes('<!--mslang:1-->'));
+  assert.ok(typeof r.blockHashes === 'object');
+});
+
+test('公式/代码渲染缓存：输出一致且跨实例复用', () => {
+  const doc = '$a^2$ 与 $a^2$ 与 ```js\nvar x = 1;\n``` 与 ```js\nvar x = 1;\n```';
   // 冷渲染与缓存命中渲染输出逐字节一致
   const h1 = render(doc);
   const h2 = render(doc);

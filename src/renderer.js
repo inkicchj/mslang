@@ -223,13 +223,18 @@ class HTMLRenderer {
    */
   renderAll(sources, opts = {}) {
     const docs = sources.map(s => this._parseDoc(s));
-    return this.render(mergeDocuments(...docs), opts);
+    const merged = mergeDocuments(...docs);
+    // blocks 选项转发：多文档合并的块级渲染（跨文档连续编号 + 哨兵）
+    if (opts.blocks) return this.renderBlocks(merged, opts);
+    return this.render(merged, opts);
   }
 
   /** 异步版 renderAll，语义与 renderAsync 相同 */
   async renderAllAsync(sources, opts = {}) {
     const docs = sources.map(s => this._parseDoc(s));
-    return this.renderAsync(mergeDocuments(...docs), opts);
+    const merged = mergeDocuments(...docs);
+    if (opts.blocks) return this.renderBlocks(merged, opts);
+    return this.renderAsync(merged, opts);
   }
 
   /** 渲染管线公共部分：选项应用 + 解析 + 预扫描 + 编号收集（render / renderAsync 共用） */
@@ -527,14 +532,31 @@ class HTMLRenderer {
       return parts.join(sep);
     };
 
-    // 表达式树中的 cite/term 调用（嵌套于 if 等函数参数；顶层 FunctionCall 由 walkInlineList 处理）
+    // 当前块的渲染依赖（块级编辑哈希：变量/宏/data 变化 → 引用块哈希变）
+    let currentDeps = null;
+
+    // 表达式树中的 cite/term/use 调用（嵌套于 if 等函数参数；顶层 FunctionCall 由 walkInlineList 处理）
     const handleCall = (call) => {
       if (call.name === 'cite') {
-        for (const a of call.args) if (a.type === 'string') this._registerCite(a.value);
+        for (const a of call.args) {
+          if (a.type !== 'string') continue;
+          this._registerCite(a.value);
+          const entry = this._data.bibliography && this._data.bibliography[a.value];
+          if (entry !== undefined) (currentDeps.d.cite ||= {})[a.value] = entry;
+        }
       }
       if (call.name === 'term' && call.args[0] && call.args[0].type === 'string') {
         this._registerTerm(call.args[0].value);
+        const entry = this._data.terms && this._data.terms[call.args[0].value];
+        if (entry !== undefined) (currentDeps.d.term ||= {})[call.args[0].value] = entry;
       }
+      if (call.name === 'use' && call.args[0] && call.args[0].type === 'string') {
+        const t = this._macros[call.args[0].value];
+        if (t !== undefined) currentDeps.m[call.args[0].value] = t;
+      }
+      // 文献表/术语表块依赖对应数据全量（条目内容变化 → 表输出变）
+      if (call.name === 'bibliography') currentDeps['bib-all'] = this._data.bibliography;
+      if (call.name === 'glossary') currentDeps['term-all'] = this._data.terms;
     };
 
     // 行内节点处理（递归由 _eachBlockInline 负责）
@@ -545,7 +567,9 @@ class HTMLRenderer {
       }
       if (n instanceof FunctionCall) {
         handleCall(n);
-        n.args.forEach(a => this._walkExprTree(a, handleCall));
+        n.args.forEach(a => this._walkExprTree(a, handleCall, (v) => {
+          if (v.name in this._variables) currentDeps.v[v.name] = this._variables[v.name];
+        }));
       }
     };
 
@@ -561,6 +585,10 @@ class HTMLRenderer {
 
     // 单一遍历：块 → 块内行内，顺序与渲染一致（fig 编号 Image/mermaid 共享）
     for (const block of doc.blocks) {
+      // 渲染依赖收集容器（块级编辑哈希：变量/宏/data 变化 → 引用块哈希变）
+      const deps = { v: {}, m: {}, d: {} };
+      block._deps = deps;
+      currentDeps = deps;
       // 块渲染时的编号前缀快照（块级编辑哈希：块 i 之后编号变化 → 后续块哈希变）
       block._prefixCounts = {
         fig: counters.fig, tbl: counters.tbl, sec: counters.sec, eq: counters.eq, thm: counters.thm,
@@ -602,6 +630,7 @@ class HTMLRenderer {
       }
       if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
     }
+    currentDeps = null;
 
     // author-year 样式消歧：同年同作者按引用顺序加 a/b/c 后缀（收集完成后计算，cite/bibliography 共用）
     this._citeYearSuffix = {};
@@ -670,26 +699,30 @@ class HTMLRenderer {
   }
 
   /**
-   * 遍历表达式树（嵌套在函数参数中的 call/unary/binary/object/array），
-   * 对每个 call 节点调用 onCall。_collectRefs / _checkIntegrity / visit 共用。
+   * 遍历表达式树（嵌套在函数参数中的 call/var/unary/binary/object/array），
+   * 对每个 call 节点调用 onCall、每个变量节点调用 onVar。
+   * _collectRefs / _checkIntegrity 共用。
    * @param {object} node
-   * @param {function} onCall
+   * @param {function} [onCall]
+   * @param {function} [onVar]
    */
-  _walkExprTree(node, onCall) {
+  _walkExprTree(node, onCall, onVar) {
     if (!node || typeof node !== 'object') return;
     if (node.type === 'call') {
-      onCall(node);
-      node.args.forEach(a => this._walkExprTree(a, onCall));
-      Object.values(node.kwargs).forEach(a => this._walkExprTree(a, onCall));
+      if (onCall) onCall(node);
+      node.args.forEach(a => this._walkExprTree(a, onCall, onVar));
+      Object.values(node.kwargs).forEach(a => this._walkExprTree(a, onCall, onVar));
+    } else if (node.type === 'var') {
+      if (onVar) onVar(node);
     } else if (node.type === 'unary') {
-      this._walkExprTree(node.operand, onCall);
+      this._walkExprTree(node.operand, onCall, onVar);
     } else if (node.type === 'binary') {
-      this._walkExprTree(node.left, onCall);
-      this._walkExprTree(node.right, onCall);
+      this._walkExprTree(node.left, onCall, onVar);
+      this._walkExprTree(node.right, onCall, onVar);
     } else if (node.type === 'object') {
-      Object.values(node.value).forEach(a => this._walkExprTree(a, onCall));
+      Object.values(node.value).forEach(a => this._walkExprTree(a, onCall, onVar));
     } else if (node.type === 'array') {
-      node.items.forEach(a => this._walkExprTree(a, onCall));
+      node.items.forEach(a => this._walkExprTree(a, onCall, onVar));
     }
   }
 
@@ -745,7 +778,10 @@ class HTMLRenderer {
     doc.blocks.forEach((block, i) => {
       if (this._blockMarkers) {
         this._write(`<!--mslang:${i}-->\n`);
-        this._blockHashes[i] = djb2(`${block.raw || ''}|${JSON.stringify(block._prefixCounts || {})}`);
+        // 哈希 = 块源 + 编号前缀快照 + 渲染依赖（变量/宏/data 条目变化 → 引用块哈希变）
+        this._blockHashes[i] = djb2(
+          `${block.raw || ''}|${JSON.stringify(block._prefixCounts || {})}|${JSON.stringify(block._deps || {})}`,
+        );
       }
       block.accept(this);
       if (this.pretty && i < doc.blocks.length - 1) this._write('\n');
