@@ -391,6 +391,29 @@ test('定理环境：@theorem/@lemma/@definition', () => {
   assert.match(h, /href="#cite-1"/);
 });
 
+test('宏/模板：@define + @use', () => {
+  let h = render('@define("card", "**{title}**：{body}")\n\n@use("card", { title: "结论", body: "内容" })');
+  assert.match(h, /<strong>结论<\/strong>：内容/);
+  h = render('@define("t", "a **{x}** b")\n\n@use("t", { x: "1 * 2" })');
+  assert.match(h, /a <strong>1 \* 2<\/strong> b/); // 值字面，模板 md 生效
+  h = render('@define("t", "x={a} y={b}")\n\n@use("t", { a: "1" })');
+  assert.match(h, /x=1 y=\{b\}/); // 缺键保留占位符
+  h = render('@define("t", "hello")');
+  assert.ok(!h.includes('hello')); // define 无输出
+  h = render('@use("nope", {})');
+  assert.match(h, /undefined macro/);
+  h = render('@define("t", "score={s}")\n\n@let("n", 42)\n\n@use("t", { s: n })');
+  assert.match(h, /score=42/); // 值用变量
+  h = render('@define("t", "见 @cite(\\\"a\\\") {note}")\n\n@use("t", { note: "!" })\n\n@bibliography()', {
+    data: { bibliography: { a: { number: 1 } } },
+  });
+  assert.match(h, /href="#cite-1"/); // 模板字面 cite 动态编号
+  h = render('@define("t", "{标题}：{内容}")\n\n@use("t", { 标题: "甲", 内容: "乙" })');
+  assert.match(h, /甲：乙/); // 中文键
+  h = render(['@define("t", "H={v}")', '@use("t", { v: "x" })']);
+  assert.match(h, /H=x/); // 跨文档可见
+});
+
 test('公式/代码渲染缓存：输出一致且跨实例复用', () => {  const doc = '$a^2$ 与 $a^2$ 与 ```js\nvar x = 1;\n``` 与 ```js\nvar x = 1;\n```';
   // 冷渲染与缓存命中渲染输出逐字节一致
   const h1 = render(doc);

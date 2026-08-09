@@ -262,6 +262,7 @@ class HTMLRenderer {
     } = opts;
     this._data = data || {};
     this._variables = variables || {};
+    this._macros = {};
     this._headingNumbering = headingNumbering === true ? '1.1' : (headingNumbering || '');
     this._refNumbering = refNumbering || '';
     this._captionPrefix = { ...HTMLRenderer.DEFAULT_CAPTION_PREFIX, ...captionPrefix };
@@ -358,6 +359,7 @@ class HTMLRenderer {
       if (n instanceof FunctionCall && n.name === 'set') this._applySet(n);
       else if (n instanceof FunctionCall && n.name === 'let') this._applyLet(n);
       else if (n instanceof FunctionCall && n.name === 'plugin') this._applyPlugin(n);
+      else if (n instanceof FunctionCall && n.name === 'define') this._applyDefine(n);
     });
   }
 
@@ -399,6 +401,23 @@ class HTMLRenderer {
       if (typeof name === 'string' && typeof body === 'string') this._registerPlugin(name, body);
     } catch (e) {
       // 求值失败忽略（如参数非字面量）
+    }
+  }
+
+  /**
+   * 预扫描注册 @define 声明的宏（与 @set/@let/@plugin 同步执行）。
+   * 模板为含 {key} 占位符的 mslang 行内片段，渲染时 @use 展开并二次解析。
+   */
+  _applyDefine(node) {
+    if (node.error || node.args.length < 2) return;
+    try {
+      const name = evaluate(node.args[0], this._evalCtx);
+      const template = evaluate(node.args[1], this._evalCtx);
+      if (typeof name === 'string' && typeof template === 'string') {
+        this._macros[name] = template;
+      }
+    } catch (e) {
+      // 求值失败忽略（如参数非字面量），渲染阶段由 use 输出错误注释
     }
   }
 
@@ -1093,7 +1112,19 @@ class HTMLRenderer {
       return;
     }
 
+    // 宏展开：@use 返回的模板字符串（含行内语法）二次解析后渲染
+    if (node.name === 'use' && typeof result === 'string') {
+      this._parseInlineFragment(result).forEach(n => n.accept(this));
+      return;
+    }
+
     this._write(this._renderValue(result));
+  }
+
+  /** 将含行内语法的片段解析为行内节点数组（宏 @use 展开结果用） */
+  _parseInlineFragment(text) {
+    const doc = new Parser().parse(new Lexer(text).tokenize(), text);
+    return doc.blocks.flatMap(b => b.content || []);
   }
 
   /** 函数调用错误注释（同步/异步共用） */

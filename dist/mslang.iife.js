@@ -3876,6 +3876,17 @@ var mslang = (() => {
         if (config && typeof config === "object") renderer._mergeSet(config);
         return "";
       },
+      /** 宏定义：@define("name", "模板")，无输出（预扫描注册，渲染时静默） */
+      define: () => "",
+      /** 宏展开：@use("name", { key: value }) 替换模板 {key} 占位符后按行内语法渲染。
+       *  值按 mslang 字面转义（模板内 md 语法仍生效，值原样显示）；未定义宏抛错。 */
+      use: (name, kwargs) => {
+        const template = renderer._macros && renderer._macros[name];
+        if (typeof template !== "string") throw new Error(`undefined macro '${name}'`);
+        const escMd = (v) => String(v).replace(/([*_~`^$[\]@<>!\\])/g, "\\$1");
+        const kwargsObj = kwargs && typeof kwargs === "object" ? kwargs : {};
+        return template.replace(/\{([^{}]+)\}/g, (m, k) => k in kwargsObj ? escMd(kwargsObj[k]) : m);
+      },
       /** 插件注册：@plugin("name", "(args, kwargs) => ...")，无输出；文档内定义可复用函数（new Function 全局作用域） */
       plugin: (name, body) => {
         if (typeof name === "string" && typeof body === "string") renderer._registerPlugin(name, body);
@@ -27218,6 +27229,7 @@ ${items.join("\n")}
       } = opts;
       this._data = data || {};
       this._variables = variables || {};
+      this._macros = {};
       this._headingNumbering = headingNumbering === true ? "1.1" : headingNumbering || "";
       this._refNumbering = refNumbering || "";
       this._captionPrefix = { ..._HTMLRenderer.DEFAULT_CAPTION_PREFIX, ...captionPrefix };
@@ -27294,6 +27306,7 @@ ${body}
         if (n instanceof FunctionCall && n.name === "set") this._applySet(n);
         else if (n instanceof FunctionCall && n.name === "let") this._applyLet(n);
         else if (n instanceof FunctionCall && n.name === "plugin") this._applyPlugin(n);
+        else if (n instanceof FunctionCall && n.name === "define") this._applyDefine(n);
       });
     }
     _applySet(node) {
@@ -27328,6 +27341,21 @@ ${body}
         const name = evaluate(node.args[0], this._evalCtx);
         const body = evaluate(node.args[1], this._evalCtx);
         if (typeof name === "string" && typeof body === "string") this._registerPlugin(name, body);
+      } catch (e) {
+      }
+    }
+    /**
+     * 预扫描注册 @define 声明的宏（与 @set/@let/@plugin 同步执行）。
+     * 模板为含 {key} 占位符的 mslang 行内片段，渲染时 @use 展开并二次解析。
+     */
+    _applyDefine(node) {
+      if (node.error || node.args.length < 2) return;
+      try {
+        const name = evaluate(node.args[0], this._evalCtx);
+        const template = evaluate(node.args[1], this._evalCtx);
+        if (typeof name === "string" && typeof template === "string") {
+          this._macros[name] = template;
+        }
       } catch (e) {
       }
     }
@@ -27968,7 +27996,16 @@ ${body}
         }
         return;
       }
+      if (node.name === "use" && typeof result === "string") {
+        this._parseInlineFragment(result).forEach((n) => n.accept(this));
+        return;
+      }
       this._write(this._renderValue(result));
+    }
+    /** 将含行内语法的片段解析为行内节点数组（宏 @use 展开结果用） */
+    _parseInlineFragment(text2) {
+      const doc = new Parser().parse(new Lexer(text2).tokenize(), text2);
+      return doc.blocks.flatMap((b) => b.content || []);
     }
     /** 函数调用错误注释（同步/异步共用） */
     _functionError(name, err, isAsync) {
@@ -28111,4 +28148,4 @@ ${body}
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-09T03:57:35.124Z */
+/*! built: 2026-08-09T04:23:40.652Z */

@@ -89,6 +89,19 @@ export function builtinFunctions(renderer) {
       return '';
     },
 
+    /** 宏定义：@define("name", "模板")，无输出（预扫描注册，渲染时静默） */
+    define: () => '',
+
+    /** 宏展开：@use("name", { key: value }) 替换模板 {key} 占位符后按行内语法渲染。
+     *  值按 mslang 字面转义（模板内 md 语法仍生效，值原样显示）；未定义宏抛错。 */
+    use: (name, kwargs) => {
+      const template = renderer._macros && renderer._macros[name];
+      if (typeof template !== 'string') throw new Error(`undefined macro '${name}'`);
+      const escMd = (v) => String(v).replace(/([*_~`^$[\]@<>!\\])/g, '\\$1');
+      const kwargsObj = kwargs && typeof kwargs === 'object' ? kwargs : {};
+      return template.replace(/\{([^{}]+)\}/g, (m, k) => (k in kwargsObj ? escMd(kwargsObj[k]) : m));
+    },
+
     /** 插件注册：@plugin("name", "(args, kwargs) => ...")，无输出；文档内定义可复用函数（new Function 全局作用域） */
     plugin: (name, body) => {
       if (typeof name === 'string' && typeof body === 'string') renderer._registerPlugin(name, body);
