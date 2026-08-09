@@ -1731,6 +1731,7 @@ var Lexer = class {
     const remaining = this.source.slice(this.pos, this._lineEnd());
     if (remaining.startsWith("```")) return this._scanCodeBlockFence();
     if (this._inCodeBlock) return this._scanCodeBlockLine();
+    if (remaining.startsWith("%")) return this._scanComment();
     let m = remaining.match(RE_HORIZONTAL_RULE);
     if (m) return this._scanHorizontalRule(m);
     m = remaining.match(RE_FOOTNOTE_DEF);
@@ -1789,6 +1790,12 @@ var Lexer = class {
   // ================================================================
   // 扫描方法 — 块级
   // ================================================================
+  _scanComment() {
+    const lineEnd = this._lineEnd();
+    this._advance(lineEnd - this.pos);
+    if (this._peek() === CHAR.NEWLINE) this._advance(1);
+    return null;
+  }
   _scanHeading(match) {
     const hashes = match[1];
     let content = match[2];
@@ -2788,8 +2795,8 @@ var Equation = class extends ASTNode {
 };
 var Table = class extends BlockNode {
   /**
-   * @param {string[]} [headers]
-   * @param {string[][]} [rows]
+   * @param {InlineNode[][]} [headers] - 表头单元格（行内节点数组）
+   * @param {InlineNode[][][]} [rows] - 数据行单元格
    * @param {string} [label] - 交叉引用标签，如 "tbl:1"
    */
   constructor(headers = [], rows = [], label = "") {
@@ -3264,6 +3271,36 @@ var Parser = class {
   // ================================================================
   // 行内解析
   // ================================================================
+  /**
+   * 将短文本解析为行内节点数组（表格单元格行内语法用）。
+   * 临时切换内部 token 流，解析完恢复。
+   * @param {string} text
+   * @returns {InlineNode[]}
+   */
+  _parseInlineString(text2) {
+    const savedTokens = this._tokens;
+    const savedPos = this._pos;
+    this._tokens = new Lexer(text2).tokenize();
+    this._pos = 0;
+    const inlines = [];
+    while (!this._isAtEnd()) {
+      const token = this._current();
+      if (token.type === TokenType.EOF) break;
+      if (token.type === TokenType.RAW_TEXT) {
+        this._advance();
+        inlines.push(...this._autolink([new RawText(token.value)]));
+        continue;
+      }
+      const inline = this._parseInlineToken(token);
+      if (inline) {
+        inlines.push(inline);
+        this._advance();
+      } else this._advance();
+    }
+    this._tokens = savedTokens;
+    this._pos = savedPos;
+    return this._mergeAdjacentText(inlines);
+  }
   _parseTable() {
     const headers = [];
     const rows = [];
@@ -3288,9 +3325,9 @@ var Parser = class {
             cells = cells.slice(0, -1);
           }
         }
-        headers.push(...cells);
+        headers.push(...cells.map((c2) => this._parseInlineString(c2)));
       } else {
-        rows.push(cells);
+        rows.push(cells.map((c2) => this._parseInlineString(c2)));
       }
       if (this._current() && this._current().type === TokenType.LINE_BREAK) this._advance();
     }
@@ -3702,6 +3739,27 @@ function extractHeadingNumber(text2, mode) {
 function builtinFunctions(renderer) {
   const esc = (t) => renderer._esc(t);
   const escAttr = (t) => renderer._escAttr(t);
+  const citeAnchor = (key, entry, num) => {
+    const dataKey = entry && entry.key !== void 0 ? entry.key : key;
+    const keyAttr = renderer._citeKeyAttr ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(dataKey))}"` : "";
+    return `href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}"`;
+  };
+  const renderCiteOne = (key) => {
+    const entry = renderer._data.bibliography && renderer._data.bibliography[key];
+    if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
+    renderer._registerCite(key);
+    const num = renderer._citeNumbers[key];
+    const anchor = citeAnchor(key, entry, num);
+    if (renderer._citeStyle !== "numeric") {
+      const authors = entry && entry.authors ? String(entry.authors) : "";
+      if (authors) {
+        const suffix = renderer._citeYearSuffix && renderer._citeYearSuffix[key] || "";
+        const year = renderer._citeStyle === "author-year" && entry.year !== void 0 ? `, ${entry.year}${suffix}` : "";
+        return `<a ${anchor}>(${esc(authors)}${year})</a>`;
+      }
+    }
+    return `<sup><a ${anchor}>[${esc(String(num))}]</a></sup>`;
+  };
   return {
     if: (cond, then, els) => cond ? then : els === void 0 ? "" : els,
     not: (x) => !x,
@@ -3726,25 +3784,60 @@ function builtinFunctions(renderer) {
     has_cite: (key) => !!(renderer._data.bibliography && renderer._data.bibliography[key]),
     /** 术语是否存在（供 if 条件使用） */
     has_term: (name) => !!(renderer._data.terms && renderer._data.terms[name]),
-    /** 文献引用：按文档出现顺序自动编号；citeStyle 为 numeric（默认）输出上标 [n]，
-     *  author-year / author 输出 (Doe, 2020a) 风格（缺 authors 时回退数字） */
-    cite: (key) => {
-      const entry = renderer._data.bibliography && renderer._data.bibliography[key];
-      if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
-      renderer._registerCite(key);
-      const num = renderer._citeNumbers[key];
-      const dataKey = entry && entry.key !== void 0 ? entry.key : key;
-      const keyAttr = renderer._citeKeyAttr ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(dataKey))}"` : "";
-      const anchor = `href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}"`;
+    /** 文献引用：支持一次引多篇 @cite("a","b","c")。
+     *  numeric → 上标 [1-3]（连续区间合并）/[1,3]（非连续），逐 key 锚点（连续区间保留首尾）；
+     *  author-year / author → (Doe, 2020a; Smith, 2019) 共享括号，分号分隔。 */
+    cite: (...keys) => {
+      if (keys.length && typeof keys[keys.length - 1] === "object") keys = keys.slice(0, -1);
+      if (keys.length === 1) return renderCiteOne(keys[0]);
       if (renderer._citeStyle !== "numeric") {
-        const authors = entry && entry.authors ? String(entry.authors) : "";
-        if (authors) {
+        const parts = keys.map((key) => {
+          const entry = renderer._data.bibliography && renderer._data.bibliography[key];
+          if (!entry) return `[${esc(String(key))}?]`;
+          renderer._registerCite(key);
+          const num = renderer._citeNumbers[key];
+          const anchor = citeAnchor(key, entry, num);
+          const authors = entry && entry.authors ? String(entry.authors) : "";
+          if (!authors) return `<sup><a ${anchor}>[${esc(String(num))}]</a></sup>`;
           const suffix = renderer._citeYearSuffix && renderer._citeYearSuffix[key] || "";
           const year = renderer._citeStyle === "author-year" && entry.year !== void 0 ? `, ${entry.year}${suffix}` : "";
-          return `<a ${anchor}>(${esc(authors)}${year})</a>`;
+          return `<a ${anchor}>${esc(authors)}${year}</a>`;
+        });
+        return `(${parts.join("; ")})`;
+      }
+      const items = [];
+      const missing = [];
+      for (const key of keys) {
+        const entry = renderer._data.bibliography && renderer._data.bibliography[key];
+        if (!entry) {
+          missing.push(key);
+          continue;
+        }
+        renderer._registerCite(key);
+        items.push({ key, entry, num: renderer._citeNumbers[key] });
+      }
+      items.sort((a, b) => a.num - b.num);
+      const groups = [];
+      let cur = [];
+      for (const it of items) {
+        const last = cur[cur.length - 1];
+        if (last && it.num === last.num + 1) cur.push(it);
+        else {
+          if (cur.length) groups.push(cur);
+          cur = [it];
         }
       }
-      return `<sup><a ${anchor}>[${esc(String(num))}]</a></sup>`;
+      if (cur.length) groups.push(cur);
+      const inner2 = groups.map((g) => {
+        if (g.length === 1) {
+          const { key, entry, num } = g[0];
+          return `<a ${citeAnchor(key, entry, num)}>${num}</a>`;
+        }
+        const first = g[0];
+        const last = g[g.length - 1];
+        return `<a ${citeAnchor(first.key, first.entry, first.num)}>${first.num}</a>-<a ${citeAnchor(last.key, last.entry, last.num)}>${last.num}</a>`;
+      });
+      return `<sup>[${inner2.join(",")}${missing.length ? "," + missing.map((k) => esc(String(k)) + "?").join(",") : ""}]</sup>`;
     },
     /** 交叉引用：图/表显示"图 N/表 N"（前缀随 captionPrefix 配置）；章节显示 显式编号 → 自动编号 → 标题全文 */
     ref: (label) => {
@@ -23969,7 +24062,9 @@ var _HTMLRenderer = class _HTMLRenderer {
     const doc = this._prepare(source, opts);
     doc.accept(this);
     const body = this._output.join("");
-    return this._inlineStyles() + this._wrap(body, opts);
+    const html = this._inlineStyles() + this._wrap(body, opts);
+    if (opts.check) return { html, issues: this._checkIntegrity(doc) };
+    return html;
   }
   /**
    * 块级渲染（块级编辑器用）：与 render() 同管线，额外产出：
@@ -23982,10 +24077,12 @@ var _HTMLRenderer = class _HTMLRenderer {
     const doc = this._prepare(source, { ...opts, blockMarkers: true });
     doc.accept(this);
     const body = this._output.join("");
-    return {
+    const out = {
       html: this._inlineStyles() + this._wrap(body, opts),
       blockHashes: this._blockHashes
     };
+    if (opts.check) out.issues = this._checkIntegrity(doc);
+    return out;
   }
   /**
    * 异步渲染：支持返回 Promise 的自定义函数（如网络请求）。
@@ -24005,7 +24102,9 @@ var _HTMLRenderer = class _HTMLRenderer {
     for (const slot of this._asyncSlots) {
       body = body.split(slot.token).join(slot.html);
     }
-    return this._inlineStyles() + this._wrap(body, opts);
+    const html = this._inlineStyles() + this._wrap(body, opts);
+    if (opts.check) return { html, issues: this._checkIntegrity(doc) };
+    return html;
   }
   /**
    * 渲染多个文档的合并结果：跨文档连续编号、交叉引用、全局 @set。
@@ -24247,8 +24346,8 @@ ${body}
     const walkExpr = (node) => {
       if (!node || typeof node !== "object") return;
       if (node.type === "call") {
-        if (node.name === "cite" && node.args[0] && node.args[0].type === "string") {
-          this._registerCite(node.args[0].value);
+        if (node.name === "cite") {
+          for (const a of node.args) if (a.type === "string") this._registerCite(a.value);
         }
         if (node.name === "term" && node.args[0] && node.args[0].type === "string") {
           this._registerTerm(node.args[0].value);
@@ -24272,8 +24371,8 @@ ${body}
         this._refs[n.label] = { kind: "fig", number: counters.fig };
       }
       if (n instanceof FunctionCall) {
-        if (n.name === "cite" && n.args[0] && n.args[0].type === "string") {
-          this._registerCite(n.args[0].value);
+        if (n.name === "cite") {
+          for (const a of n.args) if (a.type === "string") this._registerCite(a.value);
         }
         if (n.name === "term" && n.args[0] && n.args[0].type === "string") {
           this._registerTerm(n.args[0].value);
@@ -24345,6 +24444,80 @@ ${body}
         this._citeYearSuffix[key] = counts[g] > 1 ? String.fromCharCode(96 + idx) : "";
       }
     }
+  }
+  /**
+   * 引用完整性检查（opts.check 时）：检测缺失的文献/术语/交叉引用/脚注定义。
+   * 按 type+key 去重并计数；_refs 需在 _collectRefs 之后（前向引用已完整）。
+   * @param {Document} doc
+   * @returns {Array<{type: string, key: string, count: number}>}
+   */
+  _checkIntegrity(doc) {
+    const issues = [];
+    const seen = /* @__PURE__ */ new Map();
+    const report = (type, key) => {
+      const id = `${type}|${key}`;
+      if (seen.has(id)) issues[seen.get(id)].count++;
+      else {
+        seen.set(id, issues.length);
+        issues.push({ type, key, count: 1 });
+      }
+    };
+    const walkExpr = (node) => {
+      if (!node || typeof node !== "object") return;
+      if (node.type === "call") {
+        if (node.name === "cite") {
+          for (const a of node.args) {
+            if (a.type === "string" && !(this._data.bibliography && this._data.bibliography[a.value])) {
+              report("missing_cite", a.value);
+            }
+          }
+        } else if (node.name === "term") {
+          const a = node.args[0];
+          if (a && a.type === "string" && !(this._data.terms && this._data.terms[a.value])) {
+            report("missing_term", a.value);
+          }
+        } else if (node.name === "ref") {
+          const a = node.args[0];
+          if (a && a.type === "string" && !this._refs[a.value]) report("missing_ref", a.value);
+        }
+        node.args.forEach(walkExpr);
+        Object.values(node.kwargs).forEach(walkExpr);
+      } else if (node.type === "unary") {
+        walkExpr(node.operand);
+      } else if (node.type === "binary") {
+        walkExpr(node.left);
+        walkExpr(node.right);
+      } else if (node.type === "object") {
+        Object.values(node.value).forEach(walkExpr);
+      } else if (node.type === "array") {
+        node.items.forEach(walkExpr);
+      }
+    };
+    const walkInlineList = (n) => {
+      if (n instanceof FunctionCall) {
+        if (n.name === "cite") {
+          for (const a of n.args) {
+            if (a.type === "string" && !(this._data.bibliography && this._data.bibliography[a.value])) {
+              report("missing_cite", a.value);
+            }
+          }
+        } else if (n.name === "term") {
+          const a = n.args[0];
+          if (a && a.type === "string" && !(this._data.terms && this._data.terms[a.value])) {
+            report("missing_term", a.value);
+          }
+        } else if (n.name === "ref") {
+          const a = n.args[0];
+          if (a && a.type === "string" && !this._refs[a.value]) report("missing_ref", a.value);
+        }
+        n.args.forEach(walkExpr);
+      }
+      if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report("missing_footnote", n.label);
+    };
+    for (const block of doc.blocks) {
+      if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
+    }
+    return issues;
   }
   /**
    * 文献键编号：首次出现分配顺序号（_collectRefs 预收集与运行时 cite 共用）。
@@ -24554,7 +24727,11 @@ ${body}
     }
     if (node.headers.length) {
       this._write("<thead><tr>");
-      node.headers.forEach((h) => this._write(`<th>${this._esc(h)}</th>`));
+      node.headers.forEach((h) => {
+        this._write("<th>");
+        h.forEach((n) => n.accept(this));
+        this._write("</th>");
+      });
       this._write("</tr></thead>");
       if (this.pretty) this._write("\n");
     }
@@ -24563,7 +24740,11 @@ ${body}
       if (this.pretty) this._write("\n");
       node.rows.forEach((row) => {
         this._write("<tr>");
-        row.forEach((cell) => this._write(`<td>${this._esc(cell)}</td>`));
+        row.forEach((cell) => {
+          this._write("<td>");
+          cell.forEach((n) => n.accept(this));
+          this._write("</td>");
+        });
         this._write("</tr>");
         if (this.pretty) this._write("\n");
       });
@@ -24806,6 +24987,7 @@ function _renderOptions(options) {
     mathRenderer: options.mathRenderer,
     mathFontsPath: options.mathFontsPath,
     codeRenderer: options.codeRenderer,
+    check: options.check,
     citeStyle: options.citeStyle,
     allowPlugins: options.allowPlugins,
     blockMarkers: options.blockMarkers
@@ -24817,4 +24999,4 @@ export {
   dumpAST,
   render3 as render
 };
-/*! built: 2026-08-08T07:34:32.159Z */
+/*! built: 2026-08-09T03:37:15.898Z */

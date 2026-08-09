@@ -98,6 +98,7 @@ function _renderOptions(options) {
     mathRenderer: options.mathRenderer,
     mathFontsPath: options.mathFontsPath,
     codeRenderer: options.codeRenderer,
+    check: options.check,
     citeStyle: options.citeStyle,
     allowPlugins: options.allowPlugins,
     blockMarkers: options.blockMarkers,

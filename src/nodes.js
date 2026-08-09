@@ -185,8 +185,8 @@ class Equation extends ASTNode {
 
 class Table extends BlockNode {
   /**
-   * @param {string[]} [headers]
-   * @param {string[][]} [rows]
+   * @param {InlineNode[][]} [headers] - 表头单元格（行内节点数组）
+   * @param {InlineNode[][][]} [rows] - 数据行单元格
    * @param {string} [label] - 交叉引用标签，如 "tbl:1"
    */
   constructor(headers = [], rows = [], label = '') {

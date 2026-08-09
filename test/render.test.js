@@ -292,8 +292,58 @@ test('公式：字体 URL 重写为 CDN（默认）与 mathFontsPath（本地托
   assert.ok(!h2.includes('jsdelivr'));
 });
 
-test('公式/代码渲染缓存：输出一致且跨实例复用', () => {
-  const doc = '$a^2$ 与 $a^2$ 与 ```js\nvar x = 1;\n``` 与 ```js\nvar x = 1;\n```';
+test('引用：@cite 多 key 区间合并与 author-year 共享括号', () => {
+  const data = {
+    bibliography: {
+      a: {}, b: {}, c: {}, d: {},
+      x: { authors: 'Doe, J.', year: 2020 },
+      y: { authors: 'Smith, A.', year: 2019 },
+    },
+  };
+  let h = render('@cite("b","c","d")', { data });
+  assert.match(h, /<sup>\[<a href="#cite-1"[^>]*data-cite-key="b"[^>]*>1<\/a>-<a href="#cite-3"[^>]*data-cite-key="d"[^>]*>3<\/a>\]<\/sup>/);
+  h = render('@cite("x") @cite("a") @cite("y") @cite("a","c")', { data });
+  assert.match(h, /<sup>\[<a href="#cite-2"[^>]*data-cite-key="a"[^>]*>2<\/a>,<a href="#cite-4"[^>]*data-cite-key="c"[^>]*>4<\/a>\]<\/sup>/);
+  h = render('@cite("x","y")', { data, citeStyle: 'author-year' });
+  assert.match(h, /\(<a href="#cite-1"[^>]*>Doe, J\., 2020<\/a>; <a href="#cite-2"[^>]*>Smith, A\., 2019<\/a>\)/);
+  h = render('@cite("a","zz")', { data });
+  assert.match(h, /1<\/a>,zz\?\]/);
+});
+
+test('表格：单元格支持行内语法', () => {
+  const data = { bibliography: { a: {} } };
+  let h = render('| **粗** | ~下~ |\n|---|---|');
+  assert.match(h, /<th><strong>粗<\/strong><\/th>/);
+  assert.match(h, /<th><sub>下<\/sub><\/th>/);
+  h = render('| 方法 | 引用 |\n|---|---|\n| A | @cite("a") |', { data });
+  assert.match(h, /<td><sup><a href="#cite-1"/);
+  h = render('| x | y |{#tbl:t}|\n|---|---|\n| 1 | 2 |\n\n{#tbl:t} 数据表');
+  assert.match(h, /<table id="tbl:t">/);
+});
+
+test('check：引用完整性检查', () => {
+  const r = render('@cite("x") @cite("x") @cite("y")\n\n@term("无")\n\n见 @ref("no-such")\n\n注[^n1]', { check: true });
+  assert.strictEqual(typeof r.html, 'string');
+  const find = (type, key) => r.issues.find(i => i.type === type && i.key === key);
+  assert.deepStrictEqual(find('missing_cite', 'x'), { type: 'missing_cite', key: 'x', count: 2 });
+  assert.deepStrictEqual(find('missing_cite', 'y'), { type: 'missing_cite', key: 'y', count: 1 });
+  assert.deepStrictEqual(find('missing_term', '无'), { type: 'missing_term', key: '无', count: 1 });
+  assert.deepStrictEqual(find('missing_ref', 'no-such'), { type: 'missing_ref', key: 'no-such', count: 1 });
+  assert.deepStrictEqual(find('missing_footnote', 'n1'), { type: 'missing_footnote', key: 'n1', count: 1 });
+  const ok = render('@cite("a")\n\n![图](/a.png){#fig:1}\n\n见 @ref("fig:1")\n\n注[^n1]\n\n[^n1]: 定义', {
+    data: { bibliography: { a: {} } }, check: true,
+  });
+  assert.strictEqual(ok.issues.length, 0);
+});
+
+test('注释：行首 % 透明丢弃', () => {
+  assert.ok(!render('% 注释\n\n正文').includes('注释'));
+  assert.match(render('甲\n% 注释\n乙'), /甲<br>乙/);
+  assert.match(render('```js\n// 100% done\n```'), /100% done/);
+  assert.match(render('折扣 50%'), /折扣 50%/);
+});
+
+test('公式/代码渲染缓存：输出一致且跨实例复用', () => {  const doc = '$a^2$ 与 $a^2$ 与 ```js\nvar x = 1;\n``` 与 ```js\nvar x = 1;\n```';
   // 冷渲染与缓存命中渲染输出逐字节一致
   const h1 = render(doc);
   const h2 = render(doc);

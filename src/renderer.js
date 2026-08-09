@@ -134,7 +134,9 @@ class HTMLRenderer {
     const doc = this._prepare(source, opts);
     doc.accept(this);
     const body = this._output.join('');
-    return this._inlineStyles() + this._wrap(body, opts);
+    const html = this._inlineStyles() + this._wrap(body, opts);
+    if (opts.check) return { html, issues: this._checkIntegrity(doc) };
+    return html;
   }
 
   /**
@@ -148,10 +150,12 @@ class HTMLRenderer {
     const doc = this._prepare(source, { ...opts, blockMarkers: true });
     doc.accept(this);
     const body = this._output.join('');
-    return {
+    const out = {
       html: this._inlineStyles() + this._wrap(body, opts),
       blockHashes: this._blockHashes,
     };
+    if (opts.check) out.issues = this._checkIntegrity(doc);
+    return out;
   }
 
   /**
@@ -172,7 +176,9 @@ class HTMLRenderer {
     for (const slot of this._asyncSlots) {
       body = body.split(slot.token).join(slot.html);
     }
-    return this._inlineStyles() + this._wrap(body, opts);
+    const html = this._inlineStyles() + this._wrap(body, opts);
+    if (opts.check) return { html, issues: this._checkIntegrity(doc) };
+    return html;
   }
 
   /**
@@ -454,8 +460,8 @@ class HTMLRenderer {
     const walkExpr = (node) => {
       if (!node || typeof node !== 'object') return;
       if (node.type === 'call') {
-        if (node.name === 'cite' && node.args[0] && node.args[0].type === 'string') {
-          this._registerCite(node.args[0].value);
+        if (node.name === 'cite') {
+          for (const a of node.args) if (a.type === 'string') this._registerCite(a.value);
         }
         if (node.name === 'term' && node.args[0] && node.args[0].type === 'string') {
           this._registerTerm(node.args[0].value);
@@ -481,9 +487,9 @@ class HTMLRenderer {
         this._refs[n.label] = { kind: 'fig', number: counters.fig };
       }
       if (n instanceof FunctionCall) {
-        // 顶层 @cite("key") / @term("name") 调用
-        if (n.name === 'cite' && n.args[0] && n.args[0].type === 'string') {
-          this._registerCite(n.args[0].value);
+        // 顶层 @cite("k1","k2") / @term("name") 调用
+        if (n.name === 'cite') {
+          for (const a of n.args) if (a.type === 'string') this._registerCite(a.value);
         }
         if (n.name === 'term' && n.args[0] && n.args[0].type === 'string') {
           this._registerTerm(n.args[0].value);
@@ -561,6 +567,79 @@ class HTMLRenderer {
         this._citeYearSuffix[key] = counts[g] > 1 ? String.fromCharCode(96 + idx) : '';
       }
     }
+  }
+
+  /**
+   * 引用完整性检查（opts.check 时）：检测缺失的文献/术语/交叉引用/脚注定义。
+   * 按 type+key 去重并计数；_refs 需在 _collectRefs 之后（前向引用已完整）。
+   * @param {Document} doc
+   * @returns {Array<{type: string, key: string, count: number}>}
+   */
+  _checkIntegrity(doc) {
+    const issues = [];
+    const seen = new Map();
+    const report = (type, key) => {
+      const id = `${type}|${key}`;
+      if (seen.has(id)) issues[seen.get(id)].count++;
+      else { seen.set(id, issues.length); issues.push({ type, key, count: 1 }); }
+    };
+    const walkExpr = (node) => {
+      if (!node || typeof node !== 'object') return;
+      if (node.type === 'call') {
+        if (node.name === 'cite') {
+          for (const a of node.args) {
+            if (a.type === 'string' && !(this._data.bibliography && this._data.bibliography[a.value])) {
+              report('missing_cite', a.value);
+            }
+          }
+        } else if (node.name === 'term') {
+          const a = node.args[0];
+          if (a && a.type === 'string' && !(this._data.terms && this._data.terms[a.value])) {
+            report('missing_term', a.value);
+          }
+        } else if (node.name === 'ref') {
+          const a = node.args[0];
+          if (a && a.type === 'string' && !this._refs[a.value]) report('missing_ref', a.value);
+        }
+        node.args.forEach(walkExpr);
+        Object.values(node.kwargs).forEach(walkExpr);
+      } else if (node.type === 'unary') {
+        walkExpr(node.operand);
+      } else if (node.type === 'binary') {
+        walkExpr(node.left);
+        walkExpr(node.right);
+      } else if (node.type === 'object') {
+        Object.values(node.value).forEach(walkExpr);
+      } else if (node.type === 'array') {
+        node.items.forEach(walkExpr);
+      }
+    };
+    const walkInlineList = (n) => {
+      // 顶层 FunctionCall（AST 节点，无 type 字段）；嵌套表达式由 walkExpr 处理
+      if (n instanceof FunctionCall) {
+        if (n.name === 'cite') {
+          for (const a of n.args) {
+            if (a.type === 'string' && !(this._data.bibliography && this._data.bibliography[a.value])) {
+              report('missing_cite', a.value);
+            }
+          }
+        } else if (n.name === 'term') {
+          const a = n.args[0];
+          if (a && a.type === 'string' && !(this._data.terms && this._data.terms[a.value])) {
+            report('missing_term', a.value);
+          }
+        } else if (n.name === 'ref') {
+          const a = n.args[0];
+          if (a && a.type === 'string' && !this._refs[a.value]) report('missing_ref', a.value);
+        }
+        n.args.forEach(walkExpr);
+      }
+      if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report('missing_footnote', n.label);
+    };
+    for (const block of doc.blocks) {
+      if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
+    }
+    return issues;
   }
 
   /**
@@ -799,7 +878,11 @@ class HTMLRenderer {
     }
     if (node.headers.length) {
       this._write('<thead><tr>');
-      node.headers.forEach(h => this._write(`<th>${this._esc(h)}</th>`));
+      node.headers.forEach(h => {
+        this._write('<th>');
+        h.forEach(n => n.accept(this));
+        this._write('</th>');
+      });
       this._write('</tr></thead>');
       if (this.pretty) this._write('\n');
     }
@@ -808,7 +891,11 @@ class HTMLRenderer {
       if (this.pretty) this._write('\n');
       node.rows.forEach(row => {
         this._write('<tr>');
-        row.forEach(cell => this._write(`<td>${this._esc(cell)}</td>`));
+        row.forEach(cell => {
+          this._write('<td>');
+          cell.forEach(n => n.accept(this));
+          this._write('</td>');
+        });
         this._write('</tr>');
         if (this.pretty) this._write('\n');
       });

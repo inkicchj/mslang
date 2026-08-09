@@ -113,6 +113,9 @@ class Lexer {
     // 代码块内部
     if (this._inCodeBlock) return this._scanCodeBlockLine();
 
+    // 注释行（行首 %，整行丢弃；代码块内由上面分支先行处理）
+    if (remaining.startsWith('%')) return this._scanComment();
+
     // 水平分割线
     let m = remaining.match(RE_HORIZONTAL_RULE);
     if (m) return this._scanHorizontalRule(m);
@@ -204,6 +207,13 @@ class Lexer {
   // ================================================================
   // 扫描方法 — 块级
   // ================================================================
+
+  _scanComment() {
+    const lineEnd = this._lineEnd();
+    this._advance(lineEnd - this.pos);
+    if (this._peek() === CHAR.NEWLINE) this._advance(1);
+    return null; // tokenize 循环跳过，注释行透明（不影响块结构）
+  }
 
   _scanHeading(match) {
     const hashes = match[1];

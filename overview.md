@@ -108,6 +108,15 @@ const html = render('# 标题\n\n**加粗** 与 *斜体* 文本');
 - [x] 已完成             → checked
 ```
 
+#### 注释
+
+```md
+% 这是注释（AI 生成痕迹，整行丢弃）     ← 行首 %，不产生任何输出
+```
+
+- 注释行**透明**：不影响段落/列表/引用结构（`甲\n% 注释\n乙` 仍为同一段）
+- 代码块内、表格内、行内 `%`（如 `50%`）不受影响；`\%` 可输出行首字面 `%`
+
 #### 代码块
 
 ````md
@@ -128,6 +137,8 @@ const a = 1;
 | 数据1 | 数据2 |               → <table id="tbl:t"><thead><th>…</thead><tbody><td>…
 | 数据3 | 数据4 |
 ```
+
+单元格支持**全部行内语法**：`| **加粗** | @cite("a") | $x^2$ | [链接](url) |`
 
 表格 caption 写在表格**后一行**（见 [caption](#caption)），渲染为表头上方 `<caption>表 1：…</caption>`。
 
@@ -252,7 +263,7 @@ $$ x = 1 $$ {#eq:a}
 | `@plugin("name", "函数体")` | 注册自定义函数（见插件一节），无输出 |
 | `@has_cite("key")` | 数据中存在该文献 |
 | `@has_term("name")` | 数据中存在该术语 |
-| `@cite("key")` | 文献引用，自动编号 `[n]`（样式见 `citeStyle`） |
+| `@cite("key")` | 文献引用，自动编号 `[n]`；支持多 key `@cite("a","b")` → `[1-3]`（连续区间合并）/`[1,3]`（非连续）/author-year `(Doe, 2020a; Smith, 2019)` |
 | `@term("name")` | 术语引用（行内高亮） |
 | `@ref("label")` | 交叉引用：章节/图/表/公式 |
 | `@bibliography()` | 文献表：仅列出被引用的条目 |
@@ -365,9 +376,24 @@ render(src, { citeStyle: 'author-year' });   // 或 @set({ citeStyle: "author-ye
 | `allowPlugins` | `true` | 允许 `@plugin` 文档内插件 |
 | `escapeHtml` | `true` | 转义正文特殊字符（属性值恒转义，不受此影响） |
 | `pretty` | `false` | 输出换行美化 |
+| `check` | `false` | 引用完整性检查：返回 `{ html, issues }`（见下） |
 | `mathRenderer` | 内置 KaTeX | 公式渲染器 `(src, inline) => html` |
 | `mathFontsPath` | CDN | KaTeX 字体本地托管路径（`'fonts/'`） |
 | `codeRenderer` | 转义透传 | mermaid 渲染器 `(source, language) => html` |
+
+### 引用完整性检查（check）
+
+AI 生成文档后自查引用是否有缺口（缺失仍正常渲染占位，不抛错）：
+
+```javascript
+const { html, issues } = render(source, { data, check: true });
+// issues: [{ type: 'missing_cite', key: 'doe2020', count: 2 }, ...]
+//   type: missing_cite | missing_term | missing_ref | missing_footnote
+//   count: 同一 key 出现次数（按 type+key 去重）
+```
+
+- 检测范围：`@cite`/`@term`/`@ref`（含嵌套在表达式 `cite("k")` 中的）与 `[^n]` 脚注引用
+- 有数据/定义时无对应 issue；`blocks`/`async` 模式同样支持
 
 ---
 

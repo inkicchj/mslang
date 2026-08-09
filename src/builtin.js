@@ -45,6 +45,33 @@ export function builtinFunctions(renderer) {
   const esc = (t) => renderer._esc(t);
   const escAttr = (t) => renderer._escAttr(t);
 
+  /** 引用锚点属性（文献编号 + data 元数据） */
+  const citeAnchor = (key, entry, num) => {
+    const dataKey = entry && entry.key !== undefined ? entry.key : key;
+    const keyAttr = renderer._citeKeyAttr
+      ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(dataKey))}"` : '';
+    return `href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}"`;
+  };
+
+  /** 单个文献引用渲染（numeric → 上标 [n]；author-year/author → (Doe, 2020a) 风格，缺 authors 回退数字） */
+  const renderCiteOne = (key) => {
+    const entry = renderer._data.bibliography && renderer._data.bibliography[key];
+    if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
+    renderer._registerCite(key); // 收集阶段未覆盖的键（如变量参数）在此动态编号
+    const num = renderer._citeNumbers[key];
+    const anchor = citeAnchor(key, entry, num);
+    if (renderer._citeStyle !== 'numeric') {
+      const authors = entry && entry.authors ? String(entry.authors) : '';
+      if (authors) {
+        const suffix = renderer._citeYearSuffix && renderer._citeYearSuffix[key] || '';
+        const year = renderer._citeStyle === 'author-year' && entry.year !== undefined
+          ? `, ${entry.year}${suffix}` : '';
+        return `<a ${anchor}>(${esc(authors)}${year})</a>`;
+      }
+    }
+    return `<sup><a ${anchor}>[${esc(String(num))}]</a></sup>`;
+  };
+
   return {
     if: (cond, then, els) => (cond ? then : (els === undefined ? '' : els)),
     not: (x) => !x,
@@ -75,28 +102,58 @@ export function builtinFunctions(renderer) {
     /** 术语是否存在（供 if 条件使用） */
     has_term: (name) => !!(renderer._data.terms && renderer._data.terms[name]),
 
-    /** 文献引用：按文档出现顺序自动编号；citeStyle 为 numeric（默认）输出上标 [n]，
-     *  author-year / author 输出 (Doe, 2020a) 风格（缺 authors 时回退数字） */
-    cite: (key) => {
-      const entry = renderer._data.bibliography && renderer._data.bibliography[key];
-      if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
-      renderer._registerCite(key); // 收集阶段未覆盖的键（如变量参数）在此动态编号
-      const num = renderer._citeNumbers[key];
-      // 条目可定义 key 字段（如数据库主键）：data 属性输出条目 key，与引用名解耦
-      const dataKey = entry && entry.key !== undefined ? entry.key : key;
-      const keyAttr = renderer._citeKeyAttr
-        ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(dataKey))}"` : '';
-      const anchor = `href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}"`;
+    /** 文献引用：支持一次引多篇 @cite("a","b","c")。
+     *  numeric → 上标 [1-3]（连续区间合并）/[1,3]（非连续），逐 key 锚点（连续区间保留首尾）；
+     *  author-year / author → (Doe, 2020a; Smith, 2019) 共享括号，分号分隔。 */
+    cite: (...keys) => {
+      // 渲染器调用时末尾附 kwargs 对象（无 kwargs 时为空对象），剔除
+      if (keys.length && typeof keys[keys.length - 1] === 'object') keys = keys.slice(0, -1);
+      if (keys.length === 1) return renderCiteOne(keys[0]);
       if (renderer._citeStyle !== 'numeric') {
-        const authors = entry && entry.authors ? String(entry.authors) : '';
-        if (authors) {
+        const parts = keys.map((key) => {
+          const entry = renderer._data.bibliography && renderer._data.bibliography[key];
+          if (!entry) return `[${esc(String(key))}?]`;
+          renderer._registerCite(key);
+          const num = renderer._citeNumbers[key];
+          const anchor = citeAnchor(key, entry, num);
+          const authors = entry && entry.authors ? String(entry.authors) : '';
+          if (!authors) return `<sup><a ${anchor}>[${esc(String(num))}]</a></sup>`;
           const suffix = renderer._citeYearSuffix && renderer._citeYearSuffix[key] || '';
           const year = renderer._citeStyle === 'author-year' && entry.year !== undefined
             ? `, ${entry.year}${suffix}` : '';
-          return `<a ${anchor}>(${esc(authors)}${year})</a>`;
-        }
+          return `<a ${anchor}>${esc(authors)}${year}</a>`;
+        });
+        return `(${parts.join('; ')})`;
       }
-      return `<sup><a ${anchor}>[${esc(String(num))}]</a></sup>`;
+      const items = [];
+      const missing = [];
+      for (const key of keys) {
+        const entry = renderer._data.bibliography && renderer._data.bibliography[key];
+        if (!entry) { missing.push(key); continue; }
+        renderer._registerCite(key);
+        items.push({ key, entry, num: renderer._citeNumbers[key] });
+      }
+      items.sort((a, b) => a.num - b.num);
+      // 连续编号合并为区间 [1-3]，非连续逗号分隔
+      const groups = [];
+      let cur = [];
+      for (const it of items) {
+        const last = cur[cur.length - 1];
+        if (last && it.num === last.num + 1) cur.push(it);
+        else { if (cur.length) groups.push(cur); cur = [it]; }
+      }
+      if (cur.length) groups.push(cur);
+      const inner = groups.map((g) => {
+        if (g.length === 1) {
+          const { key, entry, num } = g[0];
+          return `<a ${citeAnchor(key, entry, num)}>${num}</a>`;
+        }
+        const first = g[0];
+        const last = g[g.length - 1];
+        return `<a ${citeAnchor(first.key, first.entry, first.num)}>${first.num}</a>` +
+               `-<a ${citeAnchor(last.key, last.entry, last.num)}>${last.num}</a>`;
+      });
+      return `<sup>[${inner.join(',')}${missing.length ? ',' + missing.map(k => esc(String(k)) + '?').join(',') : ''}]</sup>`;
     },
 
     /** 交叉引用：图/表显示"图 N/表 N"（前缀随 captionPrefix 配置）；章节显示 显式编号 → 自动编号 → 标题全文 */

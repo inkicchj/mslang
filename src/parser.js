@@ -416,6 +416,35 @@ class Parser {
   // 行内解析
   // ================================================================
 
+  /**
+   * 将短文本解析为行内节点数组（表格单元格行内语法用）。
+   * 临时切换内部 token 流，解析完恢复。
+   * @param {string} text
+   * @returns {InlineNode[]}
+   */
+  _parseInlineString(text) {
+    const savedTokens = this._tokens;
+    const savedPos = this._pos;
+    this._tokens = new Lexer(text).tokenize();
+    this._pos = 0;
+    const inlines = [];
+    while (!this._isAtEnd()) {
+      const token = this._current();
+      if (token.type === TokenType.EOF) break;
+      if (token.type === TokenType.RAW_TEXT) {
+        this._advance();
+        inlines.push(...this._autolink([new RawText(token.value)]));
+        continue;
+      }
+      const inline = this._parseInlineToken(token);
+      if (inline) { inlines.push(inline); this._advance(); }
+      else this._advance();
+    }
+    this._tokens = savedTokens;
+    this._pos = savedPos;
+    return this._mergeAdjacentText(inlines);
+  }
+
   _parseTable() {
     const headers = [];
     const rows = [];
@@ -445,9 +474,9 @@ class Parser {
             cells = cells.slice(0, -1);
           }
         }
-        headers.push(...cells);
+        headers.push(...cells.map(c => this._parseInlineString(c)));
       } else {
-        rows.push(cells);
+        rows.push(cells.map(c => this._parseInlineString(c)));
       }
 
       if (this._current() && this._current().type === TokenType.LINE_BREAK) this._advance();
