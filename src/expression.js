@@ -218,6 +218,24 @@ class ExpressionParser {
 
     if (ch >= '0' && ch <= '9') return this._parsePostfix(this._parseNumber());
 
+    // 可选 @ 前缀（文档级调用语法 @name(...)，与表达式 call 统一为同一套）
+    if (ch === '@') {
+      this.pos++;
+      this._skipWs();
+      const fname = this._readIdentifier();
+      if (fname === null) this._error("'@' 后需要名称");
+      this._skipWs();
+      if (this._peek() === '(') {
+        this.pos++;
+        const { args, kwargs } = this._parseArgsBody();
+        this._skipWs();
+        if (this._peek() !== ')') this._error("缺少 ')'");
+        this.pos++;
+        return this._parsePostfix({ type: 'call', name: fname, args, kwargs });
+      }
+      return this._parsePostfix({ type: 'var', name: fname });
+    }
+
     const name = this._readIdentifier();
     if (name !== null) {
       if (name === 'true') return { type: 'bool', value: true };

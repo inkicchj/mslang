@@ -1,6 +1,12 @@
-// 回归对比脚本：输出每个用例的 HTML 与 AST，供新旧代码对比
+// 回归对比脚本：默认对比 golden 基线；--save 重新生成基线
+// 用法: node scripts/compare-cleanup.mjs [--save]
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { render, dumpAST, Parser } from '../src/index.js';
 import { mergeDocuments } from '../src/parser.js';
+
+const GOLDEN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'test', 'fixtures', 'compare-golden.json');
 
 const opts = {
   data: {
@@ -90,4 +96,26 @@ for (const [name, src] of cases) {
 const asyncDoc = '@cite("doe2020") 与 @term("词干提取")';
 out['async-same'] = { html: stripMeta(await render(asyncDoc, { ...opts, async: true })), ast: '' };
 
-process.stdout.write(JSON.stringify(out, null, 2));
+if (process.argv.includes('--save')) {
+  writeFileSync(GOLDEN, JSON.stringify(out, null, 2) + '\n');
+  console.log(`✅ golden 已保存: ${GOLDEN}（${Object.keys(out).length} 用例）`);
+  process.exit(0);
+}
+
+if (!existsSync(GOLDEN)) {
+  console.error(`❌ 缺少 golden 基线 ${GOLDEN}；先运行: node scripts/compare-cleanup.mjs --save`);
+  process.exit(1);
+}
+const golden = JSON.parse(readFileSync(GOLDEN, 'utf8'));
+let same = 0, diff = 0;
+for (const k of Object.keys(out)) {
+  if (JSON.stringify(golden[k]) === JSON.stringify(out[k])) same++;
+  else {
+    diff++;
+    console.log(`=== DIFF: ${k} ===`);
+    console.log(`  golden: ${JSON.stringify(golden[k]).slice(0, 200)}`);
+    console.log(`  now   : ${JSON.stringify(out[k]).slice(0, 200)}`);
+  }
+}
+console.log(`same: ${same}, diff: ${diff}, total: ${Object.keys(out).length}`);
+process.exit(diff ? 1 : 0);

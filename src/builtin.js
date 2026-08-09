@@ -37,11 +37,6 @@ export function extractHeadingNumber(text, mode) {
 // 内置函数注册表
 // ================================================================
 
-/** 定理环境类型 → 显示前缀（@ref 与 visit_Theorem 共用） */
-export const THEOREM_PREFIX = {
-  theorem: '定理', lemma: '引理', definition: '定义', remark: '注记', example: '例',
-};
-
 /**
  * @param {import('./renderer.js').HTMLRenderer} renderer
  * @returns {Object<string, Function>}
@@ -182,7 +177,7 @@ export function builtinFunctions(renderer) {
       if (r.kind === 'fig') text = `${renderer._captionPrefix.fig} ${r.number}`;
       else if (r.kind === 'tbl') text = `${renderer._captionPrefix.tbl} ${r.number}`;
       else if (r.kind === 'eq') text = `${renderer._captionPrefix.eq} ${r.number}`;
-      else if (r.kind === 'thm') text = `${THEOREM_PREFIX[r.type] || '定理'} ${r.number}`;
+      else if (r.kind === 'thm') text = `${(renderer._captionPrefix.thm && renderer._captionPrefix.thm[r.type]) || '定理'} ${r.number}`;
       else text = r.display;
       const keyAttr = renderer._refKeyAttr
         ? ` ${renderer._refKeyAttr}="${escapeAttr(String(label))}" data-ref-kind="${r.kind}"` : '';

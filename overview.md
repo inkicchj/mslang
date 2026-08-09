@@ -206,9 +206,14 @@ $$ x = 1 $$ {#eq:a}
 | `<b>透传</b>` | 原样输出 | 行内 HTML 透传（本行内需有闭合 `>`） |
 | `[^n1]` | `<a href="#fn-1">` | 脚注引用 |
 
-#### 转义
+#### 转义（四层，按使用场景）
 
-反斜杠转义行内语法起始符：`\*` `\_` `\~` `` \` `` `\[` `\!` `\@` `\/` `\\` `\$`
+| 场景 | 转义方式 | 示例 |
+|---|---|---|
+| 行内语法起始符 | 反斜杠 `\*` `\_` `\~` `` \` `` `\[` `\!` `\@` `\/` `\\` `\$` | `\$5` → `$5` |
+| 表达式字符串内 | `\"` `\\`（字符串字面量转义） | `@cite("a\\\"b")` |
+| 宏 @use 的值 | **自动**字面转义（值里 md/函数不解析） | `@use("t", { v: "a * b" })` |
+| HTML 层 | 正文受 `escapeHtml` 控制；**属性值恒转义**（防注入） | `data-cite-key` 等 |
 
 ```md
 \$5 与 $x$        → $5 与 <span class="math-inline">x</span>
@@ -239,7 +244,7 @@ $$ x = 1 $$ {#eq:a}
 | 对象 | `{ key: "value", n: 1 }`（值可为表达式） |
 | 属性访问 | `obj.prop` `arr[0]` `a.b[0].c`（可链式；缺失返回 undefined） |
 | 变量 | `threshold`（由 `@let` 或 `variables` 选项提供） |
-| 函数调用 | `has_cite("doe2020")` `cite("doe2020")` |
+| 函数调用 | `has_cite("doe2020")` `cite("doe2020")`（`@cite("...")` 前缀形式同样可用，两套统一） |
 | 一元 | `!x` `-x` |
 | 算术 | `+ - * / %` |
 | 比较 | `==` `!=` `<` `>` `<=` `>=` |
@@ -328,6 +333,18 @@ $$ x = 1 $$ {#eq:a}
 - 值按字面转义（值里的 `*`/`@cite` 不解析，防注入）；缺占位符键时保留 `{key}` 原文
 - 未定义宏输出错误注释；宏跨文档合并可见；值可引用 `@let` 变量
 
+### 注册机制选择（@let / @define / @plugin）
+
+三者都"预扫描注册、无输出、同名覆盖"，按用途选：
+
+| 需求 | 用 | 示例 |
+|---|---|---|
+| 算个值/存数据 | `@let("n", 42)` | `@if(score > 10, "高", "低")` |
+| 参数化文本（含 md 语法） | `@define` + `@use` | 卡片、重复句式 |
+| 程序逻辑（返回 HTML） | `@plugin("fn", "JS 函数体")` | 排序、条件拼接 |
+
+要点：`@use` 结果**再按行内语法解析**（模板里可写 `**`、`@cite`）；`@plugin` 结果**原样当 HTML** 输出。需要 md 语法 → 宏，需要真逻辑 → 插件。
+
 ---
 
 ## 数据（data）
@@ -384,32 +401,32 @@ render(src, { citeStyle: 'author-year' });   // 或 @set({ citeStyle: "author-ye
 
 ## 渲染选项
 
-`render(source, options)` 完整选项：
+`render(source, options)` 完整选项（通道：构造器 = 仅构造时生效；渲染 = 每次渲染；`@set` = 可文档内配置）：
 
-| 选项 | 默认 | 说明 |
-|---|---|---|
-| `async` | `false` | 异步渲染，返回 `Promise<string>`（支持返回 Promise 的自定义函数） |
-| `blocks` | `false` | 块级渲染，返回 `{ html, blockHashes }`（见块级编辑） |
-| `data` | `{}` | 文献/术语数据 |
-| `variables` | `{}` | 变量表 |
-| `functions` | `{}` | 自定义函数表（`{ name: fn }`） |
-| `wrapperClass` | `'mslang'` | 外层 div class |
-| `wrapperId` | `''` | 外层 div id |
-| `headingNumbering` | `''` | 标题自动编号（`'1.1'` → 1.1、1.1.1；`'1'` → 1、1.1；`'一'` → 中文） |
-| `refNumbering` | `''` | `@ref` 显示编号提取（与标题文本匹配） |
-| `captionPrefix` | `{fig:'图',tbl:'表',eq:'式'}` | 图表公式编号前缀 |
-| `citeKeyAttr` | `'data-cite-key'` | 引用元数据属性名（空串关闭） |
-| `termKeyAttr` | `'data-term-key'` | 术语元数据属性名 |
-| `refKeyAttr` | `'data-ref-label'` | 交叉引用元数据属性名 |
-| `citeStyle` | `'numeric'` | 引用样式（numeric/author-year/author） |
-| `allowPlugins` | `true` | 允许 `@plugin` 文档内插件 |
-| `escapeHtml` | `true` | 转义正文特殊字符（属性值恒转义，不受此影响） |
-| `pretty` | `false` | 输出换行美化 |
-| `check` | `false` | 引用完整性检查：返回 `{ html, issues }`（见下） |
-| `bibStyle` | `'default'` | 文献表条目样式：`'default'` / `'gbt7714'`（近似 GB/T 7714 点分隔） |
-| `mathRenderer` | 内置 KaTeX | 公式渲染器 `(src, inline) => html` |
-| `mathFontsPath` | CDN | KaTeX 字体本地托管路径（`'fonts/'`） |
-| `codeRenderer` | 转义透传 | mermaid 渲染器 `(source, language) => html` |
+| 选项 | 默认 | 通道 | 说明 |
+|---|---|---|---|
+| `async` | `false` | 渲染 | 异步渲染，返回 `Promise<string>`（支持返回 Promise 的自定义函数） |
+| `blocks` | `false` | 渲染 | 块级渲染，返回 `{ html, blockHashes }`（见块级编辑） |
+| `data` | `{}` | 渲染 + @set | 文献/术语数据 |
+| `variables` | `{}` | 渲染 + @set | 变量表 |
+| `functions` | `{}` | 构造器 | 自定义函数表（`{ name: fn }`） |
+| `wrapperClass` | `'mslang'` | 渲染 | 外层 div class |
+| `wrapperId` | `''` | 渲染 | 外层 div id |
+| `headingNumbering` | `''` | 渲染 + @set | 标题自动编号（`'1.1'` → 1.1、1.1.1；`'1'` → 1、1.1；`'一'` → 中文） |
+| `refNumbering` | `''` | 渲染 + @set | `@ref` 显示编号提取（与标题文本匹配） |
+| `captionPrefix` | `{fig:'图',tbl:'表',eq:'式',thm:{...}}` | 渲染 + @set | 编号前缀；`thm` 按类型（定理/引理/定义/注记/例），可 `@set({captionPrefix:{thm:{theorem:"Theorem"}}})` 部分覆盖 |
+| `citeKeyAttr` | `'data-cite-key'` | 渲染 + @set | 引用元数据属性名（空串关闭） |
+| `termKeyAttr` | `'data-term-key'` | 渲染 + @set | 术语元数据属性名 |
+| `refKeyAttr` | `'data-ref-label'` | 渲染 + @set | 交叉引用元数据属性名 |
+| `citeStyle` | `'numeric'` | 渲染 + @set | 引用样式（numeric/author-year/author） |
+| `allowPlugins` | `true` | 渲染 + @set | 允许 `@plugin` 文档内插件 |
+| `escapeHtml` | `true` | 构造器 + @set | 转义正文特殊字符（属性值恒转义，不受此影响） |
+| `pretty` | `false` | 构造器 + @set | 输出换行美化 |
+| `check` | `false` | 渲染 | 引用完整性检查：返回 `{ html, issues }`（见下） |
+| `bibStyle` | `'default'` | 渲染 + @set | 文献表条目样式：`'default'` / `'gbt7714'`（近似 GB/T 7714 点分隔） |
+| `mathRenderer` | 内置 KaTeX | 渲染 | 公式渲染器 `(src, inline) => html`（函数，不可 @set） |
+| `mathFontsPath` | CDN | 渲染 | KaTeX 字体本地托管路径（`'fonts/'`） |
+| `codeRenderer` | 转义透传 | 渲染 | mermaid 渲染器 `(source, language) => html`（函数，不可 @set） |
 
 ### 引用完整性检查（check）
 

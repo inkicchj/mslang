@@ -141,7 +141,7 @@ class Parser {
       if (!(fc instanceof FunctionCall) || !THEOREM_TYPES.includes(fc.name)) continue;
       const label = fc.args[0] && fc.args[0].type === 'string' ? fc.args[0].value : '';
       const title = fc.args[1] && fc.args[1].type === 'string'
-        ? this._parseInlineString(fc.args[1].value) : [];
+        ? parseInlineFragment(fc.args[1].value) : [];
       const next = blocks[i + 1];
       if (!(next instanceof Paragraph)) continue;
       blocks[i] = new Theorem(fc.name, label, title, next.content);
@@ -445,35 +445,6 @@ class Parser {
   // 行内解析
   // ================================================================
 
-  /**
-   * 将短文本解析为行内节点数组（表格单元格行内语法用）。
-   * 临时切换内部 token 流，解析完恢复。
-   * @param {string} text
-   * @returns {InlineNode[]}
-   */
-  _parseInlineString(text) {
-    const savedTokens = this._tokens;
-    const savedPos = this._pos;
-    this._tokens = new Lexer(text).tokenize();
-    this._pos = 0;
-    const inlines = [];
-    while (!this._isAtEnd()) {
-      const token = this._current();
-      if (token.type === TokenType.EOF) break;
-      if (token.type === TokenType.RAW_TEXT) {
-        this._advance();
-        inlines.push(...this._autolink([new RawText(token.value)]));
-        continue;
-      }
-      const inline = this._parseInlineToken(token);
-      if (inline) { inlines.push(inline); this._advance(); }
-      else this._advance();
-    }
-    this._tokens = savedTokens;
-    this._pos = savedPos;
-    return this._mergeAdjacentText(inlines);
-  }
-
   _parseTable() {
     const headers = [];
     const rows = [];
@@ -503,9 +474,9 @@ class Parser {
             cells = cells.slice(0, -1);
           }
         }
-        headers.push(...cells.map(c => this._parseInlineString(c)));
+        headers.push(...cells.map(parseInlineFragment));
       } else {
-        rows.push(cells.map(c => this._parseInlineString(c)));
+        rows.push(cells.map(parseInlineFragment));
       }
 
       if (this._current() && this._current().type === TokenType.LINE_BREAK) this._advance();
@@ -967,3 +938,13 @@ function dumpAST(node, indent = 0, prefix = '', isLast = true) {
 }
 
 export { Parser, ParserError, dumpAST, mergeDocuments };
+
+/**
+ * 将短文本解析为行内节点数组（表格单元格 / 宏展开等共用，独立 Parser 实例）。
+ * @param {string} text
+ * @returns {InlineNode[]}
+ */
+export function parseInlineFragment(text) {
+  const doc = new Parser().parse(new Lexer(text).tokenize(), text);
+  return doc.blocks.flatMap(b => b.content || []);
+}

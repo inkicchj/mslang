@@ -14,9 +14,9 @@ import {
 } from './nodes.js';
 
 import { Lexer } from './lexer.js';
-import { Parser, mergeDocuments } from './parser.js';
+import { Parser, mergeDocuments, parseInlineFragment } from './parser.js';
 import { evaluate } from './expression.js';
-import { builtinFunctions, extractHeadingNumber, THEOREM_PREFIX } from './builtin.js';
+import { builtinFunctions, extractHeadingNumber } from './builtin.js';
 import { escapeHTML, escapeAttr } from './escape.js';
 import katex from 'katex';
 import hljs from 'highlight.js/lib/core';
@@ -265,7 +265,7 @@ class HTMLRenderer {
     this._macros = {};
     this._headingNumbering = headingNumbering === true ? '1.1' : (headingNumbering || '');
     this._refNumbering = refNumbering || '';
-    this._captionPrefix = { ...HTMLRenderer.DEFAULT_CAPTION_PREFIX, ...captionPrefix };
+    this._captionPrefix = HTMLRenderer._mergeCaptionPrefix(HTMLRenderer.DEFAULT_CAPTION_PREFIX, captionPrefix);
     this._citeKeyAttr = citeKeyAttr || '';
     this._termKeyAttr = termKeyAttr || '';
     this._refKeyAttr = refKeyAttr || '';
@@ -315,8 +315,21 @@ class HTMLRenderer {
   // 引用/术语 data 属性名（工作台交互定位用；空串关闭）
   static DEFAULT_KEY_ATTRS = { citeKeyAttr: 'data-cite-key', termKeyAttr: 'data-term-key', refKeyAttr: 'data-ref-label' };
 
-  // caption 前缀（默认中文，可用 @set 覆盖）
-  static DEFAULT_CAPTION_PREFIX = { fig: '图', tbl: '表', eq: '式' };
+  // caption 前缀（默认中文，可用 @set 覆盖；thm 按定理类型细分）
+  static DEFAULT_CAPTION_PREFIX = {
+    fig: '图', tbl: '表', eq: '式',
+    thm: { theorem: '定理', lemma: '引理', definition: '定义', remark: '注记', example: '例' },
+  };
+
+  /** 深合并 captionPrefix（thm 为嵌套对象，避免浅合并整体覆盖） */
+  static _mergeCaptionPrefix(base, incoming) {
+    const cp = incoming || {};
+    return {
+      ...base,
+      ...cp,
+      thm: { ...(base.thm || {}), ...(cp.thm || {}) },
+    };
+  }
 
   /**
    * 预扫描文档顶层的 @set({...}) 调用并应用配置。
@@ -455,7 +468,7 @@ class HTMLRenderer {
         // 就地合并（不替换对象）：保持 _evalCtx.variables 引用有效
         Object.assign(this._variables, config[key] || {});
       } else if (key === 'captionPrefix') {
-        this._captionPrefix = { ...this._captionPrefix, ...config[key] };
+        this._captionPrefix = HTMLRenderer._mergeCaptionPrefix(this._captionPrefix, config[key]);
       } else if (key === 'citeKeyAttr' || key === 'termKeyAttr' || key === 'refKeyAttr') {
         this[`_${key}`] = config[key] || '';
       } else if (key === 'citeStyle') {
@@ -514,27 +527,13 @@ class HTMLRenderer {
       return parts.join(sep);
     };
 
-    // 表达式树中的 cite 调用（嵌套于 if 等函数参数）
-    const walkExpr = (node) => {
-      if (!node || typeof node !== 'object') return;
-      if (node.type === 'call') {
-        if (node.name === 'cite') {
-          for (const a of node.args) if (a.type === 'string') this._registerCite(a.value);
-        }
-        if (node.name === 'term' && node.args[0] && node.args[0].type === 'string') {
-          this._registerTerm(node.args[0].value);
-        }
-        node.args.forEach(walkExpr);
-        Object.values(node.kwargs).forEach(walkExpr);
-      } else if (node.type === 'unary') {
-        walkExpr(node.operand);
-      } else if (node.type === 'binary') {
-        walkExpr(node.left);
-        walkExpr(node.right);
-      } else if (node.type === 'object') {
-        Object.values(node.value).forEach(walkExpr);
-      } else if (node.type === 'array') {
-        node.items.forEach(walkExpr);
+    // 表达式树中的 cite/term 调用（嵌套于 if 等函数参数；顶层 FunctionCall 由 walkInlineList 处理）
+    const handleCall = (call) => {
+      if (call.name === 'cite') {
+        for (const a of call.args) if (a.type === 'string') this._registerCite(a.value);
+      }
+      if (call.name === 'term' && call.args[0] && call.args[0].type === 'string') {
+        this._registerTerm(call.args[0].value);
       }
     };
 
@@ -545,15 +544,8 @@ class HTMLRenderer {
         this._refs[n.label] = { kind: 'fig', number: counters.fig };
       }
       if (n instanceof FunctionCall) {
-        // 顶层 @cite("k1","k2") / @term("name") 调用
-        if (n.name === 'cite') {
-          for (const a of n.args) if (a.type === 'string') this._registerCite(a.value);
-        }
-        if (n.name === 'term' && n.args[0] && n.args[0].type === 'string') {
-          this._registerTerm(n.args[0].value);
-        }
-        // 嵌套在参数表达式中的 cite/term
-        n.args.forEach(walkExpr);
+        handleCall(n);
+        n.args.forEach(a => this._walkExprTree(a, handleCall));
       }
     };
 
@@ -646,56 +638,28 @@ class HTMLRenderer {
       if (seen.has(id)) issues[seen.get(id)].count++;
       else { seen.set(id, issues.length); issues.push({ type, key, count: 1 }); }
     };
-    const walkExpr = (node) => {
-      if (!node || typeof node !== 'object') return;
-      if (node.type === 'call') {
-        if (node.name === 'cite') {
-          for (const a of node.args) {
-            if (a.type === 'string' && !(this._data.bibliography && this._data.bibliography[a.value])) {
-              report('missing_cite', a.value);
-            }
+    const handleCall = (call) => {
+      if (call.name === 'cite') {
+        for (const a of call.args) {
+          if (a.type === 'string' && !(this._data.bibliography && this._data.bibliography[a.value])) {
+            report('missing_cite', a.value);
           }
-        } else if (node.name === 'term') {
-          const a = node.args[0];
-          if (a && a.type === 'string' && !(this._data.terms && this._data.terms[a.value])) {
-            report('missing_term', a.value);
-          }
-        } else if (node.name === 'ref') {
-          const a = node.args[0];
-          if (a && a.type === 'string' && !this._refs[a.value]) report('missing_ref', a.value);
         }
-        node.args.forEach(walkExpr);
-        Object.values(node.kwargs).forEach(walkExpr);
-      } else if (node.type === 'unary') {
-        walkExpr(node.operand);
-      } else if (node.type === 'binary') {
-        walkExpr(node.left);
-        walkExpr(node.right);
-      } else if (node.type === 'object') {
-        Object.values(node.value).forEach(walkExpr);
-      } else if (node.type === 'array') {
-        node.items.forEach(walkExpr);
+      } else if (call.name === 'term') {
+        const a = call.args[0];
+        if (a && a.type === 'string' && !(this._data.terms && this._data.terms[a.value])) {
+          report('missing_term', a.value);
+        }
+      } else if (call.name === 'ref') {
+        const a = call.args[0];
+        if (a && a.type === 'string' && !this._refs[a.value]) report('missing_ref', a.value);
       }
     };
     const walkInlineList = (n) => {
-      // 顶层 FunctionCall（AST 节点，无 type 字段）；嵌套表达式由 walkExpr 处理
+      // 顶层 FunctionCall（AST 节点，无 type 字段）；嵌套表达式由 _walkExprTree 处理
       if (n instanceof FunctionCall) {
-        if (n.name === 'cite') {
-          for (const a of n.args) {
-            if (a.type === 'string' && !(this._data.bibliography && this._data.bibliography[a.value])) {
-              report('missing_cite', a.value);
-            }
-          }
-        } else if (n.name === 'term') {
-          const a = n.args[0];
-          if (a && a.type === 'string' && !(this._data.terms && this._data.terms[a.value])) {
-            report('missing_term', a.value);
-          }
-        } else if (n.name === 'ref') {
-          const a = n.args[0];
-          if (a && a.type === 'string' && !this._refs[a.value]) report('missing_ref', a.value);
-        }
-        n.args.forEach(walkExpr);
+        handleCall(n);
+        n.args.forEach(a => this._walkExprTree(a, handleCall));
       }
       if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report('missing_footnote', n.label);
     };
@@ -703,6 +667,30 @@ class HTMLRenderer {
       if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
     }
     return issues;
+  }
+
+  /**
+   * 遍历表达式树（嵌套在函数参数中的 call/unary/binary/object/array），
+   * 对每个 call 节点调用 onCall。_collectRefs / _checkIntegrity / visit 共用。
+   * @param {object} node
+   * @param {function} onCall
+   */
+  _walkExprTree(node, onCall) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'call') {
+      onCall(node);
+      node.args.forEach(a => this._walkExprTree(a, onCall));
+      Object.values(node.kwargs).forEach(a => this._walkExprTree(a, onCall));
+    } else if (node.type === 'unary') {
+      this._walkExprTree(node.operand, onCall);
+    } else if (node.type === 'binary') {
+      this._walkExprTree(node.left, onCall);
+      this._walkExprTree(node.right, onCall);
+    } else if (node.type === 'object') {
+      Object.values(node.value).forEach(a => this._walkExprTree(a, onCall));
+    } else if (node.type === 'array') {
+      node.items.forEach(a => this._walkExprTree(a, onCall));
+    }
   }
 
   /**
@@ -984,10 +972,11 @@ class HTMLRenderer {
     const ref = this._refs[node.label];
     const num = ref ? ref.number : '';
     const id = node.label ? ` id="${this._escAttr(node.label)}"` : '';
+    const prefix = (this._captionPrefix.thm && this._captionPrefix.thm[node.type]) || '定理';
     this._write(`<div class="theorem ${node.type}"${id}>`);
     if (this.pretty) this._write('\n');
     if (node.label || node.title.length) {
-      this._write(`<div class="theorem-label">${this._esc(THEOREM_PREFIX[node.type] || '定理')} ${num}`);
+      this._write(`<div class="theorem-label">${this._esc(prefix)} ${num}`);
       if (node.title.length) {
         this._write(' ');
         node.title.forEach(n => n.accept(this));
@@ -1114,17 +1103,11 @@ class HTMLRenderer {
 
     // 宏展开：@use 返回的模板字符串（含行内语法）二次解析后渲染
     if (node.name === 'use' && typeof result === 'string') {
-      this._parseInlineFragment(result).forEach(n => n.accept(this));
+      parseInlineFragment(result).forEach(n => n.accept(this));
       return;
     }
 
     this._write(this._renderValue(result));
-  }
-
-  /** 将含行内语法的片段解析为行内节点数组（宏 @use 展开结果用） */
-  _parseInlineFragment(text) {
-    const doc = new Parser().parse(new Lexer(text).tokenize(), text);
-    return doc.blocks.flatMap(b => b.content || []);
   }
 
   /** 函数调用错误注释（同步/异步共用） */

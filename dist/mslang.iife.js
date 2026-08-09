@@ -2477,6 +2477,22 @@ var mslang = (() => {
       if (ch === "[") return this._parsePostfix(this._parseArray());
       if (ch === '"' || ch === "'") return this._parsePostfix(this._parseString(ch));
       if (ch >= "0" && ch <= "9") return this._parsePostfix(this._parseNumber());
+      if (ch === "@") {
+        this.pos++;
+        this._skipWs();
+        const fname = this._readIdentifier();
+        if (fname === null) this._error("'@' \u540E\u9700\u8981\u540D\u79F0");
+        this._skipWs();
+        if (this._peek() === "(") {
+          this.pos++;
+          const { args, kwargs } = this._parseArgsBody();
+          this._skipWs();
+          if (this._peek() !== ")") this._error("\u7F3A\u5C11 ')'");
+          this.pos++;
+          return this._parsePostfix({ type: "call", name: fname, args, kwargs });
+        }
+        return this._parsePostfix({ type: "var", name: fname });
+      }
       const name = this._readIdentifier();
       if (name !== null) {
         if (name === "true") return { type: "bool", value: true };
@@ -3140,7 +3156,7 @@ var mslang = (() => {
         const fc = b.content.length === 1 ? b.content[0] : null;
         if (!(fc instanceof FunctionCall) || !THEOREM_TYPES.includes(fc.name)) continue;
         const label = fc.args[0] && fc.args[0].type === "string" ? fc.args[0].value : "";
-        const title = fc.args[1] && fc.args[1].type === "string" ? this._parseInlineString(fc.args[1].value) : [];
+        const title = fc.args[1] && fc.args[1].type === "string" ? parseInlineFragment(fc.args[1].value) : [];
         const next = blocks[i + 1];
         if (!(next instanceof Paragraph)) continue;
         blocks[i] = new Theorem(fc.name, label, title, next.content);
@@ -3363,36 +3379,6 @@ var mslang = (() => {
     // ================================================================
     // 行内解析
     // ================================================================
-    /**
-     * 将短文本解析为行内节点数组（表格单元格行内语法用）。
-     * 临时切换内部 token 流，解析完恢复。
-     * @param {string} text
-     * @returns {InlineNode[]}
-     */
-    _parseInlineString(text2) {
-      const savedTokens = this._tokens;
-      const savedPos = this._pos;
-      this._tokens = new Lexer(text2).tokenize();
-      this._pos = 0;
-      const inlines = [];
-      while (!this._isAtEnd()) {
-        const token = this._current();
-        if (token.type === TokenType.EOF) break;
-        if (token.type === TokenType.RAW_TEXT) {
-          this._advance();
-          inlines.push(...this._autolink([new RawText(token.value)]));
-          continue;
-        }
-        const inline = this._parseInlineToken(token);
-        if (inline) {
-          inlines.push(inline);
-          this._advance();
-        } else this._advance();
-      }
-      this._tokens = savedTokens;
-      this._pos = savedPos;
-      return this._mergeAdjacentText(inlines);
-    }
     _parseTable() {
       const headers = [];
       const rows = [];
@@ -3417,9 +3403,9 @@ var mslang = (() => {
               cells = cells.slice(0, -1);
             }
           }
-          headers.push(...cells.map((c2) => this._parseInlineString(c2)));
+          headers.push(...cells.map(parseInlineFragment));
         } else {
-          rows.push(cells.map((c2) => this._parseInlineString(c2)));
+          rows.push(cells.map(parseInlineFragment));
         }
         if (this._current() && this._current().type === TokenType.LINE_BREAK) this._advance();
       }
@@ -3802,6 +3788,10 @@ var mslang = (() => {
     if (node instanceof LineBreak) return `${linePrefix}LineBreak`;
     return `${linePrefix}${name}`;
   }
+  function parseInlineFragment(text2) {
+    const doc = new Parser().parse(new Lexer(text2).tokenize(), text2);
+    return doc.blocks.flatMap((b) => b.content || []);
+  }
 
   // src/escape.js
   var ESC_MAP = {
@@ -3835,13 +3825,6 @@ var mslang = (() => {
     if (mode === "\u4E00") num = num.replace(/[、．.]+$/, "");
     return num;
   }
-  var THEOREM_PREFIX = {
-    theorem: "\u5B9A\u7406",
-    lemma: "\u5F15\u7406",
-    definition: "\u5B9A\u4E49",
-    remark: "\u6CE8\u8BB0",
-    example: "\u4F8B"
-  };
   function builtinFunctions(renderer) {
     const esc = (t) => renderer._esc(t);
     const escAttr = (t) => renderer._escAttr(t);
@@ -3964,7 +3947,7 @@ var mslang = (() => {
         if (r.kind === "fig") text2 = `${renderer._captionPrefix.fig} ${r.number}`;
         else if (r.kind === "tbl") text2 = `${renderer._captionPrefix.tbl} ${r.number}`;
         else if (r.kind === "eq") text2 = `${renderer._captionPrefix.eq} ${r.number}`;
-        else if (r.kind === "thm") text2 = `${THEOREM_PREFIX[r.type] || "\u5B9A\u7406"} ${r.number}`;
+        else if (r.kind === "thm") text2 = `${renderer._captionPrefix.thm && renderer._captionPrefix.thm[r.type] || "\u5B9A\u7406"} ${r.number}`;
         else text2 = r.display;
         const keyAttr = renderer._refKeyAttr ? ` ${renderer._refKeyAttr}="${escapeAttr(String(label))}" data-ref-kind="${r.kind}"` : "";
         return `<a href="#${escAttr(String(label))}"${keyAttr}>${esc(text2)}</a>`;
@@ -27232,7 +27215,7 @@ ${items.join("\n")}
       this._macros = {};
       this._headingNumbering = headingNumbering === true ? "1.1" : headingNumbering || "";
       this._refNumbering = refNumbering || "";
-      this._captionPrefix = { ..._HTMLRenderer.DEFAULT_CAPTION_PREFIX, ...captionPrefix };
+      this._captionPrefix = _HTMLRenderer._mergeCaptionPrefix(_HTMLRenderer.DEFAULT_CAPTION_PREFIX, captionPrefix);
       this._citeKeyAttr = citeKeyAttr || "";
       this._termKeyAttr = termKeyAttr || "";
       this._refKeyAttr = refKeyAttr || "";
@@ -27266,6 +27249,15 @@ ${items.join("\n")}
       return `<div${cls}${id}>
 ${body}
 </div>`;
+    }
+    /** 深合并 captionPrefix（thm 为嵌套对象，避免浅合并整体覆盖） */
+    static _mergeCaptionPrefix(base, incoming) {
+      const cp = incoming || {};
+      return {
+        ...base,
+        ...cp,
+        thm: { ...base.thm || {}, ...cp.thm || {} }
+      };
     }
     /**
      * 预扫描文档顶层的 @set({...}) 调用并应用配置。
@@ -27391,7 +27383,7 @@ ${body}
         } else if (key === "variables") {
           Object.assign(this._variables, config[key] || {});
         } else if (key === "captionPrefix") {
-          this._captionPrefix = { ...this._captionPrefix, ...config[key] };
+          this._captionPrefix = _HTMLRenderer._mergeCaptionPrefix(this._captionPrefix, config[key]);
         } else if (key === "citeKeyAttr" || key === "termKeyAttr" || key === "refKeyAttr") {
           this[`_${key}`] = config[key] || "";
         } else if (key === "citeStyle") {
@@ -27444,26 +27436,12 @@ ${body}
         for (let i = 0; i < level; i++) parts.push(levelCounts[i]);
         return parts.join(sep);
       };
-      const walkExpr = (node) => {
-        if (!node || typeof node !== "object") return;
-        if (node.type === "call") {
-          if (node.name === "cite") {
-            for (const a of node.args) if (a.type === "string") this._registerCite(a.value);
-          }
-          if (node.name === "term" && node.args[0] && node.args[0].type === "string") {
-            this._registerTerm(node.args[0].value);
-          }
-          node.args.forEach(walkExpr);
-          Object.values(node.kwargs).forEach(walkExpr);
-        } else if (node.type === "unary") {
-          walkExpr(node.operand);
-        } else if (node.type === "binary") {
-          walkExpr(node.left);
-          walkExpr(node.right);
-        } else if (node.type === "object") {
-          Object.values(node.value).forEach(walkExpr);
-        } else if (node.type === "array") {
-          node.items.forEach(walkExpr);
+      const handleCall = (call) => {
+        if (call.name === "cite") {
+          for (const a of call.args) if (a.type === "string") this._registerCite(a.value);
+        }
+        if (call.name === "term" && call.args[0] && call.args[0].type === "string") {
+          this._registerTerm(call.args[0].value);
         }
       };
       const walkInlineList = (n) => {
@@ -27472,13 +27450,8 @@ ${body}
           this._refs[n.label] = { kind: "fig", number: counters.fig };
         }
         if (n instanceof FunctionCall) {
-          if (n.name === "cite") {
-            for (const a of n.args) if (a.type === "string") this._registerCite(a.value);
-          }
-          if (n.name === "term" && n.args[0] && n.args[0].type === "string") {
-            this._registerTerm(n.args[0].value);
-          }
-          n.args.forEach(walkExpr);
+          handleCall(n);
+          n.args.forEach((a) => this._walkExprTree(a, handleCall));
         }
       };
       const headingText = (nodes) => {
@@ -27568,55 +27541,27 @@ ${body}
           issues.push({ type, key, count: 1 });
         }
       };
-      const walkExpr = (node) => {
-        if (!node || typeof node !== "object") return;
-        if (node.type === "call") {
-          if (node.name === "cite") {
-            for (const a of node.args) {
-              if (a.type === "string" && !(this._data.bibliography && this._data.bibliography[a.value])) {
-                report("missing_cite", a.value);
-              }
+      const handleCall = (call) => {
+        if (call.name === "cite") {
+          for (const a of call.args) {
+            if (a.type === "string" && !(this._data.bibliography && this._data.bibliography[a.value])) {
+              report("missing_cite", a.value);
             }
-          } else if (node.name === "term") {
-            const a = node.args[0];
-            if (a && a.type === "string" && !(this._data.terms && this._data.terms[a.value])) {
-              report("missing_term", a.value);
-            }
-          } else if (node.name === "ref") {
-            const a = node.args[0];
-            if (a && a.type === "string" && !this._refs[a.value]) report("missing_ref", a.value);
           }
-          node.args.forEach(walkExpr);
-          Object.values(node.kwargs).forEach(walkExpr);
-        } else if (node.type === "unary") {
-          walkExpr(node.operand);
-        } else if (node.type === "binary") {
-          walkExpr(node.left);
-          walkExpr(node.right);
-        } else if (node.type === "object") {
-          Object.values(node.value).forEach(walkExpr);
-        } else if (node.type === "array") {
-          node.items.forEach(walkExpr);
+        } else if (call.name === "term") {
+          const a = call.args[0];
+          if (a && a.type === "string" && !(this._data.terms && this._data.terms[a.value])) {
+            report("missing_term", a.value);
+          }
+        } else if (call.name === "ref") {
+          const a = call.args[0];
+          if (a && a.type === "string" && !this._refs[a.value]) report("missing_ref", a.value);
         }
       };
       const walkInlineList = (n) => {
         if (n instanceof FunctionCall) {
-          if (n.name === "cite") {
-            for (const a of n.args) {
-              if (a.type === "string" && !(this._data.bibliography && this._data.bibliography[a.value])) {
-                report("missing_cite", a.value);
-              }
-            }
-          } else if (n.name === "term") {
-            const a = n.args[0];
-            if (a && a.type === "string" && !(this._data.terms && this._data.terms[a.value])) {
-              report("missing_term", a.value);
-            }
-          } else if (n.name === "ref") {
-            const a = n.args[0];
-            if (a && a.type === "string" && !this._refs[a.value]) report("missing_ref", a.value);
-          }
-          n.args.forEach(walkExpr);
+          handleCall(n);
+          n.args.forEach((a) => this._walkExprTree(a, handleCall));
         }
         if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report("missing_footnote", n.label);
       };
@@ -27624,6 +27569,29 @@ ${body}
         if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
       }
       return issues;
+    }
+    /**
+     * 遍历表达式树（嵌套在函数参数中的 call/unary/binary/object/array），
+     * 对每个 call 节点调用 onCall。_collectRefs / _checkIntegrity / visit 共用。
+     * @param {object} node
+     * @param {function} onCall
+     */
+    _walkExprTree(node, onCall) {
+      if (!node || typeof node !== "object") return;
+      if (node.type === "call") {
+        onCall(node);
+        node.args.forEach((a) => this._walkExprTree(a, onCall));
+        Object.values(node.kwargs).forEach((a) => this._walkExprTree(a, onCall));
+      } else if (node.type === "unary") {
+        this._walkExprTree(node.operand, onCall);
+      } else if (node.type === "binary") {
+        this._walkExprTree(node.left, onCall);
+        this._walkExprTree(node.right, onCall);
+      } else if (node.type === "object") {
+        Object.values(node.value).forEach((a) => this._walkExprTree(a, onCall));
+      } else if (node.type === "array") {
+        node.items.forEach((a) => this._walkExprTree(a, onCall));
+      }
     }
     /**
      * 文献键编号：首次出现分配顺序号（_collectRefs 预收集与运行时 cite 共用）。
@@ -27874,10 +27842,11 @@ ${body}
       const ref = this._refs[node.label];
       const num = ref ? ref.number : "";
       const id = node.label ? ` id="${this._escAttr(node.label)}"` : "";
+      const prefix = this._captionPrefix.thm && this._captionPrefix.thm[node.type] || "\u5B9A\u7406";
       this._write(`<div class="theorem ${node.type}"${id}>`);
       if (this.pretty) this._write("\n");
       if (node.label || node.title.length) {
-        this._write(`<div class="theorem-label">${this._esc(THEOREM_PREFIX[node.type] || "\u5B9A\u7406")} ${num}`);
+        this._write(`<div class="theorem-label">${this._esc(prefix)} ${num}`);
         if (node.title.length) {
           this._write(" ");
           node.title.forEach((n) => n.accept(this));
@@ -27997,15 +27966,10 @@ ${body}
         return;
       }
       if (node.name === "use" && typeof result === "string") {
-        this._parseInlineFragment(result).forEach((n) => n.accept(this));
+        parseInlineFragment(result).forEach((n) => n.accept(this));
         return;
       }
       this._write(this._renderValue(result));
-    }
-    /** 将含行内语法的片段解析为行内节点数组（宏 @use 展开结果用） */
-    _parseInlineFragment(text2) {
-      const doc = new Parser().parse(new Lexer(text2).tokenize(), text2);
-      return doc.blocks.flatMap((b) => b.content || []);
     }
     /** 函数调用错误注释（同步/异步共用） */
     _functionError(name, err, isAsync) {
@@ -28094,8 +28058,13 @@ ${body}
   __publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables", "terms", "bibliography", "captionPrefix", "citeKeyAttr", "termKeyAttr", "refKeyAttr", "citeStyle", "allowPlugins", "bibStyle"]);
   // 引用/术语 data 属性名（工作台交互定位用；空串关闭）
   __publicField(_HTMLRenderer, "DEFAULT_KEY_ATTRS", { citeKeyAttr: "data-cite-key", termKeyAttr: "data-term-key", refKeyAttr: "data-ref-label" });
-  // caption 前缀（默认中文，可用 @set 覆盖）
-  __publicField(_HTMLRenderer, "DEFAULT_CAPTION_PREFIX", { fig: "\u56FE", tbl: "\u8868", eq: "\u5F0F" });
+  // caption 前缀（默认中文，可用 @set 覆盖；thm 按定理类型细分）
+  __publicField(_HTMLRenderer, "DEFAULT_CAPTION_PREFIX", {
+    fig: "\u56FE",
+    tbl: "\u8868",
+    eq: "\u5F0F",
+    thm: { theorem: "\u5B9A\u7406", lemma: "\u5F15\u7406", definition: "\u5B9A\u4E49", remark: "\u6CE8\u8BB0", example: "\u4F8B" }
+  });
   var HTMLRenderer = _HTMLRenderer;
   function diffBlocks(oldHashes, newHashes) {
     const keys = /* @__PURE__ */ new Set([...Object.keys(oldHashes || {}), ...Object.keys(newHashes || {})]);
@@ -28148,4 +28117,4 @@ ${body}
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-09T04:23:40.652Z */
+/*! built: 2026-08-09T04:40:40.600Z */

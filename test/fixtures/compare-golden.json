@@ -1,0 +1,214 @@
+{
+  "h1": {
+    "html": "<div class=\"mslang\">\n<h1>标题</h1>\n\n</div>",
+    "ast": "Document\n└── Heading (level=1)\n    └── Text \"标题\""
+  },
+  "h-num": {
+    "html": "<div class=\"mslang\">\n<h1>一、总论</h1>\n\n<h2>二、细论</h2>\n\n<h3>1.1 小节</h3>\n\n</div>",
+    "ast": "Document\n├── Heading (level=1)\n│   └── Text \"一、总论\"\n├── Heading (level=2)\n│   └── Text \"二、细论\"\n└── Heading (level=3)\n    └── Text \"1.1 小节\""
+  },
+  "h-set": {
+    "html": "<div class=\"mslang\">\n<p></p>\n\n<h1 id=\"sec:intro\">1 引言</h1>\n\n<h2 id=\"sec:method\">1.1 方法</h2>\n\n<p>如 <a href=\"#sec:intro\">1</a> 所述</p>\n\n</div>",
+    "ast": "Document\n├── Paragraph\n│   └── FunctionCall @set({ headingNumbering: \"1.1\" })\n├── Heading (level=1)\n│   └── Text \"引言\"\n├── Heading (level=2)\n│   └── Text \"方法\"\n└── Paragraph\n    ├── Text \"如 \"\n    ├── FunctionCall @ref(\"sec:intro\")\n    └── Text \" 所述\""
+  },
+  "h-set-refnum": {
+    "html": "<div class=\"mslang\">\n<p></p>\n\n<h1 id=\"sec:intro\">1 第一章 引言</h1>\n\n<p><a href=\"#sec:intro\">第一章</a></p>\n\n</div>",
+    "ast": "Document\n├── Paragraph\n│   └── FunctionCall @set({ headingNumbering: \"1.1\", refNumbering: \"一\" })\n├── Heading (level=1)\n│   └── Text \"第一章 引言\"\n└── Paragraph\n    └── FunctionCall @ref(\"sec:intro\")"
+  },
+  "p": {
+    "html": "<div class=\"mslang\">\n<p>普通段落 <em>斜体</em> <strong>粗体</strong> <sub>删除</sub> <code>代码</code></p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── Text \"普通段落 \"\n    ├── Italic\n│   └── Text \"斜体\"\n    ├── Text \" \"\n    ├── Bold\n│   └── Text \"粗体\"\n    ├── Text \" \"\n    ├── Subscript\n│   └── Text \"删除\"\n    ├── Text \" \"\n    └── InlineCode `代码`"
+  },
+  "hr": {
+    "html": "<div class=\"mslang\">\n<hr>\n\n</div>",
+    "ast": "Document\n└── HorizontalRule"
+  },
+  "quote": {
+    "html": "<div class=\"mslang\">\n<blockquote>\n引用内容<br>第二行\n</blockquote>\n\n</div>",
+    "ast": "Document\n└── BlockQuote\n    ├── Text \"引用内容\"\n    ├── LineBreak\n    └── Text \"第二行\""
+  },
+  "ul": {
+    "html": "<div class=\"mslang\">\n<ul>\n<li>项目一</li>\n<li>项目二<ul>\n<li>子项</li>\n</ul>\n</li>\n</ul>\n\n</div>",
+    "ast": "Document\n└── UnorderedList\n    ├── ListItem\n│   └── Text \"项目一\"\n    └── ListItem\n    └── Text \"项目二\""
+  },
+  "ol": {
+    "html": "<div class=\"mslang\">\n<ol>\n<li>第一</li>\n<li>第二</li>\n</ol>\n\n</div>",
+    "ast": "Document\n└── OrderedList\n    ├── ListItem\n│   └── Text \"第一\"\n    └── ListItem\n    └── Text \"第二\""
+  },
+  "task": {
+    "html": "<div class=\"mslang\">\n<ul>\n<li><input type=\"checkbox\" disabled checked><label>完成</label></li>\n<li><input type=\"checkbox\" disabled><label>未完成</label></li>\n</ul>\n\n</div>",
+    "ast": "Document\n└── UnorderedList\n    ├── ListItem\n│   └── Text \"完成\"\n    └── ListItem\n    └── Text \"未完成\""
+  },
+  "code": {
+    "html": "<div class=\"mslang\">\n<pre data-language=\"js\"><code>const a = 1;</code></pre>\n\n</div>",
+    "ast": "Document\n└── CodeBlock (lang=\"js\")\n    │   const a = 1;"
+  },
+  "code-indent": {
+    "html": "<div class=\"mslang\">\n<p>    缩进代码</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── Text \"    缩进代码\""
+  },
+  "table": {
+    "html": "<div class=\"mslang\">\n<table>\n<thead><tr><th>a</th><th>b</th></tr></thead>\n<tbody>\n<tr><td>1</td><td>2</td></tr>\n</tbody>\n</table>\n\n<p>表格说明</p>\n\n</div>",
+    "ast": "Document\n├── Table\n└── Paragraph\n    └── Text \"表格说明\""
+  },
+  "table-label": {
+    "html": "<div class=\"mslang\">\n<p></p>\n\n<table>\n<thead><tr><th>a</th></tr></thead>\n<tbody>\n<tr><td>1</td></tr>\n</tbody>\n</table>\n\n<p>{#tbl:data} 数据表</p>\n\n</div>",
+    "ast": "Document\n├── Paragraph\n│   └── FunctionCall @set({ terms: { t1: \"T1\" } })\n├── Table\n└── Paragraph\n    └── Text \"{#tbl:data} 数据表\""
+  },
+  "align": {
+    "html": "<div class=\"mslang\">\n<p>::: right<br>右对齐内容<br>:::</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── Text \"::: right\"\n    ├── LineBreak\n    ├── Text \"右对齐内容\"\n    ├── LineBreak\n    └── Text \":::\""
+  },
+  "footnote": {
+    "html": "<div class=\"mslang\">\n<p>正文<sup><a href=\"#fn-1\" id=\"fnref-1\">[1]</a></sup></p>\n\n<hr>\n<ol>\n<li id=\"fn-1\">脚注内容 <a href=\"#fnref-1\">&#8617;</a></li>\n</ol>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── Text \"正文\"\n    └── FootnoteRef [1] #1"
+  },
+  "esc": {
+    "html": "<div class=\"mslang\">\n<p>*不斜体* 和 [括号\\]</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── Text \"*不斜体* 和 [括号\\]\""
+  },
+  "link": {
+    "html": "<div class=\"mslang\">\n<p><a href=\"https://example.com\">链接文本</a></p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── Link \"链接文本\" -> https://example.com"
+  },
+  "img": {
+    "html": "<div class=\"mslang\">\n<p><img src=\"https://example.com/a.png\" alt=\"图片\" referrerpolicy=\"no-referrer\"></p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── Image alt=\"图片\" src=\"https://example.com/a.png\""
+  },
+  "img-label": {
+    "html": "<div class=\"mslang\">\n<p><img src=\"/img.png\" alt=\"图\" id=\"fig:1\" referrerpolicy=\"no-referrer\"> 图一</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── Image alt=\"图\" src=\"/img.png\" label=fig:1\n    └── Text \" 图一\""
+  },
+  "color": {
+    "html": "<div class=\"mslang\">\n<p>==红色==</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── Text \"==红色==\""
+  },
+  "sup-sub": {
+    "html": "<div class=\"mslang\">\n<p>x<sup>2</sup> 和 H<sub>2</sub>O</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── Text \"x\"\n    ├── Superscript\n│   └── Text \"2\"\n    ├── Text \" 和 H\"\n    ├── Subscript\n│   └── Text \"2\"\n    └── Text \"O\""
+  },
+  "html": {
+    "html": "<div class=\"mslang\">\n<p><b>原始HTML</b></p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── RawHtml <b>\n    ├── Text \"原始HTML\"\n    └── RawHtml </b>"
+  },
+  "raw-text": {
+    "html": "<div class=\"mslang\">\n<p>普通文本 混合@符号 和 $符号</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── Text \"普通文本 混合@符号 和 $符号\""
+  },
+  "break": {
+    "html": "<div class=\"mslang\">\n<p>第一行<br>第二行</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── Text \"第一行\"\n    ├── LineBreak\n    └── Text \"第二行\""
+  },
+  "expr-var": {
+    "html": "<div class=\"mslang\">\n<p>高</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── FunctionCall @if(score > 5, \"高\", \"低\")"
+  },
+  "expr-str": {
+    "html": "<div class=\"mslang\">\n<p>a)b(c</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── FunctionCall @if(true, \"a)b(c\", \"x\")"
+  },
+  "expr-arith": {
+    "html": "<div class=\"mslang\">\n<p>ok</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── FunctionCall @if(1+2*3 == 7 && !(2>3), \"ok\", \"no\")"
+  },
+  "expr-arr": {
+    "html": "<div class=\"mslang\">\n<p>ab</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── FunctionCall @if(true, [\"a\", \"b\", 3], [])"
+  },
+  "expr-obj": {
+    "html": "<div class=\"mslang\">\n<p>[object Object]</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── FunctionCall @if(true, {a: 1, \"词干\": 2}, {})"
+  },
+  "expr-nested": {
+    "html": "<div class=\"mslang\">\n<p>b</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── FunctionCall @if(true, if(false, \"a\", \"b\"), \"c\")"
+  },
+  "expr-short": {
+    "html": "<div class=\"mslang\">\n<p>b</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── FunctionCall @if(false && cite(\"x\"), \"a\", \"b\")"
+  },
+  "cite": {
+    "html": "<div class=\"mslang\">\n<p>如 <sup><a href=\"#cite-1\" id=\"ref-cite-1\">[1]</a></sup> 所示</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── Text \"如 \"\n    ├── FunctionCall @cite(\"doe2020\")\n    └── Text \" 所示\""
+  },
+  "cite-missing": {
+    "html": "<div class=\"mslang\">\n<p>fallback</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── FunctionCall @if(has_cite(\"nope\"), cite(\"nope\"), \"fallback\")"
+  },
+  "term": {
+    "html": "<div class=\"mslang\">\n<p>术语 <a href=\"https://stem.example\"><span class=\"term\">Stemming</a></p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── Text \"术语 \"\n    └── FunctionCall @term(\"词干提取\")"
+  },
+  "term-str": {
+    "html": "<div class=\"mslang\">\n<p><br><span class=\"term\">全称</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── FunctionCall @set({ terms: { 缩写: \"全称\" } })\n    ├── LineBreak\n    └── FunctionCall @term(\"缩写\")"
+  },
+  "term-unknown": {
+    "html": "<div class=\"mslang\">\n<p><span class=\"term\">未知术语</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── FunctionCall @term(\"未知术语\")"
+  },
+  "bib": {
+    "html": "<div class=\"mslang\">\n<p><sup><a href=\"#cite-1\" id=\"ref-cite-1\">[1]</a></sup> 与 <sup><a href=\"#cite-2\" id=\"ref-cite-2\">[2]</a></sup></p>\n\n<p><ol class=\"bibliography\">\n<li id=\"cite-1\">Doe, J. (2020) Paper JML</li>\n<li id=\"cite-2\">Smith (2019)</li>\n</ol></p>\n\n</div>",
+    "ast": "Document\n├── Paragraph\n│   ├── FunctionCall @cite(\"doe2020\")\n│   ├── Text \" 与 \"\n│   └── FunctionCall @cite(\"smith2019\")\n└── Paragraph\n    └── FunctionCall @bibliography()"
+  },
+  "set-merge": {
+    "html": "<div class=\"mslang\">\n<p><br><br><span class=\"term\">A <span class=\"term\">B</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── FunctionCall @set({ terms: { a: \"A\" } })\n    ├── LineBreak\n    ├── FunctionCall @set({ terms: { b: \"B\" } })\n    ├── LineBreak\n    ├── FunctionCall @term(\"a\")\n    ├── Text \" \"\n    └── FunctionCall @term(\"b\")"
+  },
+  "set-top": {
+    "html": "<div class=\"mslang\">\n<p></p>\n\n<h1 id=\"s\">1 X</h1>\n\n<p>yes</p>\n\n</div>",
+    "ast": "Document\n├── Paragraph\n│   └── FunctionCall @set({ headingNumbering: \"1.1\" })\n├── Heading (level=1)\n│   └── Text \"X\"\n└── Paragraph\n    └── FunctionCall @if(1 == 1, \"yes\", \"no\")"
+  },
+  "unknown-fn": {
+    "html": "<div class=\"mslang\">\n<p><!-- mslang: unknown function @f --></p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── FunctionCall @f(1, name=\"a\", 2+3)"
+  },
+  "err-expr": {
+    "html": "<div class=\"mslang\">\n<p><!-- mslang: 参数解析错误 @if: 表达式语法错误 @0: 意外的字符 ',' --></p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── FunctionCall @if(, \"a\", \"b\")  !ERROR: 表达式语法错误 @0: 意外的字符 ','"
+  },
+  "expr-empty-call": {
+    "html": "<div class=\"mslang\">\n<p>ok</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── FunctionCall @if(true, \"ok\", \"bad\")"
+  },
+  "nest-bold-cite": {
+    "html": "<div class=\"mslang\">\n<p><strong>重点 <sup><a href=\"#cite-1\" id=\"ref-cite-1\">[1]</a></sup> 内容</strong></p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    └── Bold\n    ├── Text \"重点 \"\n    ├── FunctionCall @cite(\"doe2020\")\n    └── Text \" 内容\""
+  },
+  "nest-quote-cite": {
+    "html": "<div class=\"mslang\">\n<blockquote>\n引用 <sup><a href=\"#cite-1\" id=\"ref-cite-1\">[1]</a></sup><br><br>继续\n</blockquote>\n\n</div>",
+    "ast": "Document\n└── BlockQuote\n    ├── Text \"引用 \"\n    ├── FunctionCall @cite(\"doe2020\")\n    ├── LineBreak\n    ├── LineBreak\n    └── Text \"继续\""
+  },
+  "nest-list-term": {
+    "html": "<div class=\"mslang\">\n<ul>\n<li>列表 <a href=\"https://stem.example\"><span class=\"term\">Stemming</a></li>\n<li>第二项</li>\n</ul>\n\n</div>",
+    "ast": "Document\n└── UnorderedList\n    ├── ListItem\n│   ├── Text \"列表 \"\n│   └── FunctionCall @term(\"词干提取\")\n    └── ListItem\n    └── Text \"第二项\""
+  },
+  "ref-fig": {
+    "html": "<div class=\"mslang\">\n<p><img src=\"/a.png\" alt=\"图\" id=\"fig:a\" referrerpolicy=\"no-referrer\"></p>\n\n<p>见图 <a href=\"#fig:a\">图 1</a></p>\n\n</div>",
+    "ast": "Document\n├── Paragraph\n│   └── Image alt=\"图\" src=\"/a.png\" label=fig:a\n└── Paragraph\n    ├── Text \"见图 \"\n    └── FunctionCall @ref(\"fig:a\")"
+  },
+  "ref-tbl": {
+    "html": "<div class=\"mslang\">\n<table>\n<thead><tr><th>a</th></tr></thead>\n<tbody>\n<tr><td>1</td></tr>\n</tbody>\n</table>\n\n<p>{#tbl:t} 表</p>\n\n<p>见表 <a href=\"#tbl:t\">[tbl:t?]</a></p>\n\n</div>",
+    "ast": "Document\n├── Table\n├── Paragraph\n│   └── Text \"{#tbl:t} 表\"\n└── Paragraph\n    ├── Text \"见表 \"\n    └── FunctionCall @ref(\"tbl:t\")"
+  },
+  "ref-sec": {
+    "html": "<div class=\"mslang\">\n<h2 id=\"sec:m\">方法</h2>\n\n<p>见 <a href=\"#sec:m\">方法</a></p>\n\n</div>",
+    "ast": "Document\n├── Heading (level=2)\n│   └── Text \"方法\"\n└── Paragraph\n    ├── Text \"见 \"\n    └── FunctionCall @ref(\"sec:m\")"
+  },
+  "ref-unknown": {
+    "html": "<div class=\"mslang\">\n<p>见 <a href=\"#sec:none\">[sec:none?]</a></p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── Text \"见 \"\n    └── FunctionCall @ref(\"sec:none\")"
+  },
+  "cite-order": {
+    "html": "<div class=\"mslang\">\n<p><sup><a href=\"#cite-1\" id=\"ref-cite-1\">[1]</a></sup> 先 <sup><a href=\"#cite-2\" id=\"ref-cite-2\">[2]</a></sup> 后</p>\n\n</div>",
+    "ast": "Document\n└── Paragraph\n    ├── FunctionCall @cite(\"smith2019\")\n    ├── Text \" 先 \"\n    ├── FunctionCall @cite(\"doe2020\")\n    └── Text \" 后\""
+  },
+  "multiline": {
+    "html": "<div class=\"mslang\">\n<h1>大标题</h1>\n\n<p>段落一 <strong>加粗</strong></p>\n\n<p>段落二 <em>斜体</em></p>\n\n</div>",
+    "ast": "Document\n├── Heading (level=1)\n│   └── Text \"大标题\"\n├── Paragraph\n│   ├── Text \"段落一 \"\n│   └── Bold\n    └── Text \"加粗\"\n└── Paragraph\n    ├── Text \"段落二 \"\n    └── Italic\n    └── Text \"斜体\""
+  },
+  "async-same": {
+    "html": "<div class=\"mslang\">\n<p><sup><a href=\"#cite-1\" id=\"ref-cite-1\">[1]</a></sup> 与 <a href=\"https://stem.example\"><span class=\"term\">Stemming</a></p>\n\n</div>",
+    "ast": ""
+  }
+}
