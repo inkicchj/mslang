@@ -5,9 +5,8 @@
  * 通过 HTMLRenderer 构造时注册到 _functions，可用 opts.functions 覆盖同名函数。
  * 依赖渲染器内部状态（_data / _variables / _refs / _citeNumbers 等），
  * 由 renderer.render(source, { data, variables }) 注入数据。
+ * 属性转义统一走 renderer._escAttr（恒转义），不直接依赖 escape.js。
  */
-
-import { escapeAttr } from './escape.js';
 
 // ================================================================
 // 显式编号提取（章节引用 @ref 用）
@@ -49,7 +48,7 @@ export function builtinFunctions(renderer) {
   const citeAnchor = (key, entry, num) => {
     const dataKey = entry && entry.key !== undefined ? entry.key : key;
     const keyAttr = renderer._citeKeyAttr
-      ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(dataKey))}"` : '';
+      ? ` ${renderer._citeKeyAttr}="${escAttr(String(dataKey))}"` : '';
     return `href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}"`;
   };
 
@@ -180,7 +179,7 @@ export function builtinFunctions(renderer) {
       else if (r.kind === 'thm') text = `${(renderer._captionPrefix.thm && renderer._captionPrefix.thm[r.type]) || '定理'} ${r.number}`;
       else text = r.display;
       const keyAttr = renderer._refKeyAttr
-        ? ` ${renderer._refKeyAttr}="${escapeAttr(String(label))}" data-ref-kind="${r.kind}"` : '';
+        ? ` ${renderer._refKeyAttr}="${escAttr(String(label))}" data-ref-kind="${r.kind}"` : '';
       return `<a href="#${escAttr(String(label))}"${keyAttr}>${esc(text)}</a>`;
     },
 
@@ -222,7 +221,7 @@ export function builtinFunctions(renderer) {
       // 条目可定义 key 字段（如数据库主键）：data 属性输出条目 key，与引用名解耦
       const dataKey = entry && typeof entry === 'object' && entry.key !== undefined ? entry.key : name;
       const keyAttr = renderer._termKeyAttr
-        ? ` ${renderer._termKeyAttr}="${escapeAttr(String(dataKey))}"` : '';
+        ? ` ${renderer._termKeyAttr}="${escAttr(String(dataKey))}"` : '';
       return url
         ? `<a href="${escAttr(String(url))}"${keyAttr}>${inner}</a>`
         : `<span class="term"${keyAttr}>${esc(String(label))}</span>`;

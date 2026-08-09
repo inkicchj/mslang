@@ -757,28 +757,6 @@ class Lexer {
     if (j >= src.length || src[j] !== ':') return false;
     return true;
   }
-
-  // ================================================================
-  // 调试工具
-  // ================================================================
-
-  /** @param {Token[]} tokens */
-  dumpTokens(tokens) {
-    const lines = [
-      '='.repeat(60),
-      `Token Stream (${tokens.length} tokens)`,
-      '='.repeat(60),
-    ];
-    tokens.forEach((t, i) => {
-      const metaStr = t.metadata ? ` meta=${JSON.stringify(t.metadata)}` : '';
-      lines.push(
-        `  [${String(i).padStart(3, '0')}] ${t.type.name.padEnd(18)} ` +
-        `@ ${String(t.position).padStart(10)}` +
-        `  value='${t.value.slice(0, 40)}'${metaStr}`
-      );
-    });
-    return lines.join('\n');
-  }
 }
 
 export { Lexer, LexerError };

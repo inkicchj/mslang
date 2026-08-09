@@ -2289,24 +2289,6 @@ var mslang = (() => {
       if (j >= src.length || src[j] !== ":") return false;
       return true;
     }
-    // ================================================================
-    // 调试工具
-    // ================================================================
-    /** @param {Token[]} tokens */
-    dumpTokens(tokens) {
-      const lines = [
-        "=".repeat(60),
-        `Token Stream (${tokens.length} tokens)`,
-        "=".repeat(60)
-      ];
-      tokens.forEach((t, i) => {
-        const metaStr = t.metadata ? ` meta=${JSON.stringify(t.metadata)}` : "";
-        lines.push(
-          `  [${String(i).padStart(3, "0")}] ${t.type.name.padEnd(18)} @ ${String(t.position).padStart(10)}  value='${t.value.slice(0, 40)}'${metaStr}`
-        );
-      });
-      return lines.join("\n");
-    }
   };
 
   // src/expression.js
@@ -3792,26 +3774,6 @@ var mslang = (() => {
     return doc.blocks.flatMap((b) => b.content || []);
   }
 
-  // src/escape.js
-  var ESC_MAP = {
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;"
-  };
-  var ESC_ATTR_MAP = {
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  };
-  function escapeHTML(text2) {
-    return text2.replace(/[&<>]/g, (ch) => ESC_MAP[ch] || ch);
-  }
-  function escapeAttr(text2) {
-    return text2.replace(/[&<>"']/g, (ch) => ESC_ATTR_MAP[ch] || ch);
-  }
-
   // src/builtin.js
   var RE_NUM_ARABIC = /^(\d+(?:\.\d+)*)/;
   var RE_NUM_CN = /^(第[一二三四五六七八九十百]+[章节篇]|[一二三四五六七八九十百]+[、．.]|（[一二三四五六七八九十百]+）|\([一二三四五六七八九十百]+\))/;
@@ -3829,7 +3791,7 @@ var mslang = (() => {
     const escAttr = (t) => renderer._escAttr(t);
     const citeAnchor = (key, entry, num) => {
       const dataKey = entry && entry.key !== void 0 ? entry.key : key;
-      const keyAttr = renderer._citeKeyAttr ? ` ${renderer._citeKeyAttr}="${escapeAttr(String(dataKey))}"` : "";
+      const keyAttr = renderer._citeKeyAttr ? ` ${renderer._citeKeyAttr}="${escAttr(String(dataKey))}"` : "";
       return `href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}"`;
     };
     const renderCiteOne = (key) => {
@@ -3948,7 +3910,7 @@ var mslang = (() => {
         else if (r.kind === "eq") text2 = `${renderer._captionPrefix.eq} ${r.number}`;
         else if (r.kind === "thm") text2 = `${renderer._captionPrefix.thm && renderer._captionPrefix.thm[r.type] || "\u5B9A\u7406"} ${r.number}`;
         else text2 = r.display;
-        const keyAttr = renderer._refKeyAttr ? ` ${renderer._refKeyAttr}="${escapeAttr(String(label))}" data-ref-kind="${r.kind}"` : "";
+        const keyAttr = renderer._refKeyAttr ? ` ${renderer._refKeyAttr}="${escAttr(String(label))}" data-ref-kind="${r.kind}"` : "";
         return `<a href="#${escAttr(String(label))}"${keyAttr}>${esc(text2)}</a>`;
       },
       /** 文献表：列出全部被引用文献（按编号顺序），生成 <ol> 锚点与 cite 对应 */
@@ -3985,7 +3947,7 @@ ${lis}
         const inner2 = `<span class="term">${esc(String(label))}</span>`;
         const url = entry && typeof entry === "object" && entry.url ? entry.url : "";
         const dataKey = entry && typeof entry === "object" && entry.key !== void 0 ? entry.key : name;
-        const keyAttr = renderer._termKeyAttr ? ` ${renderer._termKeyAttr}="${escapeAttr(String(dataKey))}"` : "";
+        const keyAttr = renderer._termKeyAttr ? ` ${renderer._termKeyAttr}="${escAttr(String(dataKey))}"` : "";
         return url ? `<a href="${escAttr(String(url))}"${keyAttr}>${inner2}</a>` : `<span class="term"${keyAttr}>${esc(String(label))}</span>`;
       },
       /** 术语表：列出全部被引用术语（按首次出现顺序），label — desc（可选），url 可链接 */
@@ -4006,6 +3968,26 @@ ${items.join("\n")}
 </ul>`;
       }
     };
+  }
+
+  // src/escape.js
+  var ESC_MAP = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;"
+  };
+  var ESC_ATTR_MAP = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  };
+  function escapeHTML(text2) {
+    return text2.replace(/[&<>]/g, (ch) => ESC_MAP[ch] || ch);
+  }
+  function escapeAttr(text2) {
+    return text2.replace(/[&<>"']/g, (ch) => ESC_ATTR_MAP[ch] || ch);
   }
 
   // node_modules/katex/dist/katex.mjs
@@ -27032,6 +27014,14 @@ ${items.join("\n")}
     map.set(key, value);
     return value;
   }
+  var SET_STRING_KEYS = {
+    refNumbering: { field: "_refNumbering", def: "" },
+    citeStyle: { field: "_citeStyle", def: "numeric" },
+    bibStyle: { field: "_bibStyle", def: "default" },
+    citeKeyAttr: { field: "_citeKeyAttr", def: "" },
+    termKeyAttr: { field: "_termKeyAttr", def: "" },
+    refKeyAttr: { field: "_refKeyAttr", def: "" }
+  };
   function djb2(str) {
     let h = 5381;
     for (let i = 0; i < str.length; i++) h = (h << 5) + h + str.charCodeAt(i) >>> 0;
@@ -27292,17 +27282,15 @@ ${body}
         }
       }
     }
-    /** 遍历文档全部块的行内节点 */
-    _eachInline(doc, fn) {
-      for (const block of doc.blocks) this._eachBlockInline(block, fn);
-    }
     _applySets(doc) {
-      this._eachInline(doc, (n) => {
-        if (n instanceof FunctionCall && n.name === "set") this._applySet(n);
-        else if (n instanceof FunctionCall && n.name === "let") this._applyLet(n);
-        else if (n instanceof FunctionCall && n.name === "plugin") this._applyPlugin(n);
-        else if (n instanceof FunctionCall && n.name === "define") this._applyDefine(n);
-      });
+      for (const block of doc.blocks) {
+        this._eachBlockInline(block, (n) => {
+          if (n instanceof FunctionCall && n.name === "set") this._applySet(n);
+          else if (n instanceof FunctionCall && n.name === "let") this._applyLet(n);
+          else if (n instanceof FunctionCall && n.name === "plugin") this._applyPlugin(n);
+          else if (n instanceof FunctionCall && n.name === "define") this._applyDefine(n);
+        });
+      }
     }
     _applySet(node) {
       if (node.error || !node.args[0]) return;
@@ -27375,28 +27363,22 @@ ${body}
     _mergeSet(config) {
       for (const key of _HTMLRenderer.SET_KEYS) {
         if (!(key in config)) continue;
-        if (key === "headingNumbering") {
-          this._headingNumbering = config[key] === true ? "1.1" : config[key] || "";
-        } else if (key === "refNumbering") {
-          this._refNumbering = config[key] || "";
-        } else if (key === "data") {
-          this._data = this._mergeData(this._data, config[key]);
-        } else if (key === "terms" || key === "bibliography") {
-          this._data = this._mergeData(this._data, { [key]: config[key] });
+        const v = config[key];
+        if (key === "data" || key === "terms" || key === "bibliography") {
+          this._data = this._mergeData(this._data, key === "data" ? v : { [key]: v });
         } else if (key === "variables") {
-          Object.assign(this._variables, config[key] || {});
+          Object.assign(this._variables, v || {});
         } else if (key === "captionPrefix") {
-          this._captionPrefix = _HTMLRenderer._mergeCaptionPrefix(this._captionPrefix, config[key]);
-        } else if (key === "citeKeyAttr" || key === "termKeyAttr" || key === "refKeyAttr") {
-          this[`_${key}`] = config[key] || "";
-        } else if (key === "citeStyle") {
-          this._citeStyle = config[key] || "numeric";
-        } else if (key === "bibStyle") {
-          this._bibStyle = config[key] || "default";
+          this._captionPrefix = _HTMLRenderer._mergeCaptionPrefix(this._captionPrefix, v);
         } else if (key === "allowPlugins") {
-          this._allowPlugins = config[key] !== false;
+          this._allowPlugins = v !== false;
+        } else if (key === "headingNumbering") {
+          this._headingNumbering = v === true ? "1.1" : v || "";
+        } else if (key in SET_STRING_KEYS) {
+          const { field, def } = SET_STRING_KEYS[key];
+          this[field] = v || def;
         } else {
-          this[key] = config[key];
+          this[key] = v;
         }
       }
     }
@@ -27930,20 +27912,20 @@ ${body}
     visit_LineBreak(node) {
       this._write("<br>");
     }
-    visit_Bold(node) {
-      this._write("<strong>");
+    /** 行内容器（strong/em/del/sup/sub）：包裹并递归内容 */
+    _writeInline(tag, node) {
+      this._write(`<${tag}>`);
       node.content.forEach((n) => n.accept(this));
-      this._write("</strong>");
+      this._write(`</${tag}>`);
+    }
+    visit_Bold(node) {
+      this._writeInline("strong", node);
     }
     visit_Italic(node) {
-      this._write("<em>");
-      node.content.forEach((n) => n.accept(this));
-      this._write("</em>");
+      this._writeInline("em", node);
     }
     visit_Strikethrough(node) {
-      this._write("<del>");
-      node.content.forEach((n) => n.accept(this));
-      this._write("</del>");
+      this._writeInline("del", node);
     }
     visit_InlineCode(node) {
       this._write(`<code>${this._esc(node.code)}</code>`);
@@ -28036,14 +28018,10 @@ ${body}
       this._write(`<span style="color:#${node.color}">${this._esc(node.text)}</span>`);
     }
     visit_Superscript(node) {
-      this._write("<sup>");
-      node.content.forEach((n) => n.accept(this));
-      this._write("</sup>");
+      this._writeInline("sup", node);
     }
     visit_Subscript(node) {
-      this._write("<sub>");
-      node.content.forEach((n) => n.accept(this));
-      this._write("</sub>");
+      this._writeInline("sub", node);
     }
     visit_RawHtml(node) {
       this._write(node.html);
@@ -28076,9 +28054,9 @@ ${body}
       if (this.escapeHtml) return escapeHTML(text2);
       return text2;
     }
+    /** 属性值恒转义（不受 escapeHtml 控制：防注入，正文透传语义不受影响） */
     _escAttr(text2) {
-      if (this.escapeHtml) return escapeAttr(text2);
-      return text2;
+      return escapeAttr(text2);
     }
   };
   // ================================================================
@@ -28250,4 +28228,4 @@ ${body}
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-09T05:17:51.073Z */
+/*! built: 2026-08-09T05:29:46.420Z */

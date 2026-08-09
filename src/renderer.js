@@ -64,6 +64,16 @@ function cacheSet(map, key, value) {
   return value;
 }
 
+// @set 白名单中"简单字符串选项"：key → 实例字段与默认值（_mergeSet 数据驱动用）
+const SET_STRING_KEYS = {
+  refNumbering: { field: '_refNumbering', def: '' },
+  citeStyle: { field: '_citeStyle', def: 'numeric' },
+  bibStyle: { field: '_bibStyle', def: 'default' },
+  citeKeyAttr: { field: '_citeKeyAttr', def: '' },
+  termKeyAttr: { field: '_termKeyAttr', def: '' },
+  refKeyAttr: { field: '_refKeyAttr', def: '' },
+};
+
 // 块哈希：djb2（块源 + 编号前缀快照 → 定位变化块，供块级编辑 DOM patch）
 function djb2(str) {
   let h = 5381;
@@ -367,18 +377,15 @@ class HTMLRenderer {
     }
   }
 
-  /** 遍历文档全部块的行内节点 */
-  _eachInline(doc, fn) {
-    for (const block of doc.blocks) this._eachBlockInline(block, fn);
-  }
-
   _applySets(doc) {
-    this._eachInline(doc, (n) => {
-      if (n instanceof FunctionCall && n.name === 'set') this._applySet(n);
-      else if (n instanceof FunctionCall && n.name === 'let') this._applyLet(n);
-      else if (n instanceof FunctionCall && n.name === 'plugin') this._applyPlugin(n);
-      else if (n instanceof FunctionCall && n.name === 'define') this._applyDefine(n);
-    });
+    for (const block of doc.blocks) {
+      this._eachBlockInline(block, (n) => {
+        if (n instanceof FunctionCall && n.name === 'set') this._applySet(n);
+        else if (n instanceof FunctionCall && n.name === 'let') this._applyLet(n);
+        else if (n instanceof FunctionCall && n.name === 'plugin') this._applyPlugin(n);
+        else if (n instanceof FunctionCall && n.name === 'define') this._applyDefine(n);
+      });
+    }
   }
 
   _applySet(node) {
@@ -461,29 +468,25 @@ class HTMLRenderer {
   _mergeSet(config) {
     for (const key of HTMLRenderer.SET_KEYS) {
       if (!(key in config)) continue;
-      if (key === 'headingNumbering') {
-        this._headingNumbering = config[key] === true ? '1.1' : (config[key] || '');
-      } else if (key === 'refNumbering') {
-        this._refNumbering = config[key] || '';
-      } else if (key === 'data') {
-        this._data = this._mergeData(this._data, config[key]);
-      } else if (key === 'terms' || key === 'bibliography') {
-        this._data = this._mergeData(this._data, { [key]: config[key] });
+      const v = config[key];
+      if (key === 'data' || key === 'terms' || key === 'bibliography') {
+        // data 深合并；terms/bibliography 为 data 内联快捷（等价）
+        this._data = this._mergeData(this._data, key === 'data' ? v : { [key]: v });
       } else if (key === 'variables') {
         // 就地合并（不替换对象）：保持 _evalCtx.variables 引用有效
-        Object.assign(this._variables, config[key] || {});
+        Object.assign(this._variables, v || {});
       } else if (key === 'captionPrefix') {
-        this._captionPrefix = HTMLRenderer._mergeCaptionPrefix(this._captionPrefix, config[key]);
-      } else if (key === 'citeKeyAttr' || key === 'termKeyAttr' || key === 'refKeyAttr') {
-        this[`_${key}`] = config[key] || '';
-      } else if (key === 'citeStyle') {
-        this._citeStyle = config[key] || 'numeric';
-      } else if (key === 'bibStyle') {
-        this._bibStyle = config[key] || 'default';
+        this._captionPrefix = HTMLRenderer._mergeCaptionPrefix(this._captionPrefix, v);
       } else if (key === 'allowPlugins') {
-        this._allowPlugins = config[key] !== false;
+        this._allowPlugins = v !== false;
+      } else if (key === 'headingNumbering') {
+        this._headingNumbering = v === true ? '1.1' : (v || '');
+      } else if (key in SET_STRING_KEYS) {
+        const { field, def } = SET_STRING_KEYS[key];
+        this[field] = v || def;
       } else {
-        this[key] = config[key];
+        // escapeHtml / pretty（布尔开关，直接赋实例属性）
+        this[key] = v;
       }
     }
   }
@@ -1066,23 +1069,16 @@ class HTMLRenderer {
   visit_RawText(node) { this._write(this._esc(node.text)); }
   visit_LineBreak(node) { this._write('<br>'); }
 
-  visit_Bold(node) {
-    this._write('<strong>');
+  /** 行内容器（strong/em/del/sup/sub）：包裹并递归内容 */
+  _writeInline(tag, node) {
+    this._write(`<${tag}>`);
     node.content.forEach(n => n.accept(this));
-    this._write('</strong>');
+    this._write(`</${tag}>`);
   }
 
-  visit_Italic(node) {
-    this._write('<em>');
-    node.content.forEach(n => n.accept(this));
-    this._write('</em>');
-  }
-
-  visit_Strikethrough(node) {
-    this._write('<del>');
-    node.content.forEach(n => n.accept(this));
-    this._write('</del>');
-  }
+  visit_Bold(node) { this._writeInline('strong', node); }
+  visit_Italic(node) { this._writeInline('em', node); }
+  visit_Strikethrough(node) { this._writeInline('del', node); }
 
   visit_InlineCode(node) {
     this._write(`<code>${this._esc(node.code)}</code>`);
@@ -1184,17 +1180,9 @@ class HTMLRenderer {
     this._write(`<span style="color:#${node.color}">${this._esc(node.text)}</span>`);
   }
 
-  visit_Superscript(node) {
-    this._write('<sup>');
-    node.content.forEach(n => n.accept(this));
-    this._write('</sup>');
-  }
+  visit_Superscript(node) { this._writeInline('sup', node); }
 
-  visit_Subscript(node) {
-    this._write('<sub>');
-    node.content.forEach(n => n.accept(this));
-    this._write('</sub>');
-  }
+  visit_Subscript(node) { this._writeInline('sub', node); }
 
   visit_RawHtml(node) {
     this._write(node.html);
@@ -1230,9 +1218,9 @@ class HTMLRenderer {
     return text;
   }
 
+  /** 属性值恒转义（不受 escapeHtml 控制：防注入，正文透传语义不受影响） */
   _escAttr(text) {
-    if (this.escapeHtml) return escapeAttr(text);
-    return text;
+    return escapeAttr(text);
   }
 }
 
