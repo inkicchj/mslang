@@ -97,6 +97,7 @@ class Parser {
         const inlines = [new RawText(prefix), ...this._parseInline(rest)];
         const para = new Paragraph(this._mergeAdjacentText(inlines));
         para.startPos = startPos;
+        para._orphanCaption = block.label; // check 检测：孤立 caption 未归并
         document.blocks.push(para);
         continue;      }
       block.startPos = startPos;
@@ -947,4 +948,22 @@ export { Parser, ParserError, dumpAST, mergeDocuments };
 export function parseInlineFragment(text) {
   const doc = new Parser().parse(new Lexer(text).tokenize(), text);
   return doc.blocks.flatMap(b => b.content || []);
+}
+
+/**
+ * AST 结构化导出（面向 LLM / 程序消费）：节点 → plain object。
+ * 剔除内部字段（_ 前缀）与函数；AST 节点类名作为 type，表达式节点保留原生 type。
+ * @param {object} node - Document 或任意节点
+ * @returns {object}
+ */
+export function toJSON(node) {
+  if (Array.isArray(node)) return node.map(toJSON);
+  if (node === null || typeof node !== 'object') return node;
+  const out = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (k.startsWith('_') || typeof v === 'function') continue;
+    out[k] = toJSON(v);
+  }
+  if (node.constructor && node.constructor.name !== 'Object') out.type = node.constructor.name;
+  return out;
 }

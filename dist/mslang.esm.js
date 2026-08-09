@@ -3084,6 +3084,7 @@ var Parser = class {
         const inlines = [new RawText(prefix), ...this._parseInline(rest)];
         const para = new Paragraph(this._mergeAdjacentText(inlines));
         para.startPos = startPos;
+        para._orphanCaption = block.label;
         document2.blocks.push(para);
         continue;
       }
@@ -3757,6 +3758,17 @@ function dumpAST(node, indent = 0, prefix = "", isLast = true) {
 function parseInlineFragment(text2) {
   const doc = new Parser().parse(new Lexer(text2).tokenize(), text2);
   return doc.blocks.flatMap((b) => b.content || []);
+}
+function toJSON(node) {
+  if (Array.isArray(node)) return node.map(toJSON);
+  if (node === null || typeof node !== "object") return node;
+  const out = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (k.startsWith("_") || typeof v === "function") continue;
+    out[k] = toJSON(v);
+  }
+  if (node.constructor && node.constructor.name !== "Object") out.type = node.constructor.name;
+  return out;
 }
 
 // src/builtin.js
@@ -27516,20 +27528,23 @@ ${body}
     }
   }
   /**
-   * 引用完整性检查（opts.check 时）：检测缺失的文献/术语/交叉引用/脚注定义。
-   * 按 type+key 去重并计数；_refs 需在 _collectRefs 之后（前向引用已完整）。
+   * 引用完整性检查（opts.check 时）：检测缺失的文献/术语/交叉引用/脚注定义、
+   * 重复标签、孤立 caption。按 type+key 去重并计数，附带首次出现的块索引。
+   * _refs 需在 _collectRefs 之后（前向引用已完整）。
    * @param {Document} doc
-   * @returns {Array<{type: string, key: string, count: number}>}
+   * @returns {Array<{type: string, key: string, count: number, block: number}>}
    */
   _checkIntegrity(doc) {
     const issues = [];
     const seen = /* @__PURE__ */ new Map();
+    const seenLabels = /* @__PURE__ */ new Set();
+    let currentBlock = -1;
     const report = (type, key) => {
       const id = `${type}|${key}`;
       if (seen.has(id)) issues[seen.get(id)].count++;
       else {
         seen.set(id, issues.length);
-        issues.push({ type, key, count: 1 });
+        issues.push({ type, key, count: 1, block: currentBlock });
       }
     };
     const handleCall = (call) => {
@@ -27549,17 +27564,38 @@ ${body}
         if (a && a.type === "string" && !this._refs[a.value]) report("missing_ref", a.value);
       }
     };
+    const markLabel = (label) => {
+      if (!label) return;
+      if (seenLabels.has(label)) report("duplicate_label", label);
+      else seenLabels.add(label);
+    };
     const walkInlineList = (n) => {
       if (n instanceof FunctionCall) {
         handleCall(n);
         n.args.forEach((a) => this._walkExprTree(a, handleCall));
       }
       if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report("missing_footnote", n.label);
+      if (n instanceof Image) markLabel(n.label);
     };
-    for (const block of doc.blocks) {
+    for (let i = 0; i < doc.blocks.length; i++) {
+      const block = doc.blocks[i];
+      currentBlock = i;
+      if (block.label && (block instanceof Table || block instanceof Equation || block instanceof Theorem || block instanceof CodeBlock && block.language === "mermaid")) {
+        markLabel(block.label);
+      }
+      if (block._orphanCaption) report("orphan_caption", block._orphanCaption);
       if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
     }
+    currentBlock = -1;
     return issues;
+  }
+  /**
+   * 将 issues 转为面向 LLM 的自查文本（喂回模型定位修复用）。
+   * @param {Array<{type: string, key: string, count: number, block?: number}>} issues
+   * @returns {string}
+   */
+  llmReport(issues) {
+    return llmReport(issues);
   }
   /**
    * 遍历表达式树（嵌套在函数参数中的 call/var/unary/binary/object/array），
@@ -27925,7 +27961,8 @@ ${body}
   }
   visit_FunctionCall(node) {
     if (node.error) {
-      this._write(`<!-- mslang: \u53C2\u6570\u89E3\u6790\u9519\u8BEF @${node.name}: ${this._esc(node.error)} -->`);
+      const raw = node.rawArgs ? `@${node.name}(${node.rawArgs})` : `@${node.name}`;
+      this._write(`<!-- mslang: \u53C2\u6570\u89E3\u6790\u9519\u8BEF @${node.name}: ${this._esc(node.error)} | \u539F\u6587: ${this._esc(raw)} -->`);
       return;
     }
     const func = this._functions[node.name];
@@ -28059,6 +28096,24 @@ __publicField(_HTMLRenderer, "DEFAULT_CAPTION_PREFIX", {
   thm: { theorem: "\u5B9A\u7406", lemma: "\u5F15\u7406", definition: "\u5B9A\u4E49", remark: "\u6CE8\u8BB0", example: "\u4F8B" }
 });
 var HTMLRenderer = _HTMLRenderer;
+function llmReport(issues) {
+  const LABELS = {
+    missing_cite: "\u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684\u6587\u732E",
+    missing_term: "\u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684\u672F\u8BED",
+    missing_ref: "\u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684\u4EA4\u53C9\u5F15\u7528\u6807\u7B7E",
+    missing_footnote: "\u5F15\u7528\u4E86\u672A\u5B9A\u4E49\u7684\u811A\u6CE8",
+    duplicate_label: "\u91CD\u590D\u58F0\u660E\u4E86\u6807\u7B7E",
+    orphan_caption: "\u5B64\u7ACB caption\uFF08\u672A\u5F52\u5E76\u5230\u76EE\u6807\u5757\uFF09"
+  };
+  if (!issues || !issues.length) return "\u68C0\u67E5\u901A\u8FC7\uFF1A\u65E0\u5F15\u7528\u7F3A\u53E3\u3002";
+  const lines = issues.map((i) => {
+    const pos = i.block !== void 0 ? `\u5757 ${i.block}` : "\u6587\u6863";
+    const n = i.count > 1 ? `\uFF08\u51FA\u73B0 ${i.count} \u6B21\uFF09` : "";
+    return `- ${pos}\uFF1A${LABELS[i.type] || i.type}\u300C${i.key}\u300D${n}`;
+  });
+  return `\u53D1\u73B0 ${issues.length} \u7C7B\u95EE\u9898\uFF1A
+${lines.join("\n")}`;
+}
 function diffBlocks(oldHashes, newHashes) {
   const keys = /* @__PURE__ */ new Set([...Object.keys(oldHashes || {}), ...Object.keys(newHashes || {})]);
   return [...keys].filter((k) => (oldHashes || {})[k] !== (newHashes || {})[k]).map((k) => k === "footnotes" ? k : Number(k)).sort((a, b) => {
@@ -28215,6 +28270,8 @@ export {
   BlockEditor,
   Parser,
   dumpAST,
-  render3 as render
+  llmReport,
+  render3 as render,
+  toJSON
 };
-/*! built: 2026-08-09T05:29:46.420Z */
+/*! built: 2026-08-09T05:43:57.449Z */

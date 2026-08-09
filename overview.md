@@ -433,14 +433,28 @@ render(src, { citeStyle: 'author-year' });   // 或 @set({ citeStyle: "author-ye
 AI 生成文档后自查引用是否有缺口（缺失仍正常渲染占位，不抛错）：
 
 ```javascript
+import { render, llmReport, toJSON } from 'mslang';
+
 const { html, issues } = render(source, { data, check: true });
-// issues: [{ type: 'missing_cite', key: 'doe2020', count: 2 }, ...]
+// issues: [{ type: 'missing_cite', key: 'doe2020', count: 2, block: 3 }, ...]
 //   type: missing_cite | missing_term | missing_ref | missing_footnote
+//         | duplicate_label | orphan_caption
 //   count: 同一 key 出现次数（按 type+key 去重）
+//   block: 首次出现的块索引（AI 可直接定位修复）
+
+// 喂回 LLM 自查：issues → 自然语言文本
+const report = llmReport(issues);
+// "发现 2 类问题：
+//  - 块 3：引用了不存在的文献「doe2020」（出现 2 次）
+//  - 块 5：孤立 caption（未归并到目标块）「fig:2」"
+
+// 结构化 AST（LLM 读取生成结果结构）：节点 → plain object，type 为节点类名
+const tree = toJSON(new Parser().parseText(source));
 ```
 
-- 检测范围：`@cite`/`@term`/`@ref`（含嵌套在表达式 `cite("k")` 中的）与 `[^n]` 脚注引用
+- 检测范围：`@cite`/`@term`/`@ref`（含嵌套在表达式 `cite("k")` 中的）与 `[^n]` 脚注引用、重复标签（`duplicate_label`）、孤立 caption（`orphan_caption`）
 - 有数据/定义时无对应 issue；`blocks`/`async` 模式同样支持
+- **AI 工作台闭环**：`render({check:true})` 定位 → `llmReport` 文本化喂 LLM → LLM 修复 → 重渲验证
 
 ---
 
@@ -560,12 +574,16 @@ ed.render();
 ## API 参考
 
 ```javascript
-import { render, Parser, dumpAST, BlockEditor } from 'mslang';
+import { render, Parser, dumpAST, BlockEditor, toJSON, llmReport } from 'mslang';
 ```
 
 ### `render(source, options)`
 
 唯一入口。`source` 为字符串渲染、数组自动合并；返回 `string | Promise<string> | { html, blockHashes }`（由 `async`/`blocks` 配置决定）。完整选项见[渲染选项](#渲染选项)。
+
+### `toJSON(node)` / `llmReport(issues)`
+
+AI 工作台辅助：`toJSON` 将 AST 转为 plain object（`type` 为节点类名，剔除内部字段）；`llmReport` 将 check issues 转为自然语言自查文本（见[引用完整性检查](#引用完整性检查check)）。
 
 ### `Parser`
 

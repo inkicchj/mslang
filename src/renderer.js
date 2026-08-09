@@ -657,18 +657,21 @@ class HTMLRenderer {
   }
 
   /**
-   * 引用完整性检查（opts.check 时）：检测缺失的文献/术语/交叉引用/脚注定义。
-   * 按 type+key 去重并计数；_refs 需在 _collectRefs 之后（前向引用已完整）。
+   * 引用完整性检查（opts.check 时）：检测缺失的文献/术语/交叉引用/脚注定义、
+   * 重复标签、孤立 caption。按 type+key 去重并计数，附带首次出现的块索引。
+   * _refs 需在 _collectRefs 之后（前向引用已完整）。
    * @param {Document} doc
-   * @returns {Array<{type: string, key: string, count: number}>}
+   * @returns {Array<{type: string, key: string, count: number, block: number}>}
    */
   _checkIntegrity(doc) {
     const issues = [];
     const seen = new Map();
+    const seenLabels = new Set();
+    let currentBlock = -1;
     const report = (type, key) => {
       const id = `${type}|${key}`;
       if (seen.has(id)) issues[seen.get(id)].count++;
-      else { seen.set(id, issues.length); issues.push({ type, key, count: 1 }); }
+      else { seen.set(id, issues.length); issues.push({ type, key, count: 1, block: currentBlock }); }
     };
     const handleCall = (call) => {
       if (call.name === 'cite') {
@@ -687,6 +690,11 @@ class HTMLRenderer {
         if (a && a.type === 'string' && !this._refs[a.value]) report('missing_ref', a.value);
       }
     };
+    const markLabel = (label) => {
+      if (!label) return;
+      if (seenLabels.has(label)) report('duplicate_label', label);
+      else seenLabels.add(label);
+    };
     const walkInlineList = (n) => {
       // 顶层 FunctionCall（AST 节点，无 type 字段）；嵌套表达式由 _walkExprTree 处理
       if (n instanceof FunctionCall) {
@@ -694,11 +702,31 @@ class HTMLRenderer {
         n.args.forEach(a => this._walkExprTree(a, handleCall));
       }
       if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report('missing_footnote', n.label);
+      if (n instanceof Image) markLabel(n.label);
     };
-    for (const block of doc.blocks) {
+    for (let i = 0; i < doc.blocks.length; i++) {
+      const block = doc.blocks[i];
+      currentBlock = i;
+      // 块级 label（图/表/式/定理/mermaid 共享标签空间）
+      if (block.label && (block instanceof Table || block instanceof Equation
+        || block instanceof Theorem || (block instanceof CodeBlock && block.language === 'mermaid'))) {
+        markLabel(block.label);
+      }
+      // 孤立 caption：降级时由 parser 标记（{#label} 行未归并到目标块）
+      if (block._orphanCaption) report('orphan_caption', block._orphanCaption);
       if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
     }
+    currentBlock = -1;
     return issues;
+  }
+
+  /**
+   * 将 issues 转为面向 LLM 的自查文本（喂回模型定位修复用）。
+   * @param {Array<{type: string, key: string, count: number, block?: number}>} issues
+   * @returns {string}
+   */
+  llmReport(issues) {
+    return llmReport(issues);
   }
 
   /**
@@ -1097,7 +1125,9 @@ class HTMLRenderer {
 
   visit_FunctionCall(node) {
     if (node.error) {
-      this._write(`<!-- mslang: 参数解析错误 @${node.name}: ${this._esc(node.error)} -->`);
+      // 错误注释附原文（AI 可从注释看到生成内容的原貌并自我修正）
+      const raw = node.rawArgs ? `@${node.name}(${node.rawArgs})` : `@${node.name}`;
+      this._write(`<!-- mslang: 参数解析错误 @${node.name}: ${this._esc(node.error)} | 原文: ${this._esc(raw)} -->`);
       return;
     }
     const func = this._functions[node.name];
@@ -1222,6 +1252,29 @@ class HTMLRenderer {
   _escAttr(text) {
     return escapeAttr(text);
   }
+}
+
+/**
+ * 将 check issues 转为面向 LLM 的自查文本（喂回模型定位修复用）。
+ * @param {Array<{type: string, key: string, count: number, block?: number}>} issues
+ * @returns {string}
+ */
+export function llmReport(issues) {
+  const LABELS = {
+    missing_cite: '引用了不存在的文献',
+    missing_term: '引用了不存在的术语',
+    missing_ref: '引用了不存在的交叉引用标签',
+    missing_footnote: '引用了未定义的脚注',
+    duplicate_label: '重复声明了标签',
+    orphan_caption: '孤立 caption（未归并到目标块）',
+  };
+  if (!issues || !issues.length) return '检查通过：无引用缺口。';
+  const lines = issues.map((i) => {
+    const pos = i.block !== undefined ? `块 ${i.block}` : '文档';
+    const n = i.count > 1 ? `（出现 ${i.count} 次）` : '';
+    return `- ${pos}：${LABELS[i.type] || i.type}「${i.key}」${n}`;
+  });
+  return `发现 ${issues.length} 类问题：\n${lines.join('\n')}`;
 }
 
 /**

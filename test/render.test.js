@@ -326,11 +326,17 @@ test('check：引用完整性检查', () => {
   const r = render('@cite("x") @cite("x") @cite("y")\n\n@term("无")\n\n见 @ref("no-such")\n\n注[^n1]', { check: true });
   assert.strictEqual(typeof r.html, 'string');
   const find = (type, key) => r.issues.find(i => i.type === type && i.key === key);
-  assert.deepStrictEqual(find('missing_cite', 'x'), { type: 'missing_cite', key: 'x', count: 2 });
-  assert.deepStrictEqual(find('missing_cite', 'y'), { type: 'missing_cite', key: 'y', count: 1 });
-  assert.deepStrictEqual(find('missing_term', '无'), { type: 'missing_term', key: '无', count: 1 });
-  assert.deepStrictEqual(find('missing_ref', 'no-such'), { type: 'missing_ref', key: 'no-such', count: 1 });
-  assert.deepStrictEqual(find('missing_footnote', 'n1'), { type: 'missing_footnote', key: 'n1', count: 1 });
+  assert.deepStrictEqual(find('missing_cite', 'x'), { type: 'missing_cite', key: 'x', count: 2, block: 0 });
+  assert.deepStrictEqual(find('missing_cite', 'y'), { type: 'missing_cite', key: 'y', count: 1, block: 0 });
+  assert.deepStrictEqual(find('missing_term', '无'), { type: 'missing_term', key: '无', count: 1, block: 1 });
+  assert.deepStrictEqual(find('missing_ref', 'no-such'), { type: 'missing_ref', key: 'no-such', count: 1, block: 2 });
+  assert.deepStrictEqual(find('missing_footnote', 'n1'), { type: 'missing_footnote', key: 'n1', count: 1, block: 3 });
+  // 扩展检测：duplicate_label 与 orphan_caption
+  const ext = render('![图](/a.png){#fig:1}\n\n{#fig:1} A\n\n![图](/b.png){#fig:1}\n\n{#fig:2} 孤立', { check: true });
+  assert.deepStrictEqual(ext.issues.find(i => i.type === 'duplicate_label'),
+    { type: 'duplicate_label', key: 'fig:1', count: 1, block: 1 });
+  assert.deepStrictEqual(ext.issues.find(i => i.type === 'orphan_caption'),
+    { type: 'orphan_caption', key: 'fig:2', count: 1, block: 2 });
   const ok = render('@cite("a")\n\n![图](/a.png){#fig:1}\n\n见 @ref("fig:1")\n\n注[^n1]\n\n[^n1]: 定义', {
     data: { bibliography: { a: {} } }, check: true,
   });

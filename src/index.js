@@ -26,14 +26,15 @@
  *   const ast = parser.parseText('# Hello **World**');
  */
 
-import { Parser, dumpAST, mergeDocuments } from './parser.js';
-import { HTMLRenderer } from './renderer.js';
+import { Parser, dumpAST, mergeDocuments, toJSON } from './parser.js';
+import { HTMLRenderer, llmReport } from './renderer.js';
 import { BlockEditor } from './blockeditor.js';
 import { Document } from './nodes.js';
 
-// 公共导出精简：render（唯一入口）/ Parser（AST）/ dumpAST（调试）/ BlockEditor（块编辑）
+// 公共导出：render（唯一入口）/ Parser（AST）/ dumpAST（调试）/ BlockEditor（块编辑）
+// toJSON（AST 结构化，LLM 消费）/ llmReport（check issues 文本化，LLM 自查）
 // HTMLRenderer 与 diffBlocks 为内部实现，不导出（render 与 BlockEditor 内部使用）
-export { Parser, dumpAST, BlockEditor };
+export { Parser, dumpAST, BlockEditor, toJSON, llmReport };
 
 /**
  * mslang 唯一渲染入口。

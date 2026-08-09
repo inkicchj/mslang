@@ -164,7 +164,7 @@
     "ast": "Document\n└── Paragraph\n    └── FunctionCall @f(1, name=\"a\", 2+3)"
   },
   "err-expr": {
-    "html": "<div class=\"mslang\">\n<p><!-- mslang: 参数解析错误 @if: 表达式语法错误 @0: 意外的字符 ',' --></p>\n\n</div>",
+    "html": "<div class=\"mslang\">\n<p><!-- mslang: 参数解析错误 @if: 表达式语法错误 @0: 意外的字符 ',' | 原文: @if(, \"a\", \"b\") --></p>\n\n</div>",
     "ast": "Document\n└── Paragraph\n    └── FunctionCall @if(, \"a\", \"b\")  !ERROR: 表达式语法错误 @0: 意外的字符 ','"
   },
   "expr-empty-call": {
