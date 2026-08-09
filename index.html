@@ -173,21 +173,17 @@ graph TD
 </div>
 
 <script type="module">
-import { render, HTMLRenderer, Parser } from './dist/mslang.esm.js';
+import { render, Parser } from './dist/mslang.esm.js';
 
 // 暴露到 window 供 onclick 使用
 window.render = render;
-window.HTMLRenderer = HTMLRenderer;
 window.Parser = Parser;
 
-// 注册自定义函数
-const renderer = new HTMLRenderer();
-renderer.addFunction('greet', (name, kwargs) => {
+// 自定义函数（经 render options 注入，无需实例）
+const greet = (name, kwargs) => {
   const style = kwargs.style || '';
   return `<span style="${style}">👋 你好, ${name}!</span>`;
-});
-
-window._renderer = renderer;
+};
 
 // 实时渲染
 const textarea = document.getElementById('source');
@@ -205,7 +201,7 @@ window.renderMSL = function() {
   try {
     const source = textarea.value;
     const start = performance.now();
-    const html = renderer.render(source);
+    const html = render(source, { functions: { greet } });
     const elapsed = (performance.now() - start).toFixed(1);
     output.innerHTML = html;
     renderMermaid();

@@ -2,8 +2,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  render, HTMLRenderer, Parser, dumpAST,
+  render, Parser, dumpAST,
 } from '../src/index.js';
+import { HTMLRenderer } from '../src/renderer.js';
 
 test('@let 声明与引用', () => {
   assert.match(render('@let("x", 5)\n\n@if(x > 3, "大", "小")'), /大/);

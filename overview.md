@@ -499,7 +499,7 @@ const html = render(['引言.md', '方法.md', '参考文献.md'], { data: {...}
 
 ## 块级编辑
 
-用于块级编辑器（类 Notion）：只更新变化的块 DOM。**首选 `BlockEditor` 封装**（单一接口，状态/降级内置）；底层 API（哨兵/diffBlocks/renderBlock）也公开可用。
+用于块级编辑器（类 Notion）：只更新变化的块 DOM。**首选 `BlockEditor` 封装**（单一接口，状态/降级内置）。
 
 ### BlockEditor（推荐）
 
@@ -530,67 +530,14 @@ ed.render();
 - 块 raw 含块间空行分隔，编辑时自动保留（防块合并）；宿主存回文本原样即可
 - 降级规则：块数变化或变化块 > 3 → `full: true` 全量重建
 
-### 底层 API（自定义流程用）
+### 底层说明（BlockEditor 内部机制）
 
-```javascript
-import { render, Parser, diffBlocks, HTMLRenderer } from 'mslang';
-const { html, blockHashes } = render(source, { blocks: true });
-// html: 含 <!--mslang:N--> 块哨兵（脚注区为 <!--mslang:footnotes-->）
-// blockHashes[N] = 块源 + 编号前缀快照 + 渲染依赖哈希
-const changed = diffBlocks(oldHashes, newHashes);        // 变化块索引（含 'footnotes'）
-renderer.renderBlock(source, i);                          // 单块重渲
-```
-
-- 块区间连续覆盖文档源；caption 归并行并入前块；脚注定义行不属于任何块（截断）
+`render(source, { blocks: true })` 输出含 `<!--mslang:N-->` 哨兵的 html 与 `blockHashes`（块源 + 编号前缀快照 + 渲染依赖哈希）。BlockEditor 内部基于此实现切分与差异更新；需要自定义流程的宿主可直接用该输出（变化检测逻辑参考 `src/renderer.js` 的 `diffBlocks`）。
 - 编号依赖自动传播：块 i 加图 → 块 i..N 的哈希全变（哈希含编号前缀快照 fig/tbl/sec/eq/cite/term/thm 计数）
 - 渲染依赖自动传播：`@let` 变量值、`@define` 模板、`data` 条目内容变化 → **引用它们的块**哈希变（按块收集依赖，非全量）
 - 纯文本编辑只影响 1 块；默认 `render` 无哨兵（零回归）
 - 代码高亮语言：`javascript typescript python java c cpp go rust bash json sql xml css markdown kotlin swift ruby php perl yaml dockerfile diff`
 
-### 宿主端接入（哨兵切分 + 局部替换）
-
-**初始化**：按哨兵切分建块容器（"容器即映射"，不用注释节点定位）：
-
-```javascript
-const { html, blockHashes } = render(source, { blocks: true });
-const blockEls = [];                       // blockEls[N] = <div data-block="N">…</div>
-let last = 0;
-for (const m of html.matchAll(/<!--mslang:(\d+)-->/g)) {
-  blockEls[Number(m[1])] = document.createElement('div');
-  blockEls[Number(m[1])].innerHTML = html.slice(last, m.index);
-  last = m.index + m[0].length;
-}
-const footnotesEl = /* <!--mslang:footnotes--> 之后到末尾的容器 */;
-```
-
-**编辑保存流**（文本微调，高频）：替换源码区间 → 全量重渲（parse 微秒级，公式/代码命中缓存）→ diffBlocks → 单块重渲替换：
-
-```javascript
-function saveBlock(i, newText) {
-  const b = Parser.parseText(source).blocks[i];
-  const newSource = source.slice(0, b.startPos) + newText + source.slice(b.endPos);
-  const { blockHashes: newHashes } = render(newSource, { blocks: true });
-  for (const j of diffBlocks(oldHashes, newHashes)) {
-    if (j === 'footnotes') footnotesEl.innerHTML = /* 脚注区片段 */;
-    else blockEls[j].innerHTML = renderer.renderBlock(newSource, j);
-  }
-  source = newSource; oldHashes = newHashes;
-}
-```
-
-**实时预览流**（编辑期间，最高频）：只重渲正在编辑的块，不干扰其他块 DOM 与光标：
-
-```javascript
-onInput(i, newText) {
-  const b = Parser.parseText(source).blocks[i];
-  const tmp = source.slice(0, b.startPos) + newText + source.slice(b.endPos);
-  blockEls[i].innerHTML = renderer.renderBlock(tmp, i);   // 单块渲染
-}
-```
-
-**降级策略（全量重建）**：块数变化（增/删块导致索引偏移）、变化块数量大（阈值 > 3）、`@plugin` 函数体重写（函数调用块的依赖无法静态追踪）→ 直接 `render(newSource)` 整体替换。前两类罕见，第三类属配置类变更。
-
-**多文档合并**：`render(docArray, { blocks: true })` 同样返回哨兵 html + blockHashes（跨文档连续编号），宿主流程一致。
 
 ---
 
@@ -613,25 +560,12 @@ onInput(i, newText) {
 ## API 参考
 
 ```javascript
-import { render, HTMLRenderer, Parser, dumpAST, diffBlocks, BlockEditor } from 'mslang';
+import { render, Parser, dumpAST, BlockEditor } from 'mslang';
 ```
 
 ### `render(source, options)`
 
 唯一入口。`source` 为字符串渲染、数组自动合并；返回 `string | Promise<string> | { html, blockHashes }`（由 `async`/`blocks` 配置决定）。完整选项见[渲染选项](#渲染选项)。
-
-### `HTMLRenderer`
-
-实例级渲染器（`addFunction` 注册宿主函数；可复用实例多次渲染）：
-
-```javascript
-const renderer = new HTMLRenderer({ functions: {...}, escapeHtml: true, pretty: false });
-renderer.addFunction('greet', (name) => `<b>Hello ${name}!</b>`);
-const html = renderer.render('# Hello @greet("World")');
-const htmlAsync = await renderer.renderAsync(src);      // 异步
-const htmlAll = renderer.renderAll([doc1, doc2]);       // 合并
-const { html, blockHashes } = renderer.renderBlocks(src);  // 块级
-```
 
 ### `Parser`
 

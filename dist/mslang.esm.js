@@ -28235,10 +28235,8 @@ function _renderOptions(options) {
 }
 export {
   BlockEditor,
-  HTMLRenderer,
   Parser,
-  diffBlocks,
   dumpAST,
   render3 as render
 };
-/*! built: 2026-08-09T05:01:54.774Z */
+/*! built: 2026-08-09T05:17:51.073Z */

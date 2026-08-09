@@ -1575,9 +1575,7 @@ var mslang = (() => {
   var index_exports = {};
   __export(index_exports, {
     BlockEditor: () => BlockEditor,
-    HTMLRenderer: () => HTMLRenderer,
     Parser: () => Parser,
-    diffBlocks: () => diffBlocks,
     dumpAST: () => dumpAST,
     render: () => render3
   });
@@ -28252,4 +28250,4 @@ ${body}
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-09T05:01:54.774Z */
+/*! built: 2026-08-09T05:17:51.073Z */

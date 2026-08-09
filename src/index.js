@@ -27,11 +27,13 @@
  */
 
 import { Parser, dumpAST, mergeDocuments } from './parser.js';
-import { HTMLRenderer, diffBlocks } from './renderer.js';
+import { HTMLRenderer } from './renderer.js';
 import { BlockEditor } from './blockeditor.js';
 import { Document } from './nodes.js';
 
-export { HTMLRenderer, Parser, dumpAST, diffBlocks, BlockEditor };
+// 公共导出精简：render（唯一入口）/ Parser（AST）/ dumpAST（调试）/ BlockEditor（块编辑）
+// HTMLRenderer 与 diffBlocks 为内部实现，不导出（render 与 BlockEditor 内部使用）
+export { Parser, dumpAST, BlockEditor };
 
 /**
  * mslang 唯一渲染入口。

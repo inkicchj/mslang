@@ -1,7 +1,8 @@
 // renderer 渲染测试：基础语法、表达式、内置函数、配置、异步
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { render, HTMLRenderer, diffBlocks, Parser, BlockEditor } from '../src/index.js';
+import { render, Parser, BlockEditor } from '../src/index.js';
+import { HTMLRenderer, diffBlocks } from '../src/renderer.js';
 
 const data = {
   bibliography: {
