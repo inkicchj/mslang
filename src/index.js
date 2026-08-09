@@ -27,10 +27,10 @@
  */
 
 import { Parser, dumpAST, mergeDocuments } from './parser.js';
-import { HTMLRenderer } from './renderer.js';
+import { HTMLRenderer, diffBlocks } from './renderer.js';
 import { Document } from './nodes.js';
 
-export { HTMLRenderer, Parser, dumpAST };
+export { HTMLRenderer, Parser, dumpAST, diffBlocks };
 
 /**
  * mslang 唯一渲染入口。
@@ -99,6 +99,7 @@ function _renderOptions(options) {
     mathFontsPath: options.mathFontsPath,
     codeRenderer: options.codeRenderer,
     check: options.check,
+    bibStyle: options.bibStyle,
     citeStyle: options.citeStyle,
     allowPlugins: options.allowPlugins,
     blockMarkers: options.blockMarkers,

@@ -355,12 +355,16 @@ class Lexer {
 
   _scanStarDelimited() {
     const next = this._peekAt(this.pos + 1);
+    const next2 = this._peekAt(this.pos + 2);
+    if (next === CHAR.STAR && next2 === CHAR.STAR) return this._scanDelimiterWrapped(TokenType.BOLD_ITALIC, '***');
     if (next === CHAR.STAR) return this._scanDelimiterWrapped(TokenType.BOLD, '**');
     return this._scanDelimiterWrapped(TokenType.ITALIC, '*');
   }
 
   _scanUnderscoreDelimited() {
     const next = this._peekAt(this.pos + 1);
+    const next2 = this._peekAt(this.pos + 2);
+    if (next === CHAR.UNDERSCORE && next2 === CHAR.UNDERSCORE) return this._scanDelimiterWrapped(TokenType.BOLD_ITALIC, '___');
     if (next === CHAR.UNDERSCORE) return this._scanDelimiterWrapped(TokenType.BOLD, '__');
     return this._scanDelimiterWrapped(TokenType.ITALIC, '_');
   }

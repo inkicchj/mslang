@@ -20,8 +20,11 @@ import {
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, LineBreak, FunctionCall, Color,
   Superscript, Subscript, RawHtml, FootnoteRef,
-  Table, AlignBlock, Caption, Equation,
+  Table, AlignBlock, Caption, Equation, Theorem,
 } from './nodes.js';
+
+// 定理环境类型（@theorem/@lemma/@definition/@remark/@example 标记行）
+const THEOREM_TYPES = ['theorem', 'lemma', 'definition', 'remark', 'example'];
 
 // 会终止段落/引用的块级 Token 类型
 const BLOCK_BOUNDARY_TYPES = new Set([
@@ -100,6 +103,10 @@ class Parser {
       document.blocks.push(block);
     }
 
+    // 定理环境归并：@theorem("label", "标题") 标记行 + 下一段落 → Theorem 块
+    // （在块区间计算前 splice，标记块保留 startPos 覆盖两行区间）
+    this._attachTheorems(document);
+
     // 块源区间：[startPos, 下一块 startPos)，末块到文档末尾（caption 归并行自然落入前块区间）
     // 脚注定义行不属于任何块：区间截断到其后的第一个脚注定义位置
     for (let i = 0; i < document.blocks.length; i++) {
@@ -118,6 +125,28 @@ class Parser {
     }
 
     return document;
+  }
+
+  /**
+   * 定理环境归并：纯 FunctionCall(@theorem/@lemma/…) 段落 + 下一段落 → Theorem 块。
+   * 内容限单段落；不匹配（无下一段/非段落）时降级为普通段落（保留原文本）。
+   * @param {Document} doc
+   */
+  _attachTheorems(doc) {
+    const blocks = doc.blocks;
+    for (let i = 0; i < blocks.length - 1; i++) {
+      const b = blocks[i];
+      if (!(b instanceof Paragraph)) continue;
+      const fc = b.content.length === 1 ? b.content[0] : null;
+      if (!(fc instanceof FunctionCall) || !THEOREM_TYPES.includes(fc.name)) continue;
+      const label = fc.args[0] && fc.args[0].type === 'string' ? fc.args[0].value : '';
+      const title = fc.args[1] && fc.args[1].type === 'string'
+        ? this._parseInlineString(fc.args[1].value) : [];
+      const next = blocks[i + 1];
+      if (!(next instanceof Paragraph)) continue;
+      blocks[i] = new Theorem(fc.name, label, title, next.content);
+      blocks.splice(i + 1, 1);
+    }
   }
 
   /**
@@ -544,6 +573,10 @@ class Parser {
     if (token.type === TokenType.MATH) {
       return new Equation(token.value, token.metadata.inline, token.metadata.label || '');
     }
+    if (token.type === TokenType.BOLD_ITALIC) {
+      // ***粗斜体***：<strong><em>…</em></strong>
+      return new Bold([new Italic(this._parseInline(token.value))]);
+    }
     if (token.type === TokenType.BOLD) {
       return new Bold(this._parseInline(token.value));
     }
@@ -922,6 +955,10 @@ function dumpAST(node, indent = 0, prefix = '', isLast = true) {
   if (node instanceof Table) {
     const lbl = node.label ? ` (label=${node.label})` : '';
     return `${linePrefix}Table${lbl}`;
+  }
+  if (node instanceof Theorem) {
+    const lbl = node.label ? ` label=${node.label}` : '';
+    return `${linePrefix}Theorem(${node.type})${lbl}`;
   }
   if (node instanceof RawText) return `${linePrefix}Text "${node.text}"`;
   if (node instanceof LineBreak) return `${linePrefix}LineBreak`;

@@ -1,7 +1,7 @@
 // renderer 渲染测试：基础语法、表达式、内置函数、配置、异步
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { render, HTMLRenderer } from '../src/index.js';
+import { render, HTMLRenderer, diffBlocks, Parser } from '../src/index.js';
 
 const data = {
   bibliography: {
@@ -341,6 +341,54 @@ test('注释：行首 % 透明丢弃', () => {
   assert.match(render('甲\n% 注释\n乙'), /甲<br>乙/);
   assert.match(render('```js\n// 100% done\n```'), /100% done/);
   assert.match(render('折扣 50%'), /折扣 50%/);
+});
+
+test('粗斜体 *** 与表达式属性访问', () => {
+  assert.match(render('***粗斜体*** 与 ___粗斜___'), /<strong><em>粗斜体<\/em><\/strong>.*<strong><em>粗斜<\/em><\/strong>/);
+  assert.match(render('@if(true, o.name, "x")', { variables: { o: { name: 'Alice' } } }), /Alice/);
+  assert.match(render('@if(true, a.b[0].c, "x")', { variables: { a: { b: [{ c: 42 }] } } }), /42/);
+  assert.match(render('@if(true, xs[1], "x")', { variables: { xs: [10, 20] } }), /20/);
+});
+
+test('代码高亮扩展语言', () => {
+  assert.match(render('```kotlin\nfun main() {}\n```'), /language-kotlin/);
+  assert.match(render('```yaml\nk: v\n```'), /language-yaml/);
+  assert.match(render('```diff\n+ add\n```'), /language-diff/);
+});
+
+test('块级编辑闭环：renderBlock 与 diffBlocks', () => {
+  const doc = '# 一\n\n第二段\n\n## 二\n\n![图](/a.png){#fig:1}';
+  const r = new HTMLRenderer();
+  assert.strictEqual(r.renderBlock(doc, 0), '<h1>一</h1>\n');
+  assert.strictEqual(r.renderBlock(doc, 2), '<h2>二</h2>\n');
+  assert.match(r.renderBlock(doc, 2, { headingNumbering: '1' }), /1\.1 二/);
+  assert.match(r.renderBlock(doc, 3), /id="fig:1"/);
+  assert.strictEqual(r.renderBlock(doc, 99), '');
+  assert.strictEqual(r.renderBlock(new Parser().parseText('# x'), 0), '<h1>x</h1>\n');
+  assert.deepStrictEqual(diffBlocks({ 0: 'a', 1: 'b' }, { 0: 'a', 1: 'B' }), [1]);
+  assert.deepStrictEqual(diffBlocks({ 0: 'a' }, { 0: 'a' }), []);
+  const before = render('甲\n\n乙', { blocks: true });
+  const after = render('甲\n\n改乙', { blocks: true });
+  assert.strictEqual(diffBlocks(before.blockHashes, after.blockHashes).length, 1);
+});
+
+test('文献样式：bibStyle gbt7714', () => {
+  const data = { bibliography: { d: { authors: 'Doe, J.', year: 2020, title: 'A Study', journal: 'JML' } } };
+  assert.match(render('@cite("d")\n\n@bibliography()', { data }), /Doe, J\. \(2020\) A Study JML/);
+  assert.match(render('@cite("d")\n\n@bibliography()', { data, bibStyle: 'gbt7714' }), /Doe, J\. A Study\. JML, 2020\./);
+  assert.match(render('@set({ bibStyle: "gbt7714" })\n\n@cite("d")\n\n@bibliography()', { data }), /JML, 2020\./);
+});
+
+test('定理环境：@theorem/@lemma/@definition', () => {
+  let h = render('@theorem("thm:1", "均值定理")\n\n设 f 连续');
+  assert.match(h, /<div class="theorem theorem" id="thm:1">/);
+  assert.match(h, /定理 1 均值定理/);
+  h = render('@theorem("t1")\n\nA\n\n@lemma("l1")\n\nB\n\n@definition("d1")\n\nC');
+  assert.match(h, /定理 1.*引理 2.*定义 3/s);
+  h = render('@theorem("thm:1")\n\nA\n\n由 @ref("thm:1") 可得');
+  assert.match(h, />定理 1<\/a>/);
+  h = render('@theorem("t1", "见 @cite(\\\"a\\\")")\n\n内容', { data: { bibliography: { a: {} } } });
+  assert.match(h, /href="#cite-1"/);
 });
 
 test('公式/代码渲染缓存：输出一致且跨实例复用', () => {  const doc = '$a^2$ 与 $a^2$ 与 ```js\nvar x = 1;\n``` 与 ```js\nvar x = 1;\n```';

@@ -201,6 +201,25 @@ class Table extends BlockNode {
   accept(visitor) { return visitor.visit_Table(this); }
 }
 
+/** 定理/引理/定义环境：@theorem("label", "标题") 标记行 + 后续段落内容归并 */
+class Theorem extends BlockNode {
+  /**
+   * @param {string} [type] - 'theorem' | 'lemma' | 'definition' | 'remark' | 'example'
+   * @param {string} [label] - 交叉引用标签，如 "thm:1"
+   * @param {InlineNode[]} [title] - 标题行内节点
+   * @param {InlineNode[]} [content] - 内容行内节点（当前限单段落）
+   */
+  constructor(type = 'theorem', label = '', title = [], content = []) {
+    super();
+    this.type = type;
+    this.label = label;
+    this.title = title;
+    this.content = content;
+  }
+
+  accept(visitor) { return visitor.visit_Theorem(this); }
+}
+
 // ============================================================
 // 行内节点
 // ============================================================
@@ -379,7 +398,7 @@ export {
   BlockNode, InlineNode,
   Heading, Paragraph, BlockQuote, CodeBlock,
   UnorderedList, OrderedList, ListItem, HorizontalRule,
-  AlignBlock, Table, Caption, Equation,
+  AlignBlock, Table, Caption, Equation, Theorem,
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, FunctionCall, Color,
   Superscript, Subscript, RawHtml, FootnoteRef,

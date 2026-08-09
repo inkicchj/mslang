@@ -207,16 +207,16 @@ class ExpressionParser {
       this._skipWs();
       if (this._peek() !== ')') this._error("缺少 ')'");
       this.pos++;
-      return node;
+      return this._parsePostfix(node);
     }
 
-    if (ch === '{') return this._parseObject();
+    if (ch === '{') return this._parsePostfix(this._parseObject());
 
-    if (ch === '[') return this._parseArray();
+    if (ch === '[') return this._parsePostfix(this._parseArray());
 
-    if (ch === '"' || ch === "'") return this._parseString(ch);
+    if (ch === '"' || ch === "'") return this._parsePostfix(this._parseString(ch));
 
-    if (ch >= '0' && ch <= '9') return this._parseNumber();
+    if (ch >= '0' && ch <= '9') return this._parsePostfix(this._parseNumber());
 
     const name = this._readIdentifier();
     if (name !== null) {
@@ -230,12 +230,35 @@ class ExpressionParser {
         this._skipWs();
         if (this._peek() !== ')') this._error("缺少 ')'");
         this.pos++;
-        return { type: 'call', name, args, kwargs };
+        return this._parsePostfix({ type: 'call', name, args, kwargs });
       }
-      return { type: 'var', name };
+      return this._parsePostfix({ type: 'var', name });
     }
 
     this._error(`意外的字符 '${ch}'`);
+  }
+
+  /** 后缀：属性访问 x.y 与索引 x[expr]（可链式，如 a.b[0].c） */
+  _parsePostfix(base) {
+    while (true) {
+      this._skipWs();
+      const ch = this._peek();
+      if (ch === '.') {
+        this.pos++;
+        const prop = this._readIdentifier();
+        if (prop === null) this._error('属性访问缺少属性名');
+        base = { type: 'member', object: base, property: prop };
+      } else if (ch === '[') {
+        this.pos++;
+        const index = this._parseOr();
+        this._skipWs();
+        if (this._peek() !== ']') this._error("索引缺少 ']'");
+        this.pos++;
+        base = { type: 'index', object: base, index };
+      } else {
+        return base;
+      }
+    }
   }
 
   /** 数组字面量：[expr, expr, ...] */
@@ -362,6 +385,15 @@ export function evaluate(node, ctx = {}) {
     case 'unary': {
       const v = evaluate(node.operand, ctx);
       return node.op === '!' ? !v : -v;
+    }
+    case 'member': {
+      const obj = evaluate(node.object, ctx);
+      return obj == null ? undefined : obj[node.property];
+    }
+    case 'index': {
+      const obj = evaluate(node.object, ctx);
+      const idx = evaluate(node.index, ctx);
+      return obj == null ? undefined : obj[idx];
     }
     case 'binary': {
       const left = evaluate(node.left, ctx);

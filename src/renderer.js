@@ -10,13 +10,13 @@ import {
   UnorderedList, OrderedList, ListItem, HorizontalRule,
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, LineBreak, FunctionCall, Color,
-  Superscript, Subscript, RawHtml, Table, FootnoteRef, AlignBlock, Equation,
+  Superscript, Subscript, RawHtml, Table, FootnoteRef, AlignBlock, Equation, Theorem,
 } from './nodes.js';
 
 import { Lexer } from './lexer.js';
 import { Parser, mergeDocuments } from './parser.js';
 import { evaluate } from './expression.js';
-import { builtinFunctions, extractHeadingNumber } from './builtin.js';
+import { builtinFunctions, extractHeadingNumber, THEOREM_PREFIX } from './builtin.js';
 import { escapeHTML, escapeAttr } from './escape.js';
 import katex from 'katex';
 import hljs from 'highlight.js/lib/core';
@@ -34,9 +34,20 @@ import sql from 'highlight.js/lib/languages/sql';
 import xml from 'highlight.js/lib/languages/xml';
 import css from 'highlight.js/lib/languages/css';
 import markdown from 'highlight.js/lib/languages/markdown';
+import kotlin from 'highlight.js/lib/languages/kotlin';
+import swift from 'highlight.js/lib/languages/swift';
+import ruby from 'highlight.js/lib/languages/ruby';
+import php from 'highlight.js/lib/languages/php';
+import perl from 'highlight.js/lib/languages/perl';
+import yaml from 'highlight.js/lib/languages/yaml';
+import dockerfile from 'highlight.js/lib/languages/dockerfile';
+import diff from 'highlight.js/lib/languages/diff';
 
 // 代码高亮语言子集（常用论文/脚本语言，控制体积）
-const HLJS_LANGUAGES = { javascript, typescript, python, java, c, cpp, go, rust, bash, json, sql, xml, css, markdown };
+const HLJS_LANGUAGES = {
+  javascript, typescript, python, java, c, cpp, go, rust, bash, json, sql, xml, css, markdown,
+  kotlin, swift, ruby, php, perl, yaml, dockerfile, diff,
+};
 for (const [name, lang] of Object.entries(HLJS_LANGUAGES)) hljs.registerLanguage(name, lang);
 
 // KaTeX / hljs 渲染结果缓存（跨 render 实例共享，供工作台增量重渲复用）。
@@ -140,6 +151,29 @@ class HTMLRenderer {
   }
 
   /**
+   * 单块渲染（块级编辑闭环）：_prepare 全量收集编号上下文后只渲染第 index 块。
+   * 返回该块的 HTML（无 wrapper/哨兵），宿主替换对应 DOM 即可。
+   * @param {string|Document} source
+   * @param {number} index - 块索引（与 Parser.parseText(source).blocks 对齐）
+   * @param {object} [opts] - 与 render() 相同（blocks/check 选项忽略）
+   * @returns {string}
+   */
+  renderBlock(source, index, opts = {}) {
+    const doc = this._prepare(source, opts);
+    const block = doc.blocks[index];
+    if (!block) return '';
+    // visit_Heading 用 _headingIdx 消费 _headingSeq：定位到该块对应的标题偏移
+    let headingIdx = 0;
+    for (let i = 0; i < index; i++) {
+      if (doc.blocks[i] instanceof Heading) headingIdx++;
+    }
+    this._headingIdx = headingIdx;
+    this._output = [];
+    block.accept(this);
+    return this._output.join('');
+  }
+
+  /**
    * 块级渲染（块级编辑器用）：与 render() 同管线，额外产出：
    * - html 含 <!--mslang:N--> 块哨兵（footnotes 区为 <!--mslang:footnotes-->）
    * - blockHashes[N] = 块源 + 编号前缀快照的哈希，定位变化块（DOM 增量替换）
@@ -222,6 +256,7 @@ class HTMLRenderer {
       mathFontsPath = '',
       codeRenderer = null,
       citeStyle = 'numeric',
+      bibStyle = 'default',
       allowPlugins = true,
       blockMarkers = false,
     } = opts;
@@ -239,6 +274,7 @@ class HTMLRenderer {
     this._mathFontsPath = mathFontsPath || '';
     this._codeRenderer = codeRenderer || null;
     this._citeStyle = citeStyle || 'numeric';
+    this._bibStyle = bibStyle || 'default';
     this._allowPlugins = allowPlugins !== false;
     this._blockMarkers = blockMarkers === true;
     this._blockHashes = {};
@@ -273,7 +309,7 @@ class HTMLRenderer {
   // ================================================================
 
   // @set 白名单：仅这些键可被文档内配置覆盖
-  static SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables', 'terms', 'bibliography', 'captionPrefix', 'citeKeyAttr', 'termKeyAttr', 'refKeyAttr', 'citeStyle', 'allowPlugins'];
+  static SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables', 'terms', 'bibliography', 'captionPrefix', 'citeKeyAttr', 'termKeyAttr', 'refKeyAttr', 'citeStyle', 'allowPlugins', 'bibStyle'];
 
   // 引用/术语 data 属性名（工作台交互定位用；空串关闭）
   static DEFAULT_KEY_ATTRS = { citeKeyAttr: 'data-cite-key', termKeyAttr: 'data-term-key', refKeyAttr: 'data-ref-label' };
@@ -296,6 +332,7 @@ class HTMLRenderer {
         fn(n);
         if (n.content) walk(n.content);
         if (n.caption) walk(n.caption);
+        if (n.title) walk(n.title); // Theorem 标题行内节点
       }
     };
     if (block.content) walk(block.content);
@@ -404,6 +441,8 @@ class HTMLRenderer {
         this[`_${key}`] = config[key] || '';
       } else if (key === 'citeStyle') {
         this._citeStyle = config[key] || 'numeric';
+      } else if (key === 'bibStyle') {
+        this._bibStyle = config[key] || 'default';
       } else if (key === 'allowPlugins') {
         this._allowPlugins = config[key] !== false;
       } else {
@@ -443,7 +482,7 @@ class HTMLRenderer {
     this._refs = {};
     this._headingSeq = [];
     this._headingIdx = 0;
-    const counters = { fig: 0, tbl: 0, sec: 0, eq: 0 };
+    const counters = { fig: 0, tbl: 0, sec: 0, eq: 0, thm: 0 };
 
     // 标题自动编号：按文档顺序对全部 Heading 计算层级编号（如 1 / 1.1 / 1.1.1）
     const sep = this._headingNumbering.match(/[^\d1]/)?.[0] || '.';
@@ -513,7 +552,7 @@ class HTMLRenderer {
     for (const block of doc.blocks) {
       // 块渲染时的编号前缀快照（块级编辑哈希：块 i 之后编号变化 → 后续块哈希变）
       block._prefixCounts = {
-        fig: counters.fig, tbl: counters.tbl, sec: counters.sec, eq: counters.eq,
+        fig: counters.fig, tbl: counters.tbl, sec: counters.sec, eq: counters.eq, thm: counters.thm,
         cite: this._citeOrder.length, term: this._termOrder.length,
       };
       if (block instanceof Heading) {
@@ -544,6 +583,11 @@ class HTMLRenderer {
         // mermaid 流程图与图片共享 fig 编号序列
         counters.fig++;
         this._refs[block.label] = { kind: 'fig', number: counters.fig };
+      }
+      if (block instanceof Theorem && block.label) {
+        // 定理/引理/定义共享编号序列，type 用于显示前缀
+        counters.thm++;
+        this._refs[block.label] = { kind: 'thm', type: block.type, number: counters.thm };
       }
       if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
     }
@@ -658,16 +702,26 @@ class HTMLRenderer {
     if (!this._termOrder.includes(name)) this._termOrder.push(name);
   }
 
-  /** 文献条目格式化：字符串原样转义；对象拼接 authors (year). title. journal. */
+  /** 文献条目格式化：字符串原样转义；default 拼接 "authors (year) title journal"；
+   *  gbt7714 近似 "作者. 题名. 期刊, 年份."（GB/T 7714 风格点分隔，年份不带括号） */
   _formatBibEntry(entry) {
     if (typeof entry === 'string') return this._esc(entry);
     const e = entry || {};
+    const title = e.title ? this._esc(String(e.title)) : '';
+    const titleHtml = e.url
+      ? `<a href="${this._escAttr(String(e.url))}">${title}</a>` : title;
+    if (this._bibStyle === 'gbt7714') {
+      const parts = [];
+      if (e.authors) parts.push(this._esc(String(e.authors)));
+      if (titleHtml) parts.push(`${titleHtml}${titleHtml.endsWith('.') ? '' : '.'}`);
+      if (e.journal) parts.push(`${this._esc(String(e.journal))},`);
+      if (e.year !== undefined) parts.push(`${this._esc(String(e.year))}.`);
+      return parts.join(' ');
+    }
     const parts = [];
     if (e.authors) parts.push(this._esc(String(e.authors)));
     if (e.year !== undefined) parts.push(`(${this._esc(String(e.year))})`);
-    const title = e.title ? this._esc(String(e.title)) : '';
-    if (e.url) parts.push(`<a href="${this._escAttr(String(e.url))}">${title}</a>`);
-    else if (title) parts.push(title);
+    if (titleHtml) parts.push(titleHtml);
     if (e.journal) parts.push(this._esc(String(e.journal)));
     return parts.join(' ');
   }
@@ -906,6 +960,28 @@ class HTMLRenderer {
     if (this.pretty) this._write('\n');
   }
 
+  /** 定理环境：<div class="theorem {type}" id="label"> + 标题行（定理 N 标题）+ 内容 */
+  visit_Theorem(node) {
+    const ref = this._refs[node.label];
+    const num = ref ? ref.number : '';
+    const id = node.label ? ` id="${this._escAttr(node.label)}"` : '';
+    this._write(`<div class="theorem ${node.type}"${id}>`);
+    if (this.pretty) this._write('\n');
+    if (node.label || node.title.length) {
+      this._write(`<div class="theorem-label">${this._esc(THEOREM_PREFIX[node.type] || '定理')} ${num}`);
+      if (node.title.length) {
+        this._write(' ');
+        node.title.forEach(n => n.accept(this));
+      }
+      this._write('</div>');
+      if (this.pretty) this._write('\n');
+    }
+    node.content.forEach(n => n.accept(this));
+    if (this.pretty) this._write('\n');
+    this._write('</div>');
+    if (this.pretty) this._write('\n');
+  }
+
   /**
    * 公式：行内 <span class="math-inline">，块级 <div class="math">。
    * mathRenderer 选项存在时调用其渲染（返回 HTML 不转义），否则源码转义透传。
@@ -1108,6 +1184,24 @@ class HTMLRenderer {
     if (this.escapeHtml) return escapeAttr(text);
     return text;
   }
+}
+
+/**
+ * 对比两次 renderBlocks 的 blockHashes，返回内容变化的块（含 'footnotes'）。
+ * 宿主流程：编辑块 → 重渲全文档 → diffBlocks(旧, 新) → 只替换变化块的 DOM。
+ * @param {Object} oldHashes
+ * @param {Object} newHashes
+ * @returns {Array<number|string>} 变化块索引（数字），'footnotes' 表示脚注区变化
+ */
+export function diffBlocks(oldHashes, newHashes) {
+  const keys = new Set([...Object.keys(oldHashes || {}), ...Object.keys(newHashes || {})]);
+  return [...keys]
+    .filter((k) => (oldHashes || {})[k] !== (newHashes || {})[k])
+    .map((k) => (k === 'footnotes' ? k : Number(k)))
+    .sort((a, b) => {
+      if (typeof a === 'number' && typeof b === 'number') return a - b;
+      return String(a).localeCompare(String(b));
+    });
 }
 
 export { HTMLRenderer, escapeHTML, escapeAttr };

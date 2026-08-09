@@ -20,6 +20,7 @@ const _types = [
 
   // 行内元素
   'BOLD',
+  'BOLD_ITALIC',
   'ITALIC',
   'STRIKETHROUGH',
   'INLINE_CODE',

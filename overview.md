@@ -190,6 +190,7 @@ $$ x = 1 $$ {#eq:a}
 | 语法 | 输出 | 说明 |
 |---|---|---|
 | `**粗体**` / `__粗体__` | `<strong>` | |
+| `***粗斜体***` / `___粗斜体___` | `<strong><em>` | 粗体+斜体 |
 | `*斜体*` / `_斜体_` | `<em>` | |
 | `~~删除~~` | `<del>` | |
 | `~下标~` | `<sub>` | |
@@ -236,6 +237,7 @@ $$ x = 1 $$ {#eq:a}
 | 布尔 | `true` `false` |
 | 数组 | `["a", "b"]` |
 | 对象 | `{ key: "value", n: 1 }`（值可为表达式） |
+| 属性访问 | `obj.prop` `arr[0]` `a.b[0].c`（可链式；缺失返回 undefined） |
 | 变量 | `threshold`（由 `@let` 或 `variables` 选项提供） |
 | 函数调用 | `has_cite("doe2020")` `cite("doe2020")` |
 | 一元 | `!x` `-x` |
@@ -298,6 +300,19 @@ $$ x = 1 $$ {#eq:a}
 
 - 同名覆盖（后者生效）；可与 API `variables` 选项共存（文档内优先）
 - `@set` 参数、`@ref` 编号计算、渲染阶段均可引用变量
+
+```md
+@theorem("thm:1", "均值定理")      ← 类型：theorem/lemma/definition/remark/example
+
+设 f 连续，则存在 c 使 f(c) 等于均值。   ← 下一段落即定理内容（完整行内语法）
+
+由 @ref("thm:1") 可得               → 定理 1
+```
+
+→ `<div class="theorem theorem" id="thm:1"><div class="theorem-label">定理 1 均值定理</div>…</div>`
+
+- 编号共享序列（定理 1、引理 2、定义 3…），前缀按类型（定理/引理/定义/注记/例）
+- 内容限单段落；标记行无下一段时降级为普通段落
 
 ---
 
@@ -377,6 +392,7 @@ render(src, { citeStyle: 'author-year' });   // 或 @set({ citeStyle: "author-ye
 | `escapeHtml` | `true` | 转义正文特殊字符（属性值恒转义，不受此影响） |
 | `pretty` | `false` | 输出换行美化 |
 | `check` | `false` | 引用完整性检查：返回 `{ html, issues }`（见下） |
+| `bibStyle` | `'default'` | 文献表条目样式：`'default'` / `'gbt7714'`（近似 GB/T 7714 点分隔） |
 | `mathRenderer` | 内置 KaTeX | 公式渲染器 `(src, inline) => html` |
 | `mathFontsPath` | CDN | KaTeX 字体本地托管路径（`'fonts/'`） |
 | `codeRenderer` | 转义透传 | mermaid 渲染器 `(source, language) => html` |
@@ -455,22 +471,29 @@ const html = render(['引言.md', '方法.md', '参考文献.md'], { data: {...}
 用于块级编辑器（类 Notion）：只更新变化的块 DOM。
 
 ```javascript
-import { render, Parser } from 'mslang';
+import { render, Parser, diffBlocks, HTMLRenderer } from 'mslang';
 
 const { html, blockHashes } = render(source, { blocks: true });
 // html: 含 <!--mslang:N--> 块哨兵（脚注区为 <!--mslang:footnotes-->）
 // blockHashes[N] = 块源 + 编号前缀快照哈希
 
-// 宿主侧流程（编辑块 i 后）：
-//   1. 用 Parser.parseText(source) 拿块区间：blocks[i].startPos / endPos / raw（块源文本）
-//   2. 替换 source 中 [startPos, endPos) 区间
-//   3. 重新 render(source, { blocks: true })（parse 微秒级；公式/代码命中缓存）
-//   4. 对比新旧 blockHashes，只 DOM 替换哈希变化的块区间
+// 编辑块 i 后的宿主侧闭环：
+//   1. 替换 source 中 [startPos, endPos) 区间（Parser.parseText(source).blocks[i]）
+//   2. 重渲全文档 render(source, { blocks: true })（parse 微秒级；公式/代码命中缓存）
+//   3. diffBlocks(oldHashes, newHashes) → 变化块索引数组（含 'footnotes'）
+//   4. 单块重渲 renderer.renderBlock(source, i) → 只替换该块 DOM
+const renderer = new HTMLRenderer();
+const changed = diffBlocks(beforeHashes, afterHashes);
+for (const i of changed.filter(x => typeof x === 'number')) {
+  const blockHtml = renderer.renderBlock(source, i);
+  // 替换 <div data-block="i"> 内容
+}
 ```
 
 - 块区间连续覆盖文档源；caption 归并行并入前块；脚注定义行不属于任何块（截断）
-- 编号依赖自动传播：块 i 加图 → 块 i..N 的哈希全变（哈希含编号前缀快照 fig/tbl/sec/eq/cite/term 计数）
+- 编号依赖自动传播：块 i 加图 → 块 i..N 的哈希全变（哈希含编号前缀快照 fig/tbl/sec/eq/cite/term/thm 计数）
 - 纯文本编辑只影响 1 块；默认 `render` 无哨兵（零回归）
+- 代码高亮语言：`javascript typescript python java c cpp go rust bash json sql xml css markdown kotlin swift ruby php perl yaml dockerfile diff`
 
 ---
 
