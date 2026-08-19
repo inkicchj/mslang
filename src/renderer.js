@@ -389,15 +389,6 @@ class HTMLRenderer {
   }
 
   /**
-   * 将 issues 转为面向 LLM 的自查文本（喂回模型定位修复用）。
-   * @param {Array<{type: string, key: string, count: number, block?: number}>} issues
-   * @returns {string}
-   */
-  llmReport(issues) {
-    return llmReport(issues);
-  }
-
-  /**
    * 文献键编号：首次出现分配顺序号（_collectRefs 预收集与运行时 cite 共用）。
    * @param {string} key
    */
