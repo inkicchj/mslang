@@ -14,7 +14,8 @@ import {
 } from './nodes.js';
 
 import { Lexer } from './lexer.js';
-import { Parser, mergeDocuments, parseInlineFragment } from './parser.js';
+import { Parser, mergeDocuments } from './parser.js';
+import { parseInlineFragment } from './parse-utils.js';
 import { evaluate } from './expression.js';
 import { builtinFunctions } from './builtin.js';
 import { escapeHTML, escapeAttr } from './escape.js';

@@ -5,10 +5,9 @@
  */
 
 import { Lexer } from './lexer.js';
-import { Parser } from './parser.js';
-import { normalizeDocument, normalizeFootnotes } from './normalize.js';
+import { Parser, finalizeDocument } from './parser.js';
 import { RuntimeContext } from './runtime.js';
-import { SemanticAnalyzer, checkIntegrity, eachBlocksInline } from './semantic.js';
+import { SemanticAnalyzer, eachBlocksInline } from './semantic.js';
 import { expandIncludes } from './include.js';
 import { FunctionCall } from './nodes.js';
 
@@ -32,12 +31,15 @@ export function prepare(source, options = {}) {
   const run = (effectiveSource) => {
     let document;
     if (typeof effectiveSource === 'string') {
-      document = new Parser().parse(new Lexer(effectiveSource).tokenize(), effectiveSource);
+      // 唯一管线：Raw 解析 → 单次 normalize/区间/脚注收尾（与其他入口共享 finalizeDocument）
+      const parser = new Parser();
+      document = finalizeDocument(
+        parser.parseRaw(new Lexer(effectiveSource).tokenize(), effectiveSource),
+        effectiveSource, parser._footnoteDefs, parser._footnoteDefPositions,
+      );
     } else {
       document = effectiveSource;
     }
-    normalizeDocument(document);
-    if (document.footnotes) normalizeFootnotes(document);
     const runtime = new RuntimeContext({
       functions: options.functions,
       escapeHtml: options.escapeHtml,

@@ -10,7 +10,7 @@
 import {
   Paragraph, FunctionCall, LineBreak, RawText, Theorem, PartBlock, FootnoteRef,
 } from './nodes.js';
-import { parseInlineFragment } from './parser.js';
+import { parseInlineFragment } from './parse-utils.js';
 import { walkNodes } from './ast-utils.js';
 
 // 定理环境类型（@theorem/@lemma/@definition/@remark/@example 标记行）

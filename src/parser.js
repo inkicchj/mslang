@@ -66,11 +66,11 @@ class Parser {
   // ================================================================
 
   /**
-   * 将 Token 列表解析为 Document AST
+   * 将 Token 列表解析为 Raw AST（无结构归并，不执行语义）。
    * @param {import('./tokens.js').Token[]} tokens
    * @returns {Document}
    */
-  parse(tokens, source = '') {
+  parseRaw(tokens, source = '') {
     this._tokens = tokens;
     this._pos = 0;
     this._footnoteDefs = {};
@@ -104,32 +104,34 @@ class Parser {
       document.blocks.push(block);
     }
 
-    // 结构归并（Raw AST → Stable AST）：定理环境 + @part 区间
-    // （在块区间计算前执行，标记块保留 startPos 覆盖多块区间）
-    normalizeDocument(document);
-
-    // 块源区间：[startPos, 下一块 startPos)，末块到文档末尾（caption 归并行自然落入前块区间）
-    // 脚注定义行不属于任何块：区间截断到其后的第一个脚注定义位置
-    for (let i = 0; i < document.blocks.length; i++) {
-      const b = document.blocks[i];
-      let end = i + 1 < document.blocks.length ? document.blocks[i + 1].startPos : source.length;
-      for (const p of this._footnoteDefPositions) {
-        if (p >= b.startPos && p < end) { end = p; break; }
-      }
-      b.endPos = end;
-      if (source) b.raw = source.slice(b.startPos, b.endPos);
-    }
-
-    if (Object.keys(this._footnoteDefs).length > 0) {
-      document.footnotes = { ...this._footnoteDefs };
-      normalizeFootnotes(document);
-    }
-
+    // 块源区间与脚注归并移到 finalizeDocument（Raw AST 阶段不执行语义）
     return document;
   }
 
   /**
-   * 直接解析原始文本（内部调用 Lexer）
+   * 将 Token 列表解析为 Stable AST（兼容层：Raw + 结构归并 + 区间 + 脚注编号）。
+   * @param {import('./tokens.js').Token[]} tokens
+   * @param {string} [source]
+   * @returns {Document}
+   */
+  parse(tokens, source = '') {
+    const document = this.parseRaw(tokens, source);
+    return finalizeDocument(document, source, this._footnoteDefs, this._footnoteDefPositions);
+  }
+
+  /**
+   * 直接解析原始文本为 Raw AST（不执行结构归并/语义）。
+   * @param {string} source
+   * @returns {Document}
+   */
+  parseTextRaw(source) {
+    const lexer = new Lexer(source);
+    const tokens = lexer.tokenize();
+    return this.parseRaw(tokens, source);
+  }
+
+  /**
+   * 直接解析原始文本为 Stable AST（兼容层：Raw + 结构归并 + 区间 + 脚注编号）。
    * @param {string} source
    * @returns {Document}
    */
@@ -453,9 +455,9 @@ class Parser {
             cells = cells.slice(0, -1);
           }
         }
-        headers.push(...cells.map(parseInlineFragment));
+        headers.push(...cells.map((c) => this._fragment(c)));
       } else {
-        rows.push(cells.map(parseInlineFragment));
+        rows.push(cells.map((c) => this._fragment(c)));
       }
 
       if (this._current() && this._current().type === TokenType.LINE_BREAK) this._advance();
@@ -464,12 +466,18 @@ class Parser {
     return new Table(headers, rows, label);
   }
 
+  /** 短文本 → 行内节点（表格单元格用；独立 Parser Raw，不做语义） */
+  _fragment(text) {
+    const parser = new Parser();
+    const doc = parser.parseRaw(new Lexer(text).tokenize(), text);
+    return doc.blocks.flatMap((b) => b.content || []);
+  }
+
   /**
    * 查找 caption 的归并目标：前一 block 是 label 匹配的表格，
    * 或仅含单个 label 匹配图片的段落（图片需单独成段）。
    */
-  _captionTarget(prev, label) {
-    if (!prev) return null;
+  _captionTarget(prev, label) {    if (!prev) return null;
     if (prev instanceof Table && prev.label === label) return prev;
     if (prev instanceof CodeBlock && prev.label === label) return prev;
     if (prev instanceof Equation && prev.label === label) return prev;
@@ -897,13 +905,33 @@ function dumpAST(node, indent = 0, prefix = '', isLast = true) {
 export { Parser, ParserError, dumpAST, mergeDocuments };
 
 /**
- * 将短文本解析为行内节点数组（表格单元格 / 宏展开等共用，独立 Parser 实例）。
- * @param {string} text
- * @returns {InlineNode[]}
+ * Stable AST 收尾（parser.parse / prepare 共用，单次执行）：
+ * 结构归并（定理/@part）→ 块源区间（startPos/endPos/raw）→ 脚注字典与编号。
+ * @param {Document} document
+ * @param {string} source
+ * @param {Object} [footnoteDefs] - parser 主循环收集的脚注定义
+ * @param {number[]} [footnoteDefPositions]
+ * @returns {Document}
  */
-export function parseInlineFragment(text) {
-  const doc = new Parser().parse(new Lexer(text).tokenize(), text);
-  return doc.blocks.flatMap(b => b.content || []);
+export function finalizeDocument(document, source, footnoteDefs = {}, footnoteDefPositions = []) {
+  // 结构归并（Raw AST → Stable AST）：定理环境 + @part 区间
+  normalizeDocument(document);
+  // 块源区间：[startPos, 下一块 startPos)，末块到文档末尾（caption 归并行自然落入前块区间）
+  // 脚注定义行不属于任何块：区间截断到其后的第一个脚注定义位置
+  for (let i = 0; i < document.blocks.length; i++) {
+    const b = document.blocks[i];
+    let end = i + 1 < document.blocks.length ? document.blocks[i + 1].startPos : source.length;
+    for (const p of footnoteDefPositions) {
+      if (p >= b.startPos && p < end) { end = p; break; }
+    }
+    b.endPos = end;
+    if (source) b.raw = source.slice(b.startPos, b.endPos);
+  }
+  if (Object.keys(footnoteDefs).length > 0) {
+    document.footnotes = { ...footnoteDefs };
+    normalizeFootnotes(document);
+  }
+  return document;
 }
 
 /**
