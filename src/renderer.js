@@ -54,14 +54,34 @@ const HLJS_LANGUAGES = {
 };
 for (const [name, lang] of Object.entries(HLJS_LANGUAGES)) hljs.registerLanguage(name, lang);
 
-// URL 白名单（安全边界）：http/https/mailto/ftp、锚点(#)、相对路径；
-// data: 仅允许 image（页内图片数据）；javascript:/其它 data: 拒绝（输出空 href/src）
-function safeUrl(url) {
-  const u = String(url == null ? '' : url).trim();
-  if (!u) return '';
-  if (/^javascript:/i.test(u)) return '';
-  if (/^data:/i.test(u) && !/^data:image\//i.test(u)) return '';
-  return u;
+// URL 白名单（allowlist，mslang 0.2.1）：链接与图片分开规则。
+// 链接：相对路径（#、/、./、../）或 http/https/mailto/ftp；
+// 图片：相对路径、data:image/、blob:、http/https。
+// 未命中白名单的协议（javascript:/data: 非图片等）拒绝（输出空 href/src）。
+function safeLinkUrl(value) {
+  const url = String(value == null ? '' : value).trim();
+  if (!url) return '';
+  if (url.startsWith('#') || url.startsWith('/') || url.startsWith('./') || url.startsWith('../')) {
+    return url;
+  }
+  try {
+    const parsed = new URL(url);
+    if (['http:', 'https:', 'mailto:', 'ftp:'].includes(parsed.protocol)) return url;
+  } catch { /* 无法解析即拒绝 */ }
+  return '';
+}
+
+function safeImageUrl(value) {
+  const url = String(value == null ? '' : value).trim();
+  if (!url) return '';
+  if (url.startsWith('/') || url.startsWith('./') || url.startsWith('../')) return url;
+  if (/^data:image\//i.test(url)) return url;
+  if (/^blob:/i.test(url)) return url;
+  try {
+    const parsed = new URL(url);
+    if (['http:', 'https:'].includes(parsed.protocol)) return url;
+  } catch { /* 无法解析即拒绝 */ }
+  return '';
 }
 
 // 宏展开递归深度上限（@use 模板内嵌 @use 的自引用防护）
@@ -391,7 +411,7 @@ class HTMLRenderer {
     const e = entry || {};
     const title = e.title ? this._esc(String(e.title)) : '';
     const titleHtml = e.url
-      ? `<a href="${this._escAttr(safeUrl(e.url))}">${title}</a>` : title;
+      ? `<a href="${this._escAttr(safeLinkUrl(e.url))}">${title}</a>` : title;
     if (this._bibStyle === 'gbt7714') {
       const parts = [];
       if (e.authors) parts.push(this._esc(String(e.authors)));
@@ -520,7 +540,7 @@ class HTMLRenderer {
     const num = ref ? ref.number : '';
     const id = image.label ? ` id="${this._escAttr(image.label)}"` : '';
     const width = image.width ? ` width="${image.width}"` : '';
-    const img = `<img src="${this._escAttr(safeUrl(image.url))}" alt="${this._escAttr(image.alt)}"${width} referrerpolicy="no-referrer">`;
+    const img = `<img src="${this._escAttr(safeImageUrl(image.url))}" alt="${this._escAttr(image.alt)}"${width} referrerpolicy="no-referrer">`;
     this._writeFigure(id, img, image.caption, this._captionPrefix.fig, num);
   }
 
@@ -744,14 +764,14 @@ class HTMLRenderer {
   }
 
   visit_Link(node) {
-    this._write(`<a href="${this._escAttr(safeUrl(node.url))}">${this._esc(node.text)}</a>`);
+    this._write(`<a href="${this._escAttr(safeLinkUrl(node.url))}">${this._esc(node.text)}</a>`);
   }
 
   visit_Image(node) {
     const w = node.width ? ` width="${node.width}"` : '';
     const id = node.label ? ` id="${this._escAttr(node.label)}"` : '';
     // referrerpolicy="no-referrer": 绕过源站 Referer 防盗链
-    this._write(`<img src="${this._escAttr(safeUrl(node.url))}" alt="${this._escAttr(node.alt)}"${w}${id} referrerpolicy="no-referrer">`);
+    this._write(`<img src="${this._escAttr(safeImageUrl(node.url))}" alt="${this._escAttr(node.alt)}"${w}${id} referrerpolicy="no-referrer">`);
   }
 
   visit_FunctionCall(node) {

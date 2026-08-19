@@ -173,9 +173,12 @@ test('安全边界：URL scheme 白名单 + 宏递归深度', () => {
   assert.ok(!render('[x](javascript:alert(1))').includes('href="javascript:'));
   assert.ok(!render('![x](javascript:alert(1))').includes('src="javascript:'));
   assert.ok(!render('[x](data:text/html;base64,ABC)').includes('data:text/html'));
-  // 合法链接保留
+  // 合法链接保留（http/https/mailto/ftp/相对路径/锚点/图片 blob/data:image）
   assert.match(render('[官网](https://example.com/a)'), /href="https:\/\/example.com\/a"/);
+  assert.match(render('[邮箱](mailto:a@b.c)'), /href="mailto:a@b\.c"/);
+  assert.match(render('[相对](./x.md)'), /href="\.\/x\.md"/);
   assert.match(render('![图](data:image/png;base64,AAAA)'), /src="data:image\/png/);
+  assert.match(render('[主站](/home)'), /href="\/home"/);
   // 宏递归超限（自引用宏）
   const r = render('@define("loop", "@use(\\"loop\\")")\n\n@use("loop")', { allowPlugins: false });
   assert.match(r, /宏递归超限/);
