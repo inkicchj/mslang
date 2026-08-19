@@ -79,7 +79,7 @@ export function builtinFunctions(renderer) {
 
     /** 文档内配置：@set({ headingNumbering: '1.1', ... })，无输出 */
     set: (config) => {
-      if (config && typeof config === 'object') renderer._mergeSet(config);
+      if (config && typeof config === 'object') renderer.runtime.applySetConfig(config);
       return '';
     },
 
@@ -98,7 +98,7 @@ export function builtinFunctions(renderer) {
 
     /** 插件注册：@plugin("name", "(args, kwargs) => ...")，无输出；文档内定义可复用函数（new Function 全局作用域） */
     plugin: (name, body) => {
-      if (typeof name === 'string' && typeof body === 'string') renderer._registerPlugin(name, body);
+      if (typeof name === 'string' && typeof body === 'string') renderer.runtime.registerPlugin(name, body);
       return '';
     },
 

@@ -18,6 +18,7 @@ import { Parser, mergeDocuments, parseInlineFragment } from './parser.js';
 import { evaluate } from './expression.js';
 import { builtinFunctions, extractHeadingNumber } from './builtin.js';
 import { escapeHTML, escapeAttr } from './escape.js';
+import { RuntimeContext, SET_KEYS, DEFAULT_CAPTION_PREFIX, DEFAULT_KEY_ATTRS, mergeCaptionPrefix } from './runtime.js';
 import katex from 'katex';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
@@ -64,16 +65,6 @@ function cacheSet(map, key, value) {
   return value;
 }
 
-// @set 白名单中"简单字符串选项"：key → 实例字段与默认值（_mergeSet 数据驱动用）
-const SET_STRING_KEYS = {
-  refNumbering: { field: '_refNumbering', def: '' },
-  citeStyle: { field: '_citeStyle', def: 'numeric' },
-  bibStyle: { field: '_bibStyle', def: 'default' },
-  citeKeyAttr: { field: '_citeKeyAttr', def: '' },
-  termKeyAttr: { field: '_termKeyAttr', def: '' },
-  refKeyAttr: { field: '_refKeyAttr', def: '' },
-};
-
 // 块哈希：djb2（块源 + 编号前缀快照 → 定位变化块，供块级编辑 DOM patch）
 function djb2(str) {
   let h = 5381;
@@ -119,13 +110,35 @@ class HTMLRenderer {
    * @param {Object<string, Function>} [opts.functions] - 自定义函数（覆盖同名内置函数）
    */
   constructor(opts = {}) {
-    this.pretty = opts.pretty !== false;
-    this.escapeHtml = opts.escapeHtml !== false;
-    this._data = {};
-    this._variables = {};
-    this._functions = { ...builtinFunctions(this), ...(opts.functions || {}) };
+    this.runtime = new RuntimeContext({
+      functions: opts.functions,
+      escapeHtml: opts.escapeHtml,
+      pretty: opts.pretty,
+    });
+    this.runtime.resetHost(opts);
+    // builtin 闭包依赖 renderer（_esc/_escAttr/语义状态），构造完成后注入 runtime
+    this.runtime.functions = { ...builtinFunctions(this), ...(opts.functions || {}) };
     this._output = [];
   }
+
+  // 配置视图：渲染/内置函数统一经 getter 读 runtime（单一配置源，@set 即时生效）
+  get escapeHtml() { return this.runtime.escapeHtml; }
+  get pretty() { return this.runtime.pretty; }
+  get _allowPlugins() { return this.runtime.allowPlugins; }
+  get _headingNumbering() { return this.runtime.headingNumbering; }
+  get _refNumbering() { return this.runtime.refNumbering; }
+  get _captionPrefix() { return this.runtime.captionPrefix; }
+  get _citeKeyAttr() { return this.runtime.citeKeyAttr; }
+  get _termKeyAttr() { return this.runtime.termKeyAttr; }
+  get _refKeyAttr() { return this.runtime.refKeyAttr; }
+  get _citeStyle() { return this.runtime.citeStyle; }
+  get _bibStyle() { return this.runtime.bibStyle; }
+  get _data() { return this.runtime.data; }
+  get _variables() { return this.runtime.variables; }
+  get _macros() { return this.runtime.macros; }
+  get _functions() { return this.runtime.functions; }
+  get _pluginCache() { return this.runtime.pluginCache; }
+  get _evalCtx() { return this.runtime.evalCtx; }
 
   /**
    * 注册自定义函数
@@ -133,7 +146,7 @@ class HTMLRenderer {
    * @param {Function} func
    */
   addFunction(name, func) {
-    this._functions[name] = func;
+    this.runtime.functions[name] = func;
   }
 
   /**
@@ -260,52 +273,30 @@ class HTMLRenderer {
     return doc;
   }
 
-  /** 应用渲染选项（render / renderAsync 共用） */
+  /** 应用渲染选项（render / renderAsync 共用）：runtime 配置重置 + 渲染专用字段 */
   _applyOpts(opts) {
     const {
-      data = {},
-      variables = {},
-      headingNumbering = '',
-      refNumbering = '',
       captionPrefix = {},
-      citeKeyAttr = HTMLRenderer.DEFAULT_KEY_ATTRS.citeKeyAttr,
-      termKeyAttr = HTMLRenderer.DEFAULT_KEY_ATTRS.termKeyAttr,
-      refKeyAttr = HTMLRenderer.DEFAULT_KEY_ATTRS.refKeyAttr,
       mathRenderer = null,
       mathFontsPath = '',
       codeRenderer = null,
-      citeStyle = 'numeric',
-      bibStyle = 'default',
-      allowPlugins = true,
       blockMarkers = false,
     } = opts;
-    this._data = data || {};
-    this._variables = variables || {};
-    this._macros = {};
-    this._headingNumbering = headingNumbering === true ? '1.1' : (headingNumbering || '');
-    this._refNumbering = refNumbering || '';
-    this._captionPrefix = HTMLRenderer._mergeCaptionPrefix(HTMLRenderer.DEFAULT_CAPTION_PREFIX, captionPrefix);
-    this._citeKeyAttr = citeKeyAttr || '';
-    this._termKeyAttr = termKeyAttr || '';
-    this._refKeyAttr = refKeyAttr || '';
-    // mathRenderer 默认使用内置 KaTeX 渲染（可传选项覆盖）
+    // 执行环境配置（变量/数据/文档配置链）整体重置：host > @set > defaults
+    this.runtime.resetHost({ ...opts, captionPrefix: mergeCaptionPrefix(DEFAULT_CAPTION_PREFIX, captionPrefix) });
+    // 渲染专用字段（每次渲染重置）
     this._mathRenderer = mathRenderer || ((src, inline) =>
       katex.renderToString(src, { displayMode: !inline, throwOnError: false }));
     this._mathFontsPath = mathFontsPath || '';
     this._codeRenderer = codeRenderer || null;
-    this._citeStyle = citeStyle || 'numeric';
-    this._bibStyle = bibStyle || 'default';
-    this._allowPlugins = allowPlugins !== false;
     this._blockMarkers = blockMarkers === true;
     this._blockHashes = {};
-    this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
     this._hasMath = false;
     this._mathRendererCustom = !!mathRenderer;
     this._termOrder = [];
     this._hasHighlight = false;
-    this._pluginCache = new Map();
   }
 
   /** 解析输入为 Document（render / renderAsync 共用）；Document 输入直接使用（无源区间） */
@@ -328,27 +319,11 @@ class HTMLRenderer {
   // 文档内配置（@set）
   // ================================================================
 
-  // @set 白名单：仅这些键可被文档内配置覆盖
-  static SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables', 'terms', 'bibliography', 'captionPrefix', 'citeKeyAttr', 'termKeyAttr', 'refKeyAttr', 'citeStyle', 'allowPlugins', 'bibStyle'];
-
-  // 引用/术语 data 属性名（工作台交互定位用；空串关闭）
-  static DEFAULT_KEY_ATTRS = { citeKeyAttr: 'data-cite-key', termKeyAttr: 'data-term-key', refKeyAttr: 'data-ref-label' };
-
-  // caption 前缀（默认中文，可用 @set 覆盖；thm 按定理类型细分）
-  static DEFAULT_CAPTION_PREFIX = {
-    fig: '图', tbl: '表', eq: '式',
-    thm: { theorem: '定理', lemma: '引理', definition: '定义', remark: '注记', example: '例' },
-  };
-
-  /** 深合并 captionPrefix（thm 为嵌套对象，避免浅合并整体覆盖） */
-  static _mergeCaptionPrefix(base, incoming) {
-    const cp = incoming || {};
-    return {
-      ...base,
-      ...cp,
-      thm: { ...(base.thm || {}), ...(cp.thm || {}) },
-    };
-  }
+  // @set 白名单 / 默认常量（定义于 runtime.js，此处别名兼容内部/外部引用）
+  static SET_KEYS = SET_KEYS;
+  static DEFAULT_KEY_ATTRS = DEFAULT_KEY_ATTRS;
+  static DEFAULT_CAPTION_PREFIX = DEFAULT_CAPTION_PREFIX;
+  static _mergeCaptionPrefix = mergeCaptionPrefix;
 
   /**
    * 预扫描文档顶层的 @set({...}) 调用并应用配置。
@@ -389,131 +364,16 @@ class HTMLRenderer {
     }
   }
 
+  /** 预扫描应用文档配置/变量/宏（委托 runtime；@set/@let/@plugin/@define 块级顶层调用） */
   _applySets(doc) {
     this._eachBlocksInline(doc.blocks, (n) => {
-      if (n instanceof FunctionCall && n.name === 'set') this._applySet(n);
-      else if (n instanceof FunctionCall && n.name === 'let') this._applyLet(n);
-      else if (n instanceof FunctionCall && n.name === 'plugin') this._applyPlugin(n);
-      else if (n instanceof FunctionCall && n.name === 'define') this._applyDefine(n);
+      if (n instanceof FunctionCall) {
+        if (n.name === 'set') this.runtime.applySet(n);
+        else if (n.name === 'let') this.runtime.applyLet(n);
+        else if (n.name === 'plugin') this.runtime.applyPlugin(n);
+        else if (n.name === 'define') this.runtime.applyDefine(n);
+      }
     });
-  }
-
-  _applySet(node) {
-    if (node.error || !node.args[0]) return;
-    try {
-      const config = evaluate(node.args[0], this._evalCtx);
-      if (config && typeof config === 'object') this._mergeSet(config);
-    } catch (e) {
-      // 配置求值失败时忽略，渲染阶段由 set 函数输出错误注释
-    }
-  }
-
-  /**
-   * 预扫描注册 @let 声明的变量（与 _applySet 同步执行），
-   * 使变量全文档可见：@set 参数、@ref 编号计算、渲染阶段均可引用。
-   * 求值失败时忽略，渲染阶段由 let 函数输出错误注释。
-   */
-  _applyLet(node) {
-    if (node.error || node.args.length < 2) return;
-    try {
-      const name = evaluate(node.args[0], this._evalCtx);
-      const value = evaluate(node.args[1], this._evalCtx);
-      if (typeof name === 'string') this._variables[name] = value;
-    } catch (e) {
-      // 变量求值失败时忽略（如依赖后文变量），渲染阶段按文档顺序再次尝试
-    }
-  }
-
-  /**
-   * 预扫描注册 @plugin 声明的函数（与 @set/@let 同步执行）。
-   * 编译失败/未开启时忽略，渲染阶段由函数调用输出错误注释。
-   */
-  _applyPlugin(node) {
-    if (node.error || node.args.length < 2) return;
-    try {
-      const name = evaluate(node.args[0], this._evalCtx);
-      const body = evaluate(node.args[1], this._evalCtx);
-      if (typeof name === 'string' && typeof body === 'string') this._registerPlugin(name, body);
-    } catch (e) {
-      // 求值失败忽略（如参数非字面量）
-    }
-  }
-
-  /**
-   * 预扫描注册 @define 声明的宏（与 @set/@let/@plugin 同步执行）。
-   * 模板为含 {key} 占位符的 mslang 行内片段，渲染时 @use 展开并二次解析。
-   */
-  _applyDefine(node) {
-    if (node.error || node.args.length < 2) return;
-    try {
-      const name = evaluate(node.args[0], this._evalCtx);
-      const template = evaluate(node.args[1], this._evalCtx);
-      if (typeof name === 'string' && typeof template === 'string') {
-        this._macros[name] = template;
-      }
-    } catch (e) {
-      // 求值失败忽略（如参数非字面量），渲染阶段由 use 输出错误注释
-    }
-  }
-
-  /**
-   * 插件编译注册：new Function 编译函数表达式（全局作用域，签名与内置一致 ...args, kwargs）。
-   * 同 body 编译缓存；allowPlugins 关闭时不注册。
-   */
-  _registerPlugin(name, body) {
-    if (!this._allowPlugins) return;
-    let fn = this._pluginCache.get(body);
-    if (fn === undefined) {
-      try {
-        fn = new Function(`return (${body});`)();
-      } catch (e) {
-        fn = null; // 编译失败：调用时输出错误注释
-      }
-      this._pluginCache.set(body, fn);
-    }
-    if (typeof fn === 'function') this._functions[name] = fn;
-  }
-
-  /** 白名单合并：@set 覆盖同名选项；terms/bibliography 增量合并（可多次设置） */
-  _mergeSet(config) {
-    for (const key of HTMLRenderer.SET_KEYS) {
-      if (!(key in config)) continue;
-      const v = config[key];
-      if (key === 'data' || key === 'terms' || key === 'bibliography') {
-        // data 深合并；terms/bibliography 为 data 内联快捷（等价）
-        this._data = this._mergeData(this._data, key === 'data' ? v : { [key]: v });
-      } else if (key === 'variables') {
-        // 就地合并（不替换对象）：保持 _evalCtx.variables 引用有效
-        Object.assign(this._variables, v || {});
-      } else if (key === 'captionPrefix') {
-        this._captionPrefix = HTMLRenderer._mergeCaptionPrefix(this._captionPrefix, v);
-      } else if (key === 'allowPlugins') {
-        this._allowPlugins = v !== false;
-      } else if (key === 'headingNumbering') {
-        this._headingNumbering = v === true ? '1.1' : (v || '');
-      } else if (key in SET_STRING_KEYS) {
-        const { field, def } = SET_STRING_KEYS[key];
-        this[field] = v || def;
-      } else {
-        // escapeHtml / pretty（布尔开关，直接赋实例属性）
-        this[key] = v;
-      }
-    }
-  }
-
-  /** 数据合并：一层深合并（terms/bibliography 按 key 合并），其余键整体替换 */
-  _mergeData(existing, incoming) {
-    if (!incoming || typeof incoming !== 'object') return existing;
-    const out = { ...existing };
-    for (const [k, v] of Object.entries(incoming)) {
-      const isPlainObj = v && typeof v === 'object' && !Array.isArray(v);
-      if (isPlainObj && out[k] && typeof out[k] === 'object' && !Array.isArray(out[k])) {
-        out[k] = { ...out[k], ...v };
-      } else {
-        out[k] = v;
-      }
-    }
-    return out;
   }
 
   // ================================================================
