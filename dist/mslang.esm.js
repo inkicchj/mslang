@@ -27754,12 +27754,31 @@ var HLJS_LANGUAGES = {
   diff
 };
 for (const [name, lang] of Object.entries(HLJS_LANGUAGES)) core_default.registerLanguage(name, lang);
-function safeUrl(url) {
-  const u = String(url == null ? "" : url).trim();
-  if (!u) return "";
-  if (/^javascript:/i.test(u)) return "";
-  if (/^data:/i.test(u) && !/^data:image\//i.test(u)) return "";
-  return u;
+function safeLinkUrl(value) {
+  const url = String(value == null ? "" : value).trim();
+  if (!url) return "";
+  if (url.startsWith("#") || url.startsWith("/") || url.startsWith("./") || url.startsWith("../")) {
+    return url;
+  }
+  try {
+    const parsed = new URL(url);
+    if (["http:", "https:", "mailto:", "ftp:"].includes(parsed.protocol)) return url;
+  } catch {
+  }
+  return "";
+}
+function safeImageUrl(value) {
+  const url = String(value == null ? "" : value).trim();
+  if (!url) return "";
+  if (url.startsWith("/") || url.startsWith("./") || url.startsWith("../")) return url;
+  if (/^data:image\//i.test(url)) return url;
+  if (/^blob:/i.test(url)) return url;
+  try {
+    const parsed = new URL(url);
+    if (["http:", "https:"].includes(parsed.protocol)) return url;
+  } catch {
+  }
+  return "";
 }
 var MAX_MACRO_DEPTH = 32;
 var MATH_CACHE = /* @__PURE__ */ new Map();
@@ -28069,7 +28088,7 @@ ${body}
     if (typeof entry === "string") return this._esc(entry);
     const e = entry || {};
     const title = e.title ? this._esc(String(e.title)) : "";
-    const titleHtml = e.url ? `<a href="${this._escAttr(safeUrl(e.url))}">${title}</a>` : title;
+    const titleHtml = e.url ? `<a href="${this._escAttr(safeLinkUrl(e.url))}">${title}</a>` : title;
     if (this._bibStyle === "gbt7714") {
       const parts2 = [];
       if (e.authors) parts2.push(this._esc(String(e.authors)));
@@ -28185,7 +28204,7 @@ ${body}
     const num = ref ? ref.number : "";
     const id = image.label ? ` id="${this._escAttr(image.label)}"` : "";
     const width = image.width ? ` width="${image.width}"` : "";
-    const img = `<img src="${this._escAttr(safeUrl(image.url))}" alt="${this._escAttr(image.alt)}"${width} referrerpolicy="no-referrer">`;
+    const img = `<img src="${this._escAttr(safeImageUrl(image.url))}" alt="${this._escAttr(image.alt)}"${width} referrerpolicy="no-referrer">`;
     this._writeFigure(id, img, image.caption, this._captionPrefix.fig, num);
   }
   visit_CodeBlock(node) {
@@ -28396,12 +28415,12 @@ ${body}
     this._write(`<code>${this._esc(node.code)}</code>`);
   }
   visit_Link(node) {
-    this._write(`<a href="${this._escAttr(safeUrl(node.url))}">${this._esc(node.text)}</a>`);
+    this._write(`<a href="${this._escAttr(safeLinkUrl(node.url))}">${this._esc(node.text)}</a>`);
   }
   visit_Image(node) {
     const w = node.width ? ` width="${node.width}"` : "";
     const id = node.label ? ` id="${this._escAttr(node.label)}"` : "";
-    this._write(`<img src="${this._escAttr(safeUrl(node.url))}" alt="${this._escAttr(node.alt)}"${w}${id} referrerpolicy="no-referrer">`);
+    this._write(`<img src="${this._escAttr(safeImageUrl(node.url))}" alt="${this._escAttr(node.alt)}"${w}${id} referrerpolicy="no-referrer">`);
   }
   visit_FunctionCall(node) {
     if (node.error) {
@@ -28721,4 +28740,4 @@ export {
   renderAsync,
   toJSON
 };
-/*! built: 2026-08-19T18:28:23.003Z */
+/*! built: 2026-08-19T18:36:26.803Z */

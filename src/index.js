@@ -1,8 +1,9 @@
 /**
- * mslang-js — A Lightweight Markup Language (JavaScript)
+ * mslang — A Lightweight Academic Markup Language (JavaScript)
  *
- * 类似于 Markdown 的轻量级排版语言：词法解析 (Lexer) → 语法解析 (Parser) → 渲染 (Renderer)。
- * 主要在前端使用，唯一入口 render()，async/多文档合并/块级渲染均为配置项。
+ * 面向论文写作与 AI 文献工作台的轻量级标记语言。
+ * 管线：Source → Include → Lexer → Parser(Raw) → Normalize → Runtime → Semantic → Render。
+ * 唯一管线 prepare()：render / renderAsync / parse / analyze 全部经它（语义一致）。
  *
  * 使用:
  *
@@ -19,11 +20,13 @@
  *   const { html, blockHashes } = render(src, { blocks: true });
  *
  *   // 异步渲染（自定义函数返回 Promise，如网络请求）
- *   const htmlAsync = await render(src, { async: true });
+ *   const htmlAsync = await renderAsync(src, { functions: { f: async () => '...' } });
  *
- *   // 解析为 AST（块级编辑需要块区间 startPos/endPos/raw 时使用）
- *   const parser = new Parser();
- *   const ast = parser.parseText('# Hello **World**');
+ *   // 解析为 Stable AST（块级编辑需要块区间 startPos/endPos/raw 时使用）
+ *   const doc = parse(source);
+ *
+ *   // 语义分析（不渲染）：结构 + 编号/引用 + 诊断
+ *   const { document, semantic, diagnostics } = analyze(source);
  */
 
 import { Parser, dumpAST, mergeDocuments, toJSON } from './parser.js';

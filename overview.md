@@ -289,7 +289,7 @@ $$ x = 1 $$ {#eq:a}
 @set({ termKeyAttr: "data-term-id" })
 @set({ refKeyAttr: "data-target" })
 @set({ citeStyle: "author-year" })                     # 引用样式
-@set({ allowPlugins: false })                          # 关闭插件
+@set({ allowPlugins: false })                          # 无效：allowPlugins 默认关闭且由宿主锁定
 ```
 
 `@set` 覆盖 API 同名选项，全文档生效（建议放文档开头）。
@@ -419,7 +419,7 @@ render(src, { citeStyle: 'author-year' });   // 或 @set({ citeStyle: "author-ye
 | `termKeyAttr` | `'data-term-key'` | 渲染 + @set | 术语元数据属性名 |
 | `refKeyAttr` | `'data-ref-label'` | 渲染 + @set | 交叉引用元数据属性名 |
 | `citeStyle` | `'numeric'` | 渲染 + @set | 引用样式（numeric/author-year/author） |
-| `allowPlugins` | `true` | 渲染 + @set | 允许 `@plugin` 文档内插件 |
+| `allowPlugins` | `false` | host 锁 | 允许 `@plugin` 文档内插件（默认关闭；文档 `@set` 无法打开） |
 | `escapeHtml` | `true` | 构造器 + @set | 转义正文特殊字符（属性值恒转义，不受此影响） |
 | `pretty` | `false` | 构造器 + @set | 输出换行美化 |
 | `check` | `false` | 渲染 | 引用完整性检查：返回 `{ html, issues }`（见下） |
