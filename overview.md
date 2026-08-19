@@ -706,9 +706,17 @@ const doc2 = new Parser().parse(tokens);      // Token 流 → Document（需自
 ## 测试与构建
 
 ```bash
-npm test        # node:test 运行 test/ 下 87 项测试（零新依赖）
+npm test        # node:test 运行 test/ 下测试（零新依赖）
 npm run build   # esbuild 构建 dist/（esm / iife / iife.min）
 ```
+
+## 0.3 方向（0.2.2 后架构冻结）
+
+0.2.2 后不再做架构优化。0.3 应转向**学术语义、AI 辅助与编辑器能力**。已记录待决策项：
+
+- **脚注重复引用编号**：现状为"每次引用独立编号"（`[^a]` 出现两次 → 1、2）。学术文档更自然的是"同 label → 同编号"，作为 0.3 语言语义决策（0.2.2 仅测试记录现状，不改）。
+- **include 后 source span**：跨文档嵌入后诊断 span 目前指向展开后文档的偏移；0.3 可按需引入 `{ source, start, end }` 跨文件定位。
+- 语言语法冻结（不新增 Markdown 语法 / 控制流 / 新 AST 类型）；`render` 返回 string 视为可信 HTML 的语义留给 0.3 决定（未来 `SafeHtml` 类型）。
 
 ---
 
