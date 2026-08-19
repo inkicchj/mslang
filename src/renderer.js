@@ -13,8 +13,6 @@ import {
   Superscript, Subscript, RawHtml, Table, FootnoteRef, AlignBlock, Equation, Theorem, PartBlock,
 } from './nodes.js';
 
-import { Lexer } from './lexer.js';
-import { Parser, mergeDocuments } from './parser.js';
 import { parseInlineFragment } from './parse-utils.js';
 import { evaluate } from './expression.js';
 import { htmlBuiltins } from './builtin.js';
@@ -352,24 +350,23 @@ class HTMLRenderer {
    * @returns {string}
    */
   renderAll(sources, opts = {}) {
-    const merged = mergeDocuments(...sources.map((s) => this._toStable(s)));
-    // blocks 选项转发：多文档合并的块级渲染（跨文档连续编号 + 哨兵）
-    if (opts.blocks) return this.renderBlocks(merged, opts);
-    return this.render(merged, opts);
+    // 多文档合并：归入 prepare()（前端统一处理），Renderer 只消费 PreparedDocument
+    const prepared = prepare(sources, opts);
+    const run = (p) => {
+      // blocks 选项转发：多文档合并的块级渲染（跨文档连续编号 + 哨兵）
+      if (opts.blocks) return this.renderBlocks(p.document, opts);
+      return this._renderPrepared(p, opts);
+    };
+    return prepared instanceof Promise ? prepared.then(run) : run(prepared);
   }
 
   /** 异步版 renderAll，语义与 renderAsync 相同 */
-  async renderAllAsync(sources, opts = {}) {
-    const merged = mergeDocuments(...sources.map((s) => this._toStable(s)));
-    if (opts.blocks) return this.renderBlocks(merged, opts);
-    return this.renderAsync(merged, opts);
-  }
-
-  /** 输入收敛为 Stable AST（Document 直接用；字符串经 Parser Stable 兼容层） */
-  _toStable(source) {
-    return source instanceof Document
-      ? source
-      : new Parser().parse(new Lexer(source).tokenize(), source);
+  renderAllAsync(sources, opts = {}) {
+    const prepared = prepare(sources, opts);
+    const run = (p) => (opts.blocks
+      ? this.renderBlocks(p.document, opts)
+      : this.renderAsync(p.document, opts));
+    return prepared instanceof Promise ? prepared.then(run) : run(prepared);
   }
 
   /** 包一层 wrapper div */

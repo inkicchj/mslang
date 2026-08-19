@@ -5,11 +5,11 @@
  */
 
 import { Lexer } from './lexer.js';
-import { Parser, finalizeDocument } from './parser.js';
+import { Parser, finalizeDocument, mergeDocuments } from './parser.js';
 import { RuntimeContext } from './runtime.js';
 import { SemanticAnalyzer, eachBlocksInline } from './semantic.js';
 import { expandIncludes } from './include.js';
-import { FunctionCall } from './nodes.js';
+import { FunctionCall, Document } from './nodes.js';
 
 /** 文档配置应用（@set/@let/@define 预扫描；@plugin 属渲染期，analyze 不注册） */
 function applyDocConfig(runtime, blocks) {
@@ -22,22 +22,24 @@ function applyDocConfig(runtime, blocks) {
   });
 }
 
+/** 输入收敛为 Stable 前的单文档（字符串经 Raw+finalize，Document 直接用）；含 include 展开 */
+function toDocument(source, options, issues) {
+  if (source instanceof Document) return source;
+  if (typeof source !== 'string') throw new TypeError('prepare 输入须为 string | Document | 数组');
+  const parser = new Parser();
+  let document = parser.parseRaw(new Lexer(source).tokenize(), source);
+  document = finalizeDocument(document, source, document._footnoteDefs, document._footnoteDefPositions);
+  return document;
+}
+
 /**
  * 完整管线编排。同步 loader 时同步返回；异步 loader（include 返回 Promise）时返回
- * Promise<Prepared>（options.async 需 true）。
+ * Promise<Prepared>（options.async 需 true）。数组输入 = 多文档合并（跨文档连续编号）。
  */
 export function prepare(source, options = {}) {
   const issues = [];
   const run = (effectiveSource) => {
-    let document;
-    if (typeof effectiveSource === 'string') {
-      // 唯一管线：Raw 解析 → 单次 normalize/区间/脚注收尾（脚注元数据随 Raw Document 产出）
-      const parser = new Parser();
-      document = parser.parseRaw(new Lexer(effectiveSource).tokenize(), effectiveSource);
-      document = finalizeDocument(document, effectiveSource, document._footnoteDefs, document._footnoteDefPositions);
-    } else {
-      document = effectiveSource;
-    }
+    let document = toDocument(effectiveSource, options, issues);
     const runtime = new RuntimeContext({
       functions: options.functions,
       escapeHtml: options.escapeHtml,
@@ -48,6 +50,18 @@ export function prepare(source, options = {}) {
     const semantic = new SemanticAnalyzer({ runtime }).analyze(document);
     return { document, runtime, semantic, issues };
   };
+  // 多文档合并：逐文档（含 include 展开）→ mergeDocuments（跨文档连续编号/引用/脚注重排）
+  if (Array.isArray(source)) {
+    const expandedList = source.map((s) => (typeof s === 'string' && options.include
+      ? expandIncludes(s, { include: options.include, issues })
+      : s));
+    const buildMerged = (list) => mergeDocuments(...list.map((s) => toDocument(s, options, issues)));
+    const anyPromise = expandedList.some((x) => x instanceof Promise);
+    if (anyPromise) {
+      return Promise.all(expandedList).then((list) => run(buildMerged(list)));
+    }
+    return run(buildMerged(expandedList));
+  }
   if (typeof source === 'string' && options.include) {
     const expanded = expandIncludes(source, { include: options.include, issues });
     return expanded instanceof Promise
