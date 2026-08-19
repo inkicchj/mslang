@@ -4115,12 +4115,18 @@ var RuntimeContext = class {
     this.functions = { ...renderOpts.functions || {} };
     this.escapeHtml = renderOpts.escapeHtml !== false;
     this.pretty = renderOpts.pretty !== false;
+    this._renderHost = {
+      escapeHtml: renderOpts.escapeHtml !== void 0 ? this.escapeHtml : void 0,
+      pretty: renderOpts.pretty !== void 0 ? this.pretty : void 0
+    };
     this.resetHost({});
   }
   /** 每渲染生命周期重置：document 层归零，应用 host 配置（host 优先于 @set）。
    *  escapeHtml/pretty 为构造期固定（渲染 opts 不含它们，避免覆盖构造值） */
   resetHost(opts = {}) {
     this.hostConfig = { ...opts };
+    if (this._renderHost.escapeHtml !== void 0) this.hostConfig.escapeHtml = this._renderHost.escapeHtml;
+    if (this._renderHost.pretty !== void 0) this.hostConfig.pretty = this._renderHost.pretty;
     this.variables = { ...opts.variables || {} };
     this.macros = {};
     this.data = { ...opts.data || {} };
@@ -4154,6 +4160,9 @@ var RuntimeContext = class {
         this.captionPrefix = this.mergeCaptionPrefix(this.captionPrefix, v);
       } else if (key === "headingNumbering") {
         this.headingNumbering = v === true ? "1.1" : v || "";
+      } else if (key === "escapeHtml" || key === "pretty") {
+        if (key in this.hostConfig) continue;
+        this[key] = v;
       } else if (key in SET_STRING_KEYS) {
         this[key] = v || SET_STRING_KEYS[key].def;
       } else {
@@ -17736,12 +17745,12 @@ var Parser2 = class _Parser {
       this.gullet.macros.set("\\color", "\\textcolor");
     }
     try {
-      var parse = this.parseExpression(false);
+      var parse2 = this.parseExpression(false);
       this.expect("EOF");
       if (!this.settings.globalGroup) {
         this.gullet.endGroup();
       }
-      return parse;
+      return parse2;
     } finally {
       this.gullet.endGroups();
     }
@@ -17755,10 +17764,10 @@ var Parser2 = class _Parser {
     this.consume();
     this.gullet.pushToken(new Token2("}"));
     this.gullet.pushTokens(tokens);
-    var parse = this.parseExpression(false);
+    var parse2 = this.parseExpression(false);
     this.expect("}");
     this.nextToken = oldToken;
-    return parse;
+    return parse2;
   }
   /**
    * Parses an "expression", which is a list of atoms.
@@ -28607,7 +28616,70 @@ var BlockEditor = class {
   }
 };
 
+// src/prepare.js
+function applyDocConfig(runtime, blocks) {
+  eachBlocksInline(blocks, (n) => {
+    if (n instanceof FunctionCall) {
+      if (n.name === "set") runtime.applySet(n);
+      else if (n.name === "let") runtime.applyLet(n);
+      else if (n.name === "define") runtime.applyDefine(n);
+    }
+  });
+}
+function prepare(source2, options = {}) {
+  const issues = [];
+  const run = (effectiveSource) => {
+    let document2;
+    if (typeof effectiveSource === "string") {
+      document2 = new Parser().parse(new Lexer(effectiveSource).tokenize(), effectiveSource);
+    } else {
+      document2 = effectiveSource;
+    }
+    normalizeDocument(document2);
+    if (document2.footnotes) normalizeFootnotes(document2);
+    const runtime = new RuntimeContext({
+      functions: options.functions,
+      escapeHtml: options.escapeHtml,
+      pretty: options.pretty
+    });
+    runtime.resetHost(options);
+    applyDocConfig(runtime, document2.blocks);
+    const semantic = new SemanticAnalyzer({ runtime }).analyze(document2);
+    return { document: document2, runtime, semantic, issues };
+  };
+  if (typeof source2 === "string" && options.include) {
+    const expanded = expandIncludes(source2, { include: options.include, issues });
+    return expanded instanceof Promise ? expanded.then(run) : run(expanded);
+  }
+  return run(source2);
+}
+
 // src/index.js
+function parse(source2, ...args) {
+  return new Parser().parseText(String(source2), ...args);
+}
+function analyze(source2, options = {}) {
+  const gather = (prepared2) => {
+    const { document: document2, runtime, semantic, issues } = prepared2;
+    const typeToCode = Object.fromEntries(Object.entries(DIAG_ISSUE_TYPE).map(([c2, t]) => [t, c2]));
+    const includeDiags = issues.map((i) => ({
+      code: typeToCode[i.type] || i.type,
+      severity: "warning",
+      message: i.key,
+      span: void 0,
+      data: { label: i.key },
+      block: i.block,
+      count: i.count
+    }));
+    const diagnostics = [...includeDiags, ...checkIntegrity(document2, runtime, semantic)];
+    return { document: document2, semantic, diagnostics };
+  };
+  const prepared = prepare(source2, options);
+  return prepared instanceof Promise ? prepared.then(gather) : gather(prepared);
+}
+function renderAsync(source2, options = {}) {
+  return render3(source2, { ...options, async: true });
+}
 function render3(source2, options = {}) {
   const renderer = new HTMLRenderer(_rendererOpts(options));
   const opts = _renderOptions(options);
@@ -28669,9 +28741,12 @@ function _renderOptions(options) {
 export {
   BlockEditor,
   Parser,
+  analyze,
   dumpAST,
   llmReport,
+  parse,
   render3 as render,
+  renderAsync,
   toJSON
 };
-/*! built: 2026-08-19T17:20:09.043Z */
+/*! built: 2026-08-19T17:31:18.929Z */

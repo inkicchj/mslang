@@ -63,6 +63,11 @@ export class RuntimeContext {
     this.functions = { ...(renderOpts.functions || {}) };
     this.escapeHtml = renderOpts.escapeHtml !== false;
     this.pretty = renderOpts.pretty !== false;
+    // 宿主显式传入的渲染开关（非 undefined）视为 host 锁：文档 @set 不可覆盖
+    this._renderHost = {
+      escapeHtml: renderOpts.escapeHtml !== undefined ? this.escapeHtml : undefined,
+      pretty: renderOpts.pretty !== undefined ? this.pretty : undefined,
+    };
     this.resetHost({});
   }
 
@@ -70,6 +75,8 @@ export class RuntimeContext {
    *  escapeHtml/pretty 为构造期固定（渲染 opts 不含它们，避免覆盖构造值） */
   resetHost(opts = {}) {
     this.hostConfig = { ...opts };
+    if (this._renderHost.escapeHtml !== undefined) this.hostConfig.escapeHtml = this._renderHost.escapeHtml;
+    if (this._renderHost.pretty !== undefined) this.hostConfig.pretty = this._renderHost.pretty;
     this.variables = { ...(opts.variables || {}) };
     this.macros = {};
     this.data = { ...(opts.data || {}) };
@@ -107,6 +114,10 @@ export class RuntimeContext {
         this.captionPrefix = this.mergeCaptionPrefix(this.captionPrefix, v);
       } else if (key === 'headingNumbering') {
         this.headingNumbering = v === true ? '1.1' : (v || '');
+      } else if (key === 'escapeHtml' || key === 'pretty') {
+        // 宿主显式设置的渲染开关锁：文档不可覆盖（Host > @set）；未显式时 @set 可调
+        if (key in this.hostConfig) continue;
+        this[key] = v;
       } else if (key in SET_STRING_KEYS) {
         this[key] = v || SET_STRING_KEYS[key].def;
       } else {

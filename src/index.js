@@ -31,11 +31,51 @@ import { HTMLRenderer, llmReport } from './renderer.js';
 import { BlockEditor } from './blockeditor.js';
 import { Document } from './nodes.js';
 import { expandIncludes } from './include.js';
+import { prepare } from './prepare.js';
+import { DIAG_ISSUE_TYPE, checkIntegrity } from './semantic.js';
 
-// 公共导出：render（唯一入口）/ Parser（AST）/ dumpAST（调试）/ BlockEditor（块编辑）
-// toJSON（AST 结构化，LLM 消费）/ llmReport（check issues 文本化，LLM 自查）
+// 公共导出：render/renderAsync（渲染）/ Parser/parse/dumpAST/toJSON（AST）
+// analyze（语义 + 诊断）/ BlockEditor（块编辑）/ llmReport（自查文本）
 // HTMLRenderer 与 diffBlocks 为内部实现，不导出（render 与 BlockEditor 内部使用）
-export { Parser, dumpAST, BlockEditor, toJSON, llmReport };
+export {
+  Parser, dumpAST, BlockEditor, toJSON, llmReport,
+};
+
+/** 解析为 AST（Document）：Token → Raw AST → Stable AST */
+export function parse(source, ...args) {
+  return new Parser().parseText(String(source), ...args);
+}
+
+/**
+ * 语义分析入口：include 展开 → parse → normalize → runtime 配置变量 → 语义分析。
+ * 返回 { document, semantic, diagnostics }（不渲染 HTML）。
+ * @returns {{ document, semantic, diagnostics: Array }}
+ */
+export function analyze(source, options = {}) {
+  const gather = (prepared) => {
+    const { document, runtime, semantic, issues } = prepared;
+    // include 层 issues（{type,key,count,block}）→ 标准诊断 {code,message,span,data}
+    const typeToCode = Object.fromEntries(Object.entries(DIAG_ISSUE_TYPE).map(([c, t]) => [t, c]));
+    const includeDiags = issues.map((i) => ({
+      code: typeToCode[i.type] || i.type,
+      severity: 'warning',
+      message: i.key,
+      span: undefined,
+      data: { label: i.key },
+      block: i.block,
+      count: i.count,
+    }));
+    const diagnostics = [...includeDiags, ...checkIntegrity(document, runtime, semantic)];
+    return { document, semantic, diagnostics };
+  };
+  const prepared = prepare(source, options);
+  return prepared instanceof Promise ? prepared.then(gather) : gather(prepared);
+}
+
+/** 显式异步渲染：render(source, { async: true }) 的别名 */
+export function renderAsync(source, options = {}) {
+  return render(source, { ...options, async: true });
+}
 
 /**
  * mslang 唯一渲染入口。

@@ -646,12 +646,35 @@ ed.render();
 ## API 参考
 
 ```javascript
-import { render, Parser, dumpAST, BlockEditor, toJSON, llmReport } from 'mslang';
+import {
+  render, renderAsync, parse, analyze, Parser, dumpAST, toJSON, llmReport, BlockEditor,
+} from 'mslang';
 ```
 
 ### `render(source, options)`
 
-唯一入口。`source` 为字符串渲染、数组自动合并；返回 `string | Promise<string> | { html, blockHashes }`（由 `async`/`blocks` 配置决定）。完整选项见[渲染选项](#渲染选项)。
+唯一渲染入口。`source` 为字符串渲染、数组自动合并；返回 `string | Promise<string> | { html, blockHashes }`（由 `async`/`blocks` 配置决定）。完整选项见[渲染选项](#渲染选项)。
+
+### `renderAsync(source, options)`
+
+`render(source, { async: true })` 的显式别名（自定义函数返回 Promise 时用），返回 `Promise<string>`。
+
+### `parse(source)` / `Parser`
+
+`parse(source)` 返回 `Document`（新的 Stable AST：结构归并已完成）。`new Parser().parseText(source)` 等价；`new Parser().parse(tokens)` 从 Token 流解析。
+
+### `analyze(source, options)`
+
+**语义分析入口**（不渲染 HTML）：include 展开 → parse → normalize → runtime 应用 `@set`/`@let`/`@define` → 引用/编号/依赖收集 → 完整诊断。
+
+```javascript
+const { document, semantic, diagnostics } = analyze(src, { include: loader });
+// document:           Stable AST
+// semantic:           SemanticModel（refs / citeNumbers / citeOrder / termOrder / headingSeq）
+// diagnostics:        [{ code, severity, message, span, data, block, count }, ...]
+```
+
+输出即 AI 工作台/编辑器的数据结构基础（`Source → AST → Normalize → Semantic → Render` 管线的前半段），诊断 `code` 与 check issues `type` 一一对应（`missing-citation` ↔ `missing_cite` 等）。
 
 ### `toJSON(node)` / `llmReport(issues)`
 

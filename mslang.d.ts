@@ -63,6 +63,37 @@ export interface Issue {
 /** 唯一渲染入口：字符串渲染；数组自动合并；async/blocks/check 为配置项 */
 export function render(source: string | string[] | Document, options?: RenderOptions): RenderResult;
 
+/** 显式异步渲染：render(source, { async: true }) 别名 */
+export function renderAsync(source: string | string[] | Document, options?: RenderOptions): Promise<string>;
+
+/** 解析为 Stable AST：include 展开（可选）→ lex → parse → normalize */
+export function parse(source: string): Document;
+
+/** 语义分析入口（不渲染）：结构 + 编号/引用 + 完整诊断 */
+export function analyze(source: string, options?: RenderOptions)
+  : { document: Document; semantic: SemanticModel; diagnostics: Diagnostic[] } | Promise<{ document: Document; semantic: SemanticModel; diagnostics: Diagnostic[] }>;
+
+export interface Diagnostic {
+  code: 'missing-citation' | 'missing-term' | 'missing-reference' | 'missing-footnote'
+    | 'duplicate-label' | 'orphan-caption' | 'missing-include' | 'missing-part';
+  severity: 'warning';
+  message: string;
+  span?: { start: number; end: number };
+  data: { label: string };
+  block: number;
+  count: number;
+}
+
+export interface SemanticModel {
+  /** label → { kind, number|display, type? }（图/表/式/标题/定理/part） */
+  refs: Record<string, any>;
+  citeNumbers: Record<string, number>;
+  citeOrder: string[];
+  citeYearSuffix: Record<string, string>;
+  termOrder: string[];
+  headingSeq: string[];
+}
+
 /** 将 check issues 转为面向 LLM 的自查文本 */
 export function llmReport(issues: Issue[]): string;
 
