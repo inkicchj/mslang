@@ -334,14 +334,16 @@ class FunctionCall extends InlineNode {
    * @param {Object<string, object>} [kwargs] - 关键字参数（表达式 AST）
    * @param {string} [rawArgs]
    * @param {string} [error] - 参数表达式解析错误信息（空串表示无错误）
+   * @param {{start:number,end:number}} [span] - 源码区间（诊断精确定位）
    */
-  constructor(name = '', args = [], kwargs = {}, rawArgs = '', error = '') {
+  constructor(name = '', args = [], kwargs = {}, rawArgs = '', error = '', span = null) {
     super();
     this.name = name;
     this.args = args;
     this.kwargs = kwargs;
     this.rawArgs = rawArgs;
     this.error = error;
+    this.span = span;
   }
 
   accept(visitor) { return visitor.visit_FunctionCall(this); }
@@ -395,11 +397,13 @@ class FootnoteRef extends InlineNode {
   /**
    * @param {string} [label]
    * @param {number} [number]
+   * @param {{start:number,end:number}} [span] - 源码区间（诊断精确定位）
    */
-  constructor(label = '', number = 0) {
+  constructor(label = '', number = 0, span = null) {
     super();
     this.label = label;
     this.number = number;
+    this.span = span;
   }
 
   accept(visitor) { return visitor.visit_FootnoteRef(this); }

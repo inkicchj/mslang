@@ -66,7 +66,8 @@ class Parser {
   // ================================================================
 
   /**
-   * 将 Token 列表解析为 Raw AST（无结构归并，不执行语义）。
+   * 【内部 API】将 Token 列表解析为 Raw AST（纯语法，无结构归并/语义）。
+   * 供 prepare() 等管线内部使用；对外语义分析请用公共 parse()（返回 Stable AST）。
    * 脚注元数据（定义字典/位置）随 Raw Document 一并产出：
    * document._footnoteDefs / document._footnoteDefPositions（prepare/parse 从文档读取，
    * 不依赖 Parser 实例私有状态）。
@@ -126,7 +127,7 @@ class Parser {
   }
 
   /**
-   * 直接解析原始文本为 Raw AST（不执行结构归并/语义）。
+   * 【内部 API】直接解析原始文本为 Raw AST（不执行结构归并/语义；语义请用 parseText()）。
    * @param {string} source
    * @returns {Document}
    */
@@ -562,7 +563,9 @@ class Parser {
       } catch (e) {
         error = e.message;
       }
-      return new FunctionCall(token.value, args, kwargs, rawArgs, error);
+      // 节点级源码区间（诊断精确定位）：@name(...) 整体
+      const span = { start: token.position.index, end: token.position.index + 1 + token.value.length + rawArgs.length + 1 };
+      return new FunctionCall(token.value, args, kwargs, rawArgs, error, span);
     }
     if (token.type === TokenType.COLOR) {
       return new Color(token.metadata.color || '', token.value);
@@ -574,7 +577,8 @@ class Parser {
       return new Subscript(this._parseInline(token.value));
     }
     if (token.type === TokenType.FOOTNOTE_REF) {
-      return new FootnoteRef(token.value);
+      const end = token.position.index + `[^${token.value}]`.length;
+      return new FootnoteRef(token.value, 0, { start: token.position.index, end });
     }
     if (token.type === TokenType.RAW_HTML) {
       return new RawHtml(token.value);

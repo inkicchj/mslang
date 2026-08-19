@@ -109,7 +109,7 @@ export function checkIntegrity(doc, runtime, sm) {
   const seenLabels = new Set();
   let currentBlock = -1;
   const blockAt = (i) => doc.blocks[i];
-  const report = (code, label) => {
+  const report = (code, label, span) => {
     const id = `${code}|${label}`;
     if (seen.has(id)) { diagnostics[seen.get(id)].count++; return; }
     seen.set(id, diagnostics.length);
@@ -117,7 +117,10 @@ export function checkIntegrity(doc, runtime, sm) {
     diagnostics.push({
       code, severity: 'warning',
       message: `${DIAG_MESSAGES[code] || code}「${label}」`,
-      span: b ? { start: b.startPos != null ? b.startPos : 0, end: b.endPos != null ? b.endPos : 0 } : undefined,
+      // 节点级 span（@cite/@ref/@term/[^n] 精确位置），缺失时回退块区间
+      span: span && span.start < span.end
+        ? { start: span.start, end: span.end }
+        : (b ? { start: b.startPos != null ? b.startPos : 0, end: b.endPos != null ? b.endPos : 0 } : undefined),
       data: { label }, block: currentBlock, count: 1,
     });
   };
@@ -125,17 +128,17 @@ export function checkIntegrity(doc, runtime, sm) {
     if (call.name === 'cite') {
       for (const a of call.args) {
         if (a.type === 'string' && !(runtime.data.bibliography && runtime.data.bibliography[a.value])) {
-          report('missing-citation', a.value);
+          report('missing-citation', a.value, call.span);
         }
       }
     } else if (call.name === 'term') {
       const a = call.args[0];
       if (a && a.type === 'string' && !(runtime.data.terms && runtime.data.terms[a.value])) {
-        report('missing-term', a.value);
+        report('missing-term', a.value, call.span);
       }
     } else if (call.name === 'ref') {
       const a = call.args[0];
-      if (a && a.type === 'string' && !sm.refs[a.value]) report('missing-reference', a.value);
+      if (a && a.type === 'string' && !sm.refs[a.value]) report('missing-reference', a.value, call.span);
     }
   };
   const markLabel = (label) => {
@@ -149,7 +152,7 @@ export function checkIntegrity(doc, runtime, sm) {
       handleCall(n);
       n.args.forEach(a => walkExprTree(a, handleCall));
     }
-    if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report('missing-footnote', n.label);
+    if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report('missing-footnote', n.label, n.span);
     if (n instanceof Image) markLabel(n.label);
   };
   const walkBlock = (block, blockIdx) => {

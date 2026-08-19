@@ -104,11 +104,11 @@ export function toJSON(node: any): any;
 export function dumpAST(node: any): string;
 
 export class Parser {
-  /** Raw AST（纯语法，无结构归并/语义） */
+  /** 【内部 API】Raw AST（纯语法，无结构归并/语义；语义请用公共 parse()） */
   parseRaw(tokens: unknown[], source?: string): Document;
   /** Stable AST（兼容层：Raw + normalize + 区间 + 脚注编号） */
   parse(tokens: unknown[], source?: string): Document;
-  /** Raw AST（字符串源） */
+  /** 【内部 API】Raw AST（字符串源） */
   parseTextRaw(source: string): Document;
   /** Stable AST（字符串源） */
   parseText(source: string): Document;
