@@ -14,21 +14,23 @@ function analyze(src, options = {}) {
   return { document, runtime, semantic };
 }
 
-test('normalize：定理环境归并', () => {
-  const doc = new Parser().parseText('@theorem("thm:1", "主定理")\n\n内容甲');
-  normalizeDocument(doc);
-  assert.equal(doc.blocks[0].constructor.name, 'Theorem');
-  assert.equal(doc.blocks[0].label, 'thm:1');
-  assert.equal(doc.blocks.length, 1);
+test('normalize：定理环境归并（Raw → Stable contract）', () => {
+  // Raw AST：@theorem 标记行还是独立 Paragraph（未归并）
+  const raw = new Parser().parseTextRaw('@theorem("thm:1", "主定理")\n\n内容甲');
+  assert.equal(raw.blocks[0].constructor.name, 'Paragraph', 'Raw 阶段未归并');
+  normalizeDocument(raw);
+  assert.equal(raw.blocks[0].constructor.name, 'Theorem');
+  assert.equal(raw.blocks[0].label, 'thm:1');
+  assert.equal(raw.blocks.length, 1);
 });
 
-test('normalize：@part 区间归并（嵌套 + 紧贴 @end）', () => {
-  const doc = new Parser().parseText('@part("a", "外")\n\n甲\n\n@part("b", "内")\n\n乙\n@end\n\n@end');
-  normalizeDocument(doc);
-  assert.equal(doc.blocks[0].constructor.name, 'PartBlock');
-  assert.equal(doc.blocks[0].id, 'a');
-  assert.equal(doc.blocks[0].blocks[1].constructor.name, 'PartBlock');
-  assert.equal(doc.blocks[0].blocks[1].id, 'b');
+test('normalize：@part 区间归并（嵌套 + 紧贴 @end，Raw → Stable）', () => {
+  const raw = new Parser().parseTextRaw('@part("a", "外")\n\n甲\n\n@part("b", "内")\n\n乙\n@end\n\n@end');
+  normalizeDocument(raw);
+  assert.equal(raw.blocks[0].constructor.name, 'PartBlock');
+  assert.equal(raw.blocks[0].id, 'a');
+  assert.equal(raw.blocks[0].blocks[1].constructor.name, 'PartBlock');
+  assert.equal(raw.blocks[0].blocks[1].id, 'b');
 });
 
 test('semantic：引用与编号（表/图/标题 refs + cite 顺序）', () => {
