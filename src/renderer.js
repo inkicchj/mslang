@@ -17,7 +17,7 @@ import { Lexer } from './lexer.js';
 import { Parser, mergeDocuments } from './parser.js';
 import { parseInlineFragment } from './parse-utils.js';
 import { evaluate } from './expression.js';
-import { builtinFunctions } from './builtin.js';
+import { htmlBuiltins } from './builtin.js';
 import { escapeHTML, escapeAttr } from './escape.js';
 import { RuntimeContext, SET_KEYS, DEFAULT_CAPTION_PREFIX, DEFAULT_KEY_ATTRS, mergeCaptionPrefix } from './runtime.js';
 import {
@@ -134,8 +134,8 @@ class HTMLRenderer {
       pretty: opts.pretty,
     });
     this.runtime.resetHost(opts);
-    // builtin 闭包依赖 renderer（_esc/_escAttr/语义状态），构造完成后注入 runtime
-    this.runtime.functions = { ...builtinFunctions(this), ...(opts.functions || {}) };
+    // HTML 内置函数注入 renderer 的 runtime（host/runtime builtin 覆盖 — host 可覆盖 cite 等既有行为）
+    this.runtime.functions = { ...htmlBuiltins(this), ...this.runtime.functions };
     this._output = [];
   }
 

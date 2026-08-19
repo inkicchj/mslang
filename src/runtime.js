@@ -9,6 +9,7 @@
  */
 
 import { evaluate } from './expression.js';
+import { runtimeBuiltins } from './builtin.js';
 
 // @set 白名单：仅这些键可被文档内配置覆盖（document 层）
 export const SET_KEYS = ['headingNumbering', 'refNumbering', 'escapeHtml', 'pretty', 'data', 'variables', 'terms', 'bibliography', 'captionPrefix', 'citeKeyAttr', 'termKeyAttr', 'refKeyAttr', 'citeStyle', 'allowPlugins', 'bibStyle'];
@@ -60,7 +61,8 @@ export const DEFAULT_CAPTION_PREFIX = {
 export class RuntimeContext {
   /** @param {{functions?: object, escapeHtml?: boolean, pretty?: boolean}} [renderOpts] 渲染期固定项（构造后不随渲染重置） */
   constructor(renderOpts = {}) {
-    this.functions = { ...(renderOpts.functions || {}) };
+    // 执行环境基础函数（runtimeBuiltins）+ 宿主函数（host 覆盖 builtin）
+    this.functions = { ...runtimeBuiltins(this), ...(renderOpts.functions || {}) };
     this.escapeHtml = renderOpts.escapeHtml !== false;
     this.pretty = renderOpts.pretty !== false;
     // 宿主显式传入的渲染开关（非 undefined）视为 host 锁：文档 @set 不可覆盖

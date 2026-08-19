@@ -1,11 +1,13 @@
 /**
  * mslang 内置函数 (builtin)
  *
- * 论文写作常用内置函数：逻辑运算、文献引用、术语引用、交叉引用、文档配置。
- * 通过 HTMLRenderer 构造时注册到 _functions，可用 opts.functions 覆盖同名函数。
- * 依赖渲染器内部状态（_data / _variables / _refs / _citeNumbers 等），
- * 由 renderer.render(source, { data, variables }) 注入数据。
- * 属性转义统一走 renderer._escAttr（恒转义），不直接依赖 escape.js。
+ * 拆分为两族（mslang 0.2.1）：
+ *   - runtimeBuiltins(runtime)：纯执行环境函数（if/not/and/or、文档配置 set/let/define/use/
+ *     plugin、存在性 has_cite/has_term），只操作 RuntimeContext，完全不知道 Renderer。
+ *   - htmlBuiltins(renderer)：HTML 输出函数（cite/ref/term/bibliography/glossary），
+ *     依赖 Renderer 的转义/语义状态/格式辅助。
+ * host functions 优先级 > builtin：RuntimeContext 构造时先注册 runtimeBuiltins 再合并 host，
+ * Renderer 构造时以 host/runtime 覆盖 htmlBuiltins（保持 host 可覆盖 cite/ref 等既有行为）。
  */
 
 import { extractHeadingNumber } from './numbering.js';
@@ -14,14 +16,68 @@ import { extractHeadingNumber } from './numbering.js';
 export { extractHeadingNumber };
 
 // ================================================================
-// 内置函数注册表
+// Runtime builtins（无 HTML，注册进 RuntimeContext）
+// ================================================================
+
+/**
+ * @param {import('./runtime.js').RuntimeContext} runtime
+ * @returns {Object<string, Function>}
+ */
+export function runtimeBuiltins(runtime) {
+  return {
+    if: (cond, then, els) => (cond ? then : (els === undefined ? '' : els)),
+    not: (x) => !x,
+    and: (...xs) => xs.every(Boolean),
+    or: (...xs) => xs.some(Boolean),
+
+    /** 文档内配置：@set({ headingNumbering: '1.1', ... })，无输出 */
+    set: (config) => {
+      if (config && typeof config === 'object') runtime.applySetConfig(config);
+      return '';
+    },
+
+    /** 宏定义：@define("name", "模板")，无输出（预扫描注册，渲染时静默） */
+    define: () => '',
+
+    /** 宏展开：@use("name", { key: value }) 替换模板 {key} 占位符后按行内语法渲染。
+     *  值按 mslang 字面转义（模板内 md 语法仍生效，值原样显示）；未定义宏抛错。 */
+    use: (name, kwargs) => {
+      const template = runtime.macros && runtime.macros[name];
+      if (typeof template !== 'string') throw new Error(`undefined macro '${name}'`);
+      const escMd = (v) => String(v).replace(/([*_~`^$[\]@<>!\\])/g, '\\$1');
+      const kwargsObj = kwargs && typeof kwargs === 'object' ? kwargs : {};
+      return template.replace(/\{([^{}]+)\}/g, (m, k) => (k in kwargsObj ? escMd(kwargsObj[k]) : m));
+    },
+
+    /** 插件注册：@plugin("name", "(args, kwargs) => ...")，无输出（安全边界：allowPlugins 默认 false） */
+    plugin: (name, body) => {
+      if (typeof name === 'string' && typeof body === 'string') runtime.registerPlugin(name, body);
+      return '';
+    },
+
+    /** 变量声明：@let("name", value)，无输出；变量全文档可见（预扫描注册） */
+    let: (name, value) => {
+      if (typeof name === 'string') runtime.variables[name] = value;
+      return '';
+    },
+
+    /** 文献键是否存在（供 if 条件使用） */
+    has_cite: (key) => !!(runtime.data.bibliography && runtime.data.bibliography[key]),
+
+    /** 术语是否存在（供 if 条件使用） */
+    has_term: (name) => !!(runtime.data.terms && runtime.data.terms[name]),
+  };
+}
+
+// ================================================================
+// HTML builtins（依赖 Renderer 转义/语义/格式；经 renderer.runtime.functions 注入）
 // ================================================================
 
 /**
  * @param {import('./renderer.js').HTMLRenderer} renderer
  * @returns {Object<string, Function>}
  */
-export function builtinFunctions(renderer) {
+export function htmlBuiltins(renderer) {
   const esc = (t) => renderer._esc(t);
   const escAttr = (t) => renderer._escAttr(t);
 
@@ -53,48 +109,6 @@ export function builtinFunctions(renderer) {
   };
 
   return {
-    if: (cond, then, els) => (cond ? then : (els === undefined ? '' : els)),
-    not: (x) => !x,
-    and: (...xs) => xs.every(Boolean),
-    or: (...xs) => xs.some(Boolean),
-
-    /** 文档内配置：@set({ headingNumbering: '1.1', ... })，无输出 */
-    set: (config) => {
-      if (config && typeof config === 'object') renderer.runtime.applySetConfig(config);
-      return '';
-    },
-
-    /** 宏定义：@define("name", "模板")，无输出（预扫描注册，渲染时静默） */
-    define: () => '',
-
-    /** 宏展开：@use("name", { key: value }) 替换模板 {key} 占位符后按行内语法渲染。
-     *  值按 mslang 字面转义（模板内 md 语法仍生效，值原样显示）；未定义宏抛错。 */
-    use: (name, kwargs) => {
-      const template = renderer._macros && renderer._macros[name];
-      if (typeof template !== 'string') throw new Error(`undefined macro '${name}'`);
-      const escMd = (v) => String(v).replace(/([*_~`^$[\]@<>!\\])/g, '\\$1');
-      const kwargsObj = kwargs && typeof kwargs === 'object' ? kwargs : {};
-      return template.replace(/\{([^{}]+)\}/g, (m, k) => (k in kwargsObj ? escMd(kwargsObj[k]) : m));
-    },
-
-    /** 插件注册：@plugin("name", "(args, kwargs) => ...")，无输出；文档内定义可复用函数（new Function 全局作用域） */
-    plugin: (name, body) => {
-      if (typeof name === 'string' && typeof body === 'string') renderer.runtime.registerPlugin(name, body);
-      return '';
-    },
-
-    /** 变量声明：@let("name", value)，无输出；变量全文档可见（预扫描注册） */
-    let: (name, value) => {
-      if (typeof name === 'string') renderer._variables[name] = value;
-      return '';
-    },
-
-    /** 文献键是否存在（供 if 条件使用） */
-    has_cite: (key) => !!(renderer._data.bibliography && renderer._data.bibliography[key]),
-
-    /** 术语是否存在（供 if 条件使用） */
-    has_term: (name) => !!(renderer._data.terms && renderer._data.terms[name]),
-
     /** 文献引用：支持一次引多篇 @cite("a","b","c")。
      *  numeric → 上标 [1-3]（连续区间合并）/[1,3]（非连续），逐 key 锚点（连续区间保留首尾）；
      *  author-year / author → (Doe, 2020a; Smith, 2019) 共享括号，分号分隔。 */
