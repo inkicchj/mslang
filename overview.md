@@ -438,7 +438,7 @@ import { render, llmReport, toJSON } from 'mslang';
 const { html, issues } = render(source, { data, check: true });
 // issues: [{ type: 'missing_cite', key: 'doe2020', count: 2, block: 3 }, ...]
 //   type: missing_cite | missing_term | missing_ref | missing_footnote
-//         | duplicate_label | orphan_caption
+//         | duplicate_label | orphan_caption | missing_include | missing_part
 //   count: 同一 key 出现次数（按 type+key 去重）
 //   block: 首次出现的块索引（AI 可直接定位修复）
 
@@ -452,7 +452,7 @@ const report = llmReport(issues);
 const tree = toJSON(new Parser().parseText(source));
 ```
 
-- 检测范围：`@cite`/`@term`/`@ref`（含嵌套在表达式 `cite("k")` 中的）与 `[^n]` 脚注引用、重复标签（`duplicate_label`）、孤立 caption（`orphan_caption`）
+- 检测范围：`@cite`/`@term`/`@ref`（含嵌套在表达式 `cite("k")` 中的）与 `[^n]` 脚注引用、重复标签（`duplicate_label`）、孤立 caption（`orphan_caption`）、`@include` 加载失败（`missing_include`）/ part 缺失（`missing_part`）
 - 有数据/定义时无对应 issue；`blocks`/`async` 模式同样支持
 - **AI 工作台闭环**：`render({check:true})` 定位 → `llmReport` 文本化喂 LLM → LLM 修复 → 重渲验证
 
@@ -508,6 +508,68 @@ const html = render(['引言.md', '方法.md', '参考文献.md'], { data: {...}
 - 交叉引用（`@ref`）可跨文档
 - `@set`/`@let`/`@plugin` 全局生效（预扫描按文档顺序执行）
 - 脚注跨文档重编号；同名脚注后者覆盖
+
+---
+
+## 跨文档引用（@part + @include）
+
+笔记 → 汇总：在笔记文档中**定义可引用区间**，在汇总文档中**引用片段**（动态 loader，新增文档零宿主改动）。
+
+### 定义侧（笔记文档）
+
+```msl
+@part("h1", "LLM 幻觉率笔记")
+
+> 原文：GPT-4 幻觉率 27%（Doe, 2024）
+
+我的分析：27% 明显偏高。
+
+@end
+```
+
+- `@part("id", "标题")` 独占一行（后接空行）= 区间开始；`@end` 独占一行（可紧贴正文） = 结束
+- 区间可嵌套（`@part` 内可再 `@part`）
+- 笔记独立渲染时 = 带锚点章节（`<section class="part" id="h1">` + `##` 标题）；`@end` 不残留
+- `@ref("h1")` 可交叉引用该部分（同文档或展开后的汇总文档）
+- `@end` 前的内容保留（紧贴写法 `正文\n@end` 不会丢内容）；孤立 `@end`（无匹配 part）被保留显示
+
+### 引用侧（汇总文档）
+
+```msl
+# 汇总分析
+
+@include("notes/a.msl", "h1")
+@include("notes/b.msl", "p3")
+```
+
+- 展开进汇总文档后**统一编号**（图/表/式连续）、`@ref` 指向展开内容、`duplicate_label` 冲突检测——全部自动生效
+- **剥离块级 `@set` 行**（配置防污染，笔记设置不影响汇总）；`@let`/`@define` 保留（内容依赖）
+- 嵌套展开（include 的目标文档里可再 include）；循环引用自动检测（注释 + 跳过）
+- 同次渲染中重复 include 同一文件走缓存
+
+### 数据通道（宿主注册一次，动态发现）
+
+```javascript
+// 同步 loader：返回 string（新增文档 = 新建文件 + 在汇总里加一行引用，零代码改动）
+render(outline, { include: (path) => workspace.getDoc(path) });
+
+// 异步 loader：返回 Promise，需 async: true
+const html = await render(outline, {
+  include: async (path) => (await fetch('/notes/' + path)).text(),
+  async: true,
+});
+
+// BlockEditor 支持同步 loader（构造时展开）；异步 loader 请走 render async:true
+```
+
+### 容错与校验
+
+| 情况 | 处理 |
+|---|---|
+| 文件缺失（loader 抛错/返回空） | `missing_include` issue + 占位注释 |
+| part id 不存在 | `missing_part` issue + 占位注释 |
+| 循环引用 A→B→A | 占位注释 + 跳过 |
+| `@include` 未指定 part id | 占位注释（整文档合并请用 `render([...])`） |
 
 ---
 

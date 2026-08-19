@@ -17,6 +17,7 @@
 
 import { HTMLRenderer, diffBlocks } from './renderer.js';
 import { Parser } from './parser.js';
+import { expandIncludes } from './include.js';
 
 /** 局部替换上限：变化块超过该数量时降级为全量重建 */
 const FULL_REBUILD_THRESHOLD = 3;
@@ -50,8 +51,14 @@ export class BlockEditor {
    * @param {object} [options] - 与 render() 相同（data/variables/headingNumbering/…）
    */
   constructor(source, options = {}) {
-    this.source = source;
     this.options = { ...options };
+    // 跨文档引用：构造时展开（同步 loader）；异步 loader 请用 render(src, {include, async:true})
+    this.source = typeof source === 'string' && options.include
+      ? expandIncludes(source, { include: options.include, issues: [] })
+      : source;
+    if (this.source instanceof Promise) {
+      throw new Error('BlockEditor 仅支持同步 include loader（异步请用 render async:true）');
+    }
     this.renderer = new HTMLRenderer({
       functions: options.functions,
       escapeHtml: options.escapeHtml,

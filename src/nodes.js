@@ -220,6 +220,23 @@ class Theorem extends BlockNode {
   accept(visitor) { return visitor.visit_Theorem(this); }
 }
 
+/** 具名可引用区间（跨文档）@part("id", "标题") ... @end：栈式归并多块 */
+class PartBlock extends BlockNode {
+  /**
+   * @param {string} [id] - 交叉引用标签（@ref("id") / @include("file", "id")）
+   * @param {InlineNode[]} [title] - 标题行内节点
+   * @param {BlockNode[]} [blocks] - 区间内块（嵌套 @part 已归并）
+   */
+  constructor(id = '', title = [], blocks = []) {
+    super();
+    this.id = id;
+    this.title = title;
+    this.blocks = blocks;
+  }
+
+  accept(visitor) { return visitor.visit_PartBlock(this); }
+}
+
 // ============================================================
 // 行内节点
 // ============================================================
@@ -398,7 +415,7 @@ export {
   BlockNode, InlineNode,
   Heading, Paragraph, BlockQuote, CodeBlock,
   UnorderedList, OrderedList, ListItem, HorizontalRule,
-  AlignBlock, Table, Caption, Equation, Theorem,
+  AlignBlock, Table, Caption, Equation, Theorem, PartBlock,
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, FunctionCall, Color,
   Superscript, Subscript, RawHtml, FootnoteRef,

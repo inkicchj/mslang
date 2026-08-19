@@ -30,6 +30,7 @@ import { Parser, dumpAST, mergeDocuments, toJSON } from './parser.js';
 import { HTMLRenderer, llmReport } from './renderer.js';
 import { BlockEditor } from './blockeditor.js';
 import { Document } from './nodes.js';
+import { expandIncludes } from './include.js';
 
 // 公共导出：render（唯一入口）/ Parser（AST）/ dumpAST（调试）/ BlockEditor（块编辑）
 // toJSON（AST 结构化，LLM 消费）/ llmReport（check issues 文本化，LLM 自查）
@@ -60,21 +61,44 @@ export { Parser, dumpAST, BlockEditor, toJSON, llmReport };
  * @param {string} [options.mathFontsPath] - KaTeX 字体本地托管路径
  * @param {function} [options.codeRenderer] - mermaid 代码块渲染器（默认转义透传）
  * @param {object} [options.functions] - 自定义函数表
+ * @param {function} [options.include] - 跨文档引用 loader：@include("path", "part") 时
+ *   调用（path）取文档源码；返回 string 同步展开，返回 Promise 需 async: true
+ * @param {function} [options.include] - 跨文档引用 loader：@include("path", "part") 时
+ *   调用（path）取文档源码；返回 string 同步展开，返回 Promise 需 async: true
  * @returns {string|Promise<string>|{html: string, blockHashes: object}}
  */
 export function render(source, options = {}) {
   const renderer = new HTMLRenderer(_rendererOpts(options));
   const opts = _renderOptions(options);
-  if (Array.isArray(source)) {
-    // 多文档合并：字符串自动解析，Document 直接使用（跨文档连续编号、交叉引用、全局 @set）
-    const docs = source.map(s => s instanceof Document ? s : new Parser().parseText(s));
-    return options.async
-      ? renderer.renderAllAsync(docs, opts)
-      : renderer.renderAll(docs, opts);
+  const finish = (s) => {
+    if (Array.isArray(s)) {
+      // 多文档合并：字符串自动解析，Document 直接使用（跨文档连续编号、交叉引用、全局 @set）
+      const docs = s.map(x => x instanceof Document ? x : new Parser().parseText(x));
+      return options.async
+        ? renderer.renderAllAsync(docs, opts)
+        : renderer.renderAll(docs, opts);
+    }
+    if (options.async) return renderer.renderAsync(s, opts);
+    if (options.blocks) return renderer.renderBlocks(s, opts);
+    return renderer.render(s, opts);
+  };
+  const attachPreIssues = (result, preIssues) => {
+    if (preIssues && preIssues.length && result && typeof result === 'object'
+      && Array.isArray(result.issues)) {
+      result.issues = [...preIssues, ...result.issues];
+    }
+    return result;
+  };
+  // 跨文档引用：字符串源在 parse 前展开（异步 loader 时预展开先于渲染）
+  if (typeof source === 'string' && options.include) {
+    const preIssues = [];
+    const expanded = expandIncludes(source, { include: options.include, issues: preIssues });
+    if (expanded instanceof Promise) {
+      return expanded.then((s) => attachPreIssues(finish(s), preIssues));
+    }
+    return attachPreIssues(finish(expanded), preIssues);
   }
-  if (options.async) return renderer.renderAsync(source, opts);
-  if (options.blocks) return renderer.renderBlocks(source, opts);
-  return renderer.render(source, opts);
+  return finish(source);
 }
 
 /** 渲染器构造选项（escapeHtml/pretty 仅构造时生效） */

@@ -20,7 +20,7 @@ import {
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, LineBreak, FunctionCall, Color,
   Superscript, Subscript, RawHtml, FootnoteRef,
-  Table, AlignBlock, Caption, Equation, Theorem,
+  Table, AlignBlock, Caption, Equation, Theorem, PartBlock,
 } from './nodes.js';
 
 // 定理环境类型（@theorem/@lemma/@definition/@remark/@example 标记行）
@@ -108,6 +108,9 @@ class Parser {
     // （在块区间计算前 splice，标记块保留 startPos 覆盖两行区间）
     this._attachTheorems(document);
 
+    // @part("@id", "标题") ... @end 区间归并：栈式合并多块 → PartBlock
+    this._attachParts(document);
+
     // 块源区间：[startPos, 下一块 startPos)，末块到文档末尾（caption 归并行自然落入前块区间）
     // 脚注定义行不属于任何块：区间截断到其后的第一个脚注定义位置
     for (let i = 0; i < document.blocks.length; i++) {
@@ -148,6 +151,69 @@ class Parser {
       blocks[i] = new Theorem(fc.name, label, title, next.content);
       blocks.splice(i + 1, 1);
     }
+  }
+
+  /**
+   * @part 区间归并：@part("id", "标题") 标记行（纯 FunctionCall 段落）+ 到匹配 @end 的
+   * 多块区间 → PartBlock（嵌套 @part 递归归并）。@end 缺失/孤立时降级为普通段落（保留原文）。
+   * @param {Document} doc
+   */
+  _attachParts(doc) {
+    const blocks = doc.blocks;
+    // @part 标记行 = 独立段落的纯 FunctionCall（段尾可有 LineBreak 节点）
+    const partMarker = (b) => {
+      if (!(b instanceof Paragraph)) return null;
+      const c = b.content;
+      const fc = c.length === 1 && c[0] instanceof FunctionCall
+        ? c[0]
+        : c.length === 2 && c[0] instanceof FunctionCall && c[1] instanceof LineBreak ? c[0] : null;
+      return fc && !fc.error && fc.name === 'part' ? fc : null;
+    };
+    // @end 行 = 段末行首的标记（RawText('@end') 无括号写法，或 FunctionCall('end')）
+    const endMarker = (b) => {
+      if (!(b instanceof Paragraph)) return null;
+      const c = b.content;
+      if (c.length === 1 && c[0] instanceof RawText && c[0].text.trim() === '@end') return c[0];
+      const last = c[c.length - 1];
+      if (last instanceof RawText && last.text.trim() === '@end'
+        && (c.length === 1 || c[c.length - 2] instanceof LineBreak)) return last;
+      if (last instanceof FunctionCall && !last.error && last.name === 'end'
+        && c.length >= 2 && c[c.length - 2] instanceof LineBreak) return last;
+      return null;
+    };
+    const strArg = (fc, i) => fc.args[i] && fc.args[i].type === 'string' ? fc.args[i].value : '';
+    /** 递归收集：返回 { blocks, next }；next 指向本层 @end 之后 */
+    const collect = (start, top) => {
+      const out = [];
+      let i = start;
+      while (i < blocks.length) {
+        const b = blocks[i];
+        const eMark = endMarker(b);
+        if (eMark) {
+          if (top) { out.push(b); i++; continue; } // 孤立 @end（无 part）：保留为普通段落
+          // 紧贴写法 "正文\n@end"：@end 前的内容保留，仅剥 @end 行
+          if (b instanceof Paragraph) {
+            const c = b.content;
+            const idx = c.findIndex((n) => (n instanceof FunctionCall && n.name === 'end')
+              || (n instanceof RawText && n.text.trim() === '@end'));
+            const keep = idx > 0 ? c.slice(0, idx - (c[idx - 1] instanceof LineBreak ? 1 : 0)) : [];
+            if (keep.length) out.push(new Paragraph(this._mergeAdjacentText(keep)));
+          }
+          return { blocks: out, next: i + 1 };
+        }
+        const fc = partMarker(b);
+        if (fc) {
+          const inner = collect(i + 1, false);
+          out.push(new PartBlock(strArg(fc, 0), parseInlineFragment(strArg(fc, 1)), inner.blocks));
+          i = inner.next;
+        } else {
+          out.push(b);
+          i++;
+        }
+      }
+      return { blocks: out, next: i };
+    };
+    doc.blocks = collect(0, true).blocks;
   }
 
   /**
@@ -931,6 +997,10 @@ function dumpAST(node, indent = 0, prefix = '', isLast = true) {
   if (node instanceof Theorem) {
     const lbl = node.label ? ` label=${node.label}` : '';
     return `${linePrefix}Theorem(${node.type})${lbl}`;
+  }
+  if (node instanceof PartBlock) {
+    const id = node.id ? ` id=${node.id}` : '';
+    return `${linePrefix}Part${id}`;
   }
   if (node instanceof RawText) return `${linePrefix}Text "${node.text}"`;
   if (node instanceof LineBreak) return `${linePrefix}LineBreak`;

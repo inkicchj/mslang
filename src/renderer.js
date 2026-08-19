@@ -10,7 +10,7 @@ import {
   UnorderedList, OrderedList, ListItem, HorizontalRule,
   RawText, Bold, Italic, Strikethrough, InlineCode,
   Link, Image, LineBreak, FunctionCall, Color,
-  Superscript, Subscript, RawHtml, Table, FootnoteRef, AlignBlock, Equation, Theorem,
+  Superscript, Subscript, RawHtml, Table, FootnoteRef, AlignBlock, Equation, Theorem, PartBlock,
 } from './nodes.js';
 
 import { Lexer } from './lexer.js';
@@ -174,9 +174,13 @@ class HTMLRenderer {
     if (!block) return '';
     // visit_Heading 用 _headingIdx 消费 _headingSeq：定位到该块对应的标题偏移
     let headingIdx = 0;
-    for (let i = 0; i < index; i++) {
-      if (doc.blocks[i] instanceof Heading) headingIdx++;
-    }
+    const countHeadings = (blocks) => {
+      for (const b of blocks) {
+        if (b instanceof PartBlock) countHeadings(b.blocks);
+        else if (b instanceof Heading) headingIdx++;
+      }
+    };
+    countHeadings(doc.blocks.slice(0, index));
     this._headingIdx = headingIdx;
     this._output = [];
     block.accept(this);
@@ -377,15 +381,21 @@ class HTMLRenderer {
     }
   }
 
-  _applySets(doc) {
-    for (const block of doc.blocks) {
-      this._eachBlockInline(block, (n) => {
-        if (n instanceof FunctionCall && n.name === 'set') this._applySet(n);
-        else if (n instanceof FunctionCall && n.name === 'let') this._applyLet(n);
-        else if (n instanceof FunctionCall && n.name === 'plugin') this._applyPlugin(n);
-        else if (n instanceof FunctionCall && n.name === 'define') this._applyDefine(n);
-      });
+  /** 遍历块数组的行内节点（PartBlock 递归进内部块） */
+  _eachBlocksInline(blocks, fn) {
+    for (const b of blocks) {
+      if (b instanceof PartBlock) { this._eachBlocksInline(b.blocks, fn); continue; }
+      this._eachBlockInline(b, fn);
     }
+  }
+
+  _applySets(doc) {
+    this._eachBlocksInline(doc.blocks, (n) => {
+      if (n instanceof FunctionCall && n.name === 'set') this._applySet(n);
+      else if (n instanceof FunctionCall && n.name === 'let') this._applyLet(n);
+      else if (n instanceof FunctionCall && n.name === 'plugin') this._applyPlugin(n);
+      else if (n instanceof FunctionCall && n.name === 'define') this._applyDefine(n);
+    });
   }
 
   _applySet(node) {
@@ -587,7 +597,8 @@ class HTMLRenderer {
     };
 
     // 单一遍历：块 → 块内行内，顺序与渲染一致（fig 编号 Image/mermaid 共享）
-    for (const block of doc.blocks) {
+    // PartBlock 递归进内部块（内部标题/图/表/式/定理照常收集编号）
+    const collectBlock = (block) => {
       // 渲染依赖收集容器（块级编辑哈希：变量/宏/data 变化 → 引用块哈希变）
       const deps = { v: {}, m: {}, d: {} };
       block._deps = deps;
@@ -597,6 +608,18 @@ class HTMLRenderer {
         fig: counters.fig, tbl: counters.tbl, sec: counters.sec, eq: counters.eq, thm: counters.thm,
         cite: this._citeOrder.length, term: this._termOrder.length,
       };
+      if (block instanceof PartBlock) {
+        if (block.id) {
+          const text = headingText(block.title) || block.id;
+          // part 引用显示标题全文（可被 refNumbering 提取数字前缀，与标题同规则）
+          let display;
+          if (this._refNumbering) display = extractHeadingNumber(text, this._refNumbering);
+          if (display === undefined) display = text;
+          this._refs[block.id] = { kind: 'part', display };
+        }
+        block.blocks.forEach(collectBlock);
+        return;
+      }
       if (block instanceof Heading) {
         const autoNum = this._headingNumbering ? nextSecNumber(block.level) : '';
         this._headingSeq.push(autoNum);
@@ -632,7 +655,8 @@ class HTMLRenderer {
         this._refs[block.label] = { kind: 'thm', type: block.type, number: counters.thm };
       }
       if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
-    }
+    };
+    doc.blocks.forEach(collectBlock);
     currentDeps = null;
 
     // author-year 样式消歧：同年同作者按引用顺序加 a/b/c 后缀（收集完成后计算，cite/bibliography 共用）
@@ -704,9 +728,13 @@ class HTMLRenderer {
       if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report('missing_footnote', n.label);
       if (n instanceof Image) markLabel(n.label);
     };
-    for (let i = 0; i < doc.blocks.length; i++) {
-      const block = doc.blocks[i];
-      currentBlock = i;
+    const walkBlock = (block, blockIdx) => {
+      currentBlock = blockIdx;
+      if (block instanceof PartBlock) {
+        markLabel(block.id);
+        block.blocks.forEach(b => walkBlock(b, blockIdx));
+        return;
+      }
       // 块级 label（图/表/式/定理/mermaid 共享标签空间）
       if (block.label && (block instanceof Table || block instanceof Equation
         || block instanceof Theorem || (block instanceof CodeBlock && block.language === 'mermaid'))) {
@@ -715,7 +743,8 @@ class HTMLRenderer {
       // 孤立 caption：降级时由 parser 标记（{#label} 行未归并到目标块）
       if (block._orphanCaption) report('orphan_caption', block._orphanCaption);
       if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
-    }
+    };
+    doc.blocks.forEach((block, i) => walkBlock(block, i));
     currentBlock = -1;
     return issues;
   }
@@ -1058,6 +1087,26 @@ class HTMLRenderer {
   }
 
   /**
+   * @part 区间：<section class="part" id> + 标题（h2，无编号）+ 内部块顺序渲染。
+   * 单独渲染 = 带锚点章节；@include 展开时标记行被文本层替换，不经过本方法。
+   */
+  visit_PartBlock(node) {
+    const id = node.id ? ` id="${this._escAttr(node.id)}"` : '';
+    this._write(`<section class="part"${id}>`);
+    if (this.pretty) this._write('\n');
+    if (node.title.length) {
+      this._write('<h2>');
+      node.title.forEach(n => n.accept(this));
+      this._write('</h2>');
+      if (this.pretty) this._write('\n');
+    }
+    node.blocks.forEach(b => b.accept(this));
+    if (this.pretty) this._write('\n');
+    this._write('</section>');
+    if (this.pretty) this._write('\n');
+  }
+
+  /**
    * 公式：行内 <span class="math-inline">，块级 <div class="math">。
    * mathRenderer 选项存在时调用其渲染（返回 HTML 不转义），否则源码转义透传。
    * 内置 KaTeX 渲染结果按 (inline, 源码) 缓存，跨实例复用。
@@ -1267,6 +1316,8 @@ export function llmReport(issues) {
     missing_footnote: '引用了未定义的脚注',
     duplicate_label: '重复声明了标签',
     orphan_caption: '孤立 caption（未归并到目标块）',
+    missing_include: 'include 加载失败（文档缺失）',
+    missing_part: '引用了不存在的 part（@part 区间）',
   };
   if (!issues || !issues.length) return '检查通过：无引用缺口。';
   const lines = issues.map((i) => {

@@ -2862,6 +2862,22 @@ var Theorem = class extends BlockNode {
     return visitor.visit_Theorem(this);
   }
 };
+var PartBlock = class extends BlockNode {
+  /**
+   * @param {string} [id] - 交叉引用标签（@ref("id") / @include("file", "id")）
+   * @param {InlineNode[]} [title] - 标题行内节点
+   * @param {BlockNode[]} [blocks] - 区间内块（嵌套 @part 已归并）
+   */
+  constructor(id = "", title = [], blocks = []) {
+    super();
+    this.id = id;
+    this.title = title;
+    this.blocks = blocks;
+  }
+  accept(visitor) {
+    return visitor.visit_PartBlock(this);
+  }
+};
 var InlineNode = class extends ASTNode {
 };
 var RawText = class extends InlineNode {
@@ -3092,6 +3108,7 @@ var Parser = class {
       document2.blocks.push(block);
     }
     this._attachTheorems(document2);
+    this._attachParts(document2);
     for (let i = 0; i < document2.blocks.length; i++) {
       const b = document2.blocks[i];
       let end = i + 1 < document2.blocks.length ? document2.blocks[i + 1].startPos : source2.length;
@@ -3129,6 +3146,63 @@ var Parser = class {
       blocks[i] = new Theorem(fc.name, label, title, next.content);
       blocks.splice(i + 1, 1);
     }
+  }
+  /**
+   * @part 区间归并：@part("id", "标题") 标记行（纯 FunctionCall 段落）+ 到匹配 @end 的
+   * 多块区间 → PartBlock（嵌套 @part 递归归并）。@end 缺失/孤立时降级为普通段落（保留原文）。
+   * @param {Document} doc
+   */
+  _attachParts(doc) {
+    const blocks = doc.blocks;
+    const partMarker = (b) => {
+      if (!(b instanceof Paragraph)) return null;
+      const c2 = b.content;
+      const fc = c2.length === 1 && c2[0] instanceof FunctionCall ? c2[0] : c2.length === 2 && c2[0] instanceof FunctionCall && c2[1] instanceof LineBreak ? c2[0] : null;
+      return fc && !fc.error && fc.name === "part" ? fc : null;
+    };
+    const endMarker = (b) => {
+      if (!(b instanceof Paragraph)) return null;
+      const c2 = b.content;
+      if (c2.length === 1 && c2[0] instanceof RawText && c2[0].text.trim() === "@end") return c2[0];
+      const last = c2[c2.length - 1];
+      if (last instanceof RawText && last.text.trim() === "@end" && (c2.length === 1 || c2[c2.length - 2] instanceof LineBreak)) return last;
+      if (last instanceof FunctionCall && !last.error && last.name === "end" && c2.length >= 2 && c2[c2.length - 2] instanceof LineBreak) return last;
+      return null;
+    };
+    const strArg = (fc, i) => fc.args[i] && fc.args[i].type === "string" ? fc.args[i].value : "";
+    const collect = (start, top) => {
+      const out = [];
+      let i = start;
+      while (i < blocks.length) {
+        const b = blocks[i];
+        const eMark = endMarker(b);
+        if (eMark) {
+          if (top) {
+            out.push(b);
+            i++;
+            continue;
+          }
+          if (b instanceof Paragraph) {
+            const c2 = b.content;
+            const idx = c2.findIndex((n) => n instanceof FunctionCall && n.name === "end" || n instanceof RawText && n.text.trim() === "@end");
+            const keep = idx > 0 ? c2.slice(0, idx - (c2[idx - 1] instanceof LineBreak ? 1 : 0)) : [];
+            if (keep.length) out.push(new Paragraph(this._mergeAdjacentText(keep)));
+          }
+          return { blocks: out, next: i + 1 };
+        }
+        const fc = partMarker(b);
+        if (fc) {
+          const inner2 = collect(i + 1, false);
+          out.push(new PartBlock(strArg(fc, 0), parseInlineFragment(strArg(fc, 1)), inner2.blocks));
+          i = inner2.next;
+        } else {
+          out.push(b);
+          i++;
+        }
+      }
+      return { blocks: out, next: i };
+    };
+    doc.blocks = collect(0, true).blocks;
   }
   /**
    * 直接解析原始文本（内部调用 Lexer）
@@ -3750,6 +3824,10 @@ function dumpAST(node, indent = 0, prefix = "", isLast = true) {
   if (node instanceof Theorem) {
     const lbl = node.label ? ` label=${node.label}` : "";
     return `${linePrefix}Theorem(${node.type})${lbl}`;
+  }
+  if (node instanceof PartBlock) {
+    const id = node.id ? ` id=${node.id}` : "";
+    return `${linePrefix}Part${id}`;
   }
   if (node instanceof RawText) return `${linePrefix}Text "${node.text}"`;
   if (node instanceof LineBreak) return `${linePrefix}LineBreak`;
@@ -27106,9 +27184,13 @@ var _HTMLRenderer = class _HTMLRenderer {
     const block = doc.blocks[index];
     if (!block) return "";
     let headingIdx = 0;
-    for (let i = 0; i < index; i++) {
-      if (doc.blocks[i] instanceof Heading) headingIdx++;
-    }
+    const countHeadings = (blocks) => {
+      for (const b of blocks) {
+        if (b instanceof PartBlock) countHeadings(b.blocks);
+        else if (b instanceof Heading) headingIdx++;
+      }
+    };
+    countHeadings(doc.blocks.slice(0, index));
     this._headingIdx = headingIdx;
     this._output = [];
     block.accept(this);
@@ -27279,15 +27361,23 @@ ${body}
       }
     }
   }
-  _applySets(doc) {
-    for (const block of doc.blocks) {
-      this._eachBlockInline(block, (n) => {
-        if (n instanceof FunctionCall && n.name === "set") this._applySet(n);
-        else if (n instanceof FunctionCall && n.name === "let") this._applyLet(n);
-        else if (n instanceof FunctionCall && n.name === "plugin") this._applyPlugin(n);
-        else if (n instanceof FunctionCall && n.name === "define") this._applyDefine(n);
-      });
+  /** 遍历块数组的行内节点（PartBlock 递归进内部块） */
+  _eachBlocksInline(blocks, fn) {
+    for (const b of blocks) {
+      if (b instanceof PartBlock) {
+        this._eachBlocksInline(b.blocks, fn);
+        continue;
+      }
+      this._eachBlockInline(b, fn);
     }
+  }
+  _applySets(doc) {
+    this._eachBlocksInline(doc.blocks, (n) => {
+      if (n instanceof FunctionCall && n.name === "set") this._applySet(n);
+      else if (n instanceof FunctionCall && n.name === "let") this._applyLet(n);
+      else if (n instanceof FunctionCall && n.name === "plugin") this._applyPlugin(n);
+      else if (n instanceof FunctionCall && n.name === "define") this._applyDefine(n);
+    });
   }
   _applySet(node) {
     if (node.error || !node.args[0]) return;
@@ -27461,7 +27551,7 @@ ${body}
       }
       return out;
     };
-    for (const block of doc.blocks) {
+    const collectBlock = (block) => {
       const deps = { v: {}, m: {}, d: {} };
       block._deps = deps;
       currentDeps = deps;
@@ -27474,6 +27564,17 @@ ${body}
         cite: this._citeOrder.length,
         term: this._termOrder.length
       };
+      if (block instanceof PartBlock) {
+        if (block.id) {
+          const text2 = headingText(block.title) || block.id;
+          let display;
+          if (this._refNumbering) display = extractHeadingNumber(text2, this._refNumbering);
+          if (display === void 0) display = text2;
+          this._refs[block.id] = { kind: "part", display };
+        }
+        block.blocks.forEach(collectBlock);
+        return;
+      }
       if (block instanceof Heading) {
         const autoNum = this._headingNumbering ? nextSecNumber(block.level) : "";
         this._headingSeq.push(autoNum);
@@ -27506,7 +27607,8 @@ ${body}
         this._refs[block.label] = { kind: "thm", type: block.type, number: counters.thm };
       }
       if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
-    }
+    };
+    doc.blocks.forEach(collectBlock);
     currentDeps = null;
     this._citeYearSuffix = {};
     if (this._citeStyle !== "numeric") {
@@ -27577,15 +27679,20 @@ ${body}
       if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report("missing_footnote", n.label);
       if (n instanceof Image) markLabel(n.label);
     };
-    for (let i = 0; i < doc.blocks.length; i++) {
-      const block = doc.blocks[i];
-      currentBlock = i;
+    const walkBlock = (block, blockIdx) => {
+      currentBlock = blockIdx;
+      if (block instanceof PartBlock) {
+        markLabel(block.id);
+        block.blocks.forEach((b) => walkBlock(b, blockIdx));
+        return;
+      }
       if (block.label && (block instanceof Table || block instanceof Equation || block instanceof Theorem || block instanceof CodeBlock && block.language === "mermaid")) {
         markLabel(block.label);
       }
       if (block._orphanCaption) report("orphan_caption", block._orphanCaption);
       if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
-    }
+    };
+    doc.blocks.forEach((block, i) => walkBlock(block, i));
     currentBlock = -1;
     return issues;
   }
@@ -27893,6 +28000,25 @@ ${body}
     if (this.pretty) this._write("\n");
   }
   /**
+   * @part 区间：<section class="part" id> + 标题（h2，无编号）+ 内部块顺序渲染。
+   * 单独渲染 = 带锚点章节；@include 展开时标记行被文本层替换，不经过本方法。
+   */
+  visit_PartBlock(node) {
+    const id = node.id ? ` id="${this._escAttr(node.id)}"` : "";
+    this._write(`<section class="part"${id}>`);
+    if (this.pretty) this._write("\n");
+    if (node.title.length) {
+      this._write("<h2>");
+      node.title.forEach((n) => n.accept(this));
+      this._write("</h2>");
+      if (this.pretty) this._write("\n");
+    }
+    node.blocks.forEach((b) => b.accept(this));
+    if (this.pretty) this._write("\n");
+    this._write("</section>");
+    if (this.pretty) this._write("\n");
+  }
+  /**
    * 公式：行内 <span class="math-inline">，块级 <div class="math">。
    * mathRenderer 选项存在时调用其渲染（返回 HTML 不转义），否则源码转义透传。
    * 内置 KaTeX 渲染结果按 (inline, 源码) 缓存，跨实例复用。
@@ -28103,7 +28229,9 @@ function llmReport(issues) {
     missing_ref: "\u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684\u4EA4\u53C9\u5F15\u7528\u6807\u7B7E",
     missing_footnote: "\u5F15\u7528\u4E86\u672A\u5B9A\u4E49\u7684\u811A\u6CE8",
     duplicate_label: "\u91CD\u590D\u58F0\u660E\u4E86\u6807\u7B7E",
-    orphan_caption: "\u5B64\u7ACB caption\uFF08\u672A\u5F52\u5E76\u5230\u76EE\u6807\u5757\uFF09"
+    orphan_caption: "\u5B64\u7ACB caption\uFF08\u672A\u5F52\u5E76\u5230\u76EE\u6807\u5757\uFF09",
+    missing_include: "include \u52A0\u8F7D\u5931\u8D25\uFF08\u6587\u6863\u7F3A\u5931\uFF09",
+    missing_part: "\u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684 part\uFF08@part \u533A\u95F4\uFF09"
   };
   if (!issues || !issues.length) return "\u68C0\u67E5\u901A\u8FC7\uFF1A\u65E0\u5F15\u7528\u7F3A\u53E3\u3002";
   const lines = issues.map((i) => {
@@ -28120,6 +28248,98 @@ function diffBlocks(oldHashes, newHashes) {
     if (typeof a === "number" && typeof b === "number") return a - b;
     return String(a).localeCompare(String(b));
   });
+}
+
+// src/include.js
+var INCLUDE_RE = /^\s*@include\(\s*("(?:\\.|[^"])*")\s*(?:,\s*("(?:\\.|[^"])*")\s*)?\)\s*$/;
+var PART_OPEN_RE = /^\s*@part\(\s*("(?:\\.|[^"])*")\s*(?:,\s*("(?:\\.|[^"])*")\s*)?\)\s*$/;
+var PART_SETTER_RE = /^\s*@set\(/;
+var parseStr = (raw) => JSON.parse(raw);
+function extractPart(text2, id, ctx) {
+  const lines = text2.split("\n");
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(PART_OPEN_RE);
+    if (m && parseStr(m[1]) === id) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) {
+    ctx.issues.push({ type: "missing_part", key: id, count: 1, block: void 0 });
+    return `<!-- mslang: \u672A\u627E\u5230 part "${id}" -->`;
+  }
+  let depth = 0, end = -1;
+  for (let i = start; i < lines.length; i++) {
+    if (PART_OPEN_RE.test(lines[i])) depth++;
+    if (/^\s*@end\s*$/.test(lines[i])) {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  const inner2 = lines.slice(start + 1, end === -1 ? lines.length : end);
+  return inner2.filter((l) => !PART_SETTER_RE.test(l)).join("\n");
+}
+function getTarget(path2, id, opts, ctx) {
+  const inStack = ctx.stack.includes(path2);
+  if (ctx.cache.has(path2)) {
+    return inStack ? `<!-- mslang: \u5FAA\u73AF\u5F15\u7528 @include("${path2}") -->` : extractPart(ctx.cache.get(path2), id, ctx);
+  }
+  let loaded;
+  try {
+    loaded = opts.include(path2);
+  } catch (e) {
+    loaded = null;
+  }
+  if (loaded instanceof Promise) {
+    return loaded.then((src) => {
+      if (!src) {
+        ctx.issues.push({ type: "missing_include", key: path2, count: 1, block: void 0 });
+        return `<!-- mslang: include \u52A0\u8F7D\u5931\u8D25 "${path2}" -->`;
+      }
+      ctx.cache.set(path2, src);
+      const expanded2 = expandIncludes(src, opts, [...ctx.stack, path2], ctx.cache);
+      return Promise.resolve(expanded2).then((e) => extractPart(e, id, ctx));
+    });
+  }
+  if (!loaded) {
+    ctx.issues.push({ type: "missing_include", key: path2, count: 1, block: void 0 });
+    return `<!-- mslang: include \u52A0\u8F7D\u5931\u8D25 "${path2}" -->`;
+  }
+  ctx.cache.set(path2, loaded);
+  if (inStack) return `<!-- mslang: \u5FAA\u73AF\u5F15\u7528 @include("${path2}") -->`;
+  const expanded = expandIncludes(loaded, opts, [...ctx.stack, path2], ctx.cache);
+  return expanded instanceof Promise ? expanded.then((e) => extractPart(e, id, ctx)) : extractPart(expanded, id, ctx);
+}
+function expandIncludes(source2, opts, stack = [], cache = /* @__PURE__ */ new Map()) {
+  const ctx = { stack, issues: opts.issues || [], cache };
+  const lines = source2.split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(INCLUDE_RE);
+    if (!m) {
+      out.push(lines[i]);
+      continue;
+    }
+    const path2 = parseStr(m[1]);
+    const id = m[2] ? parseStr(m[2]) : null;
+    if (!id) {
+      out.push("<!-- mslang: @include \u9700\u6307\u5B9A part id\uFF08\u6574\u6587\u6863\u5408\u5E76\u8BF7\u7528 render([...])) -->");
+      continue;
+    }
+    const replaced = getTarget(path2, id, opts, ctx);
+    if (replaced instanceof Promise) {
+      return replaced.then((text2) => {
+        const rest = expandIncludes(lines.slice(i + 1).join("\n"), opts, stack, cache);
+        return Promise.resolve(rest).then((r) => out.concat(text2, r).join("\n"));
+      });
+    }
+    out.push(replaced);
+  }
+  return out.join("\n");
 }
 
 // src/blockeditor.js
@@ -28146,8 +28366,11 @@ var BlockEditor = class {
    * @param {object} [options] - 与 render() 相同（data/variables/headingNumbering/…）
    */
   constructor(source2, options = {}) {
-    this.source = source2;
     this.options = { ...options };
+    this.source = typeof source2 === "string" && options.include ? expandIncludes(source2, { include: options.include, issues: [] }) : source2;
+    if (this.source instanceof Promise) {
+      throw new Error("BlockEditor \u4EC5\u652F\u6301\u540C\u6B65 include loader\uFF08\u5F02\u6B65\u8BF7\u7528 render async:true\uFF09");
+    }
     this.renderer = new HTMLRenderer({
       functions: options.functions,
       escapeHtml: options.escapeHtml,
@@ -28228,13 +28451,30 @@ var BlockEditor = class {
 function render3(source2, options = {}) {
   const renderer = new HTMLRenderer(_rendererOpts(options));
   const opts = _renderOptions(options);
-  if (Array.isArray(source2)) {
-    const docs = source2.map((s) => s instanceof Document ? s : new Parser().parseText(s));
-    return options.async ? renderer.renderAllAsync(docs, opts) : renderer.renderAll(docs, opts);
+  const finish = (s) => {
+    if (Array.isArray(s)) {
+      const docs = s.map((x) => x instanceof Document ? x : new Parser().parseText(x));
+      return options.async ? renderer.renderAllAsync(docs, opts) : renderer.renderAll(docs, opts);
+    }
+    if (options.async) return renderer.renderAsync(s, opts);
+    if (options.blocks) return renderer.renderBlocks(s, opts);
+    return renderer.render(s, opts);
+  };
+  const attachPreIssues = (result, preIssues) => {
+    if (preIssues && preIssues.length && result && typeof result === "object" && Array.isArray(result.issues)) {
+      result.issues = [...preIssues, ...result.issues];
+    }
+    return result;
+  };
+  if (typeof source2 === "string" && options.include) {
+    const preIssues = [];
+    const expanded = expandIncludes(source2, { include: options.include, issues: preIssues });
+    if (expanded instanceof Promise) {
+      return expanded.then((s) => attachPreIssues(finish(s), preIssues));
+    }
+    return attachPreIssues(finish(expanded), preIssues);
   }
-  if (options.async) return renderer.renderAsync(source2, opts);
-  if (options.blocks) return renderer.renderBlocks(source2, opts);
-  return renderer.render(source2, opts);
+  return finish(source2);
 }
 function _rendererOpts(options) {
   return {
@@ -28274,4 +28514,4 @@ export {
   render3 as render,
   toJSON
 };
-/*! built: 2026-08-09T05:43:57.449Z */
+/*! built: 2026-08-19T13:11:44.929Z */

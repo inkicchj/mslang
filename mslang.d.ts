@@ -17,6 +17,8 @@ export interface RenderOptions {
   variables?: Record<string, any>;
   /** 自定义函数表 */
   functions?: Record<string, (...args: any[]) => any>;
+  /** 跨文档引用 loader：@include("path", "part") 时调用取文档源码；返回 Promise 需 async: true */
+  include?: (path: string) => string | Promise<string>;
   wrapperClass?: string;
   wrapperId?: string;
   /** 标题自动编号：'1.1' / '1' / '一' */
@@ -51,10 +53,10 @@ export type RenderResult =
 
 export interface Issue {
   type: 'missing_cite' | 'missing_term' | 'missing_ref' | 'missing_footnote'
-    | 'duplicate_label' | 'orphan_caption';
+    | 'duplicate_label' | 'orphan_caption' | 'missing_include' | 'missing_part';
   key: string;
   count: number;
-  /** 首次出现的块索引 */
+  /** 首次出现的块索引（文本层 issue 如 missing_include/missing_part 无块） */
   block?: number;
 }
 

@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  render, Parser, dumpAST,
+  render, Parser, dumpAST, llmReport,
 } from '../src/index.js';
 import { HTMLRenderer } from '../src/renderer.js';
 
@@ -170,4 +170,69 @@ test('插件：异步与跨文档合并', async () => {
   // 文档1注册，文档2调用
   const h = render(['@plugin("inc", "(x) => x + 1")', '@inc(41)']);
   assert.match(h, /42/);
+});
+
+test('@part/@end 具名可引用区间', () => {
+  const h = render('@part("h1", "笔记")\n\n> 原文内容\n\n分析内容\n@end');
+  assert.match(h, /<section class="part" id="h1">/);
+  assert.match(h, /<h2>笔记<\/h2>/);
+  assert.match(h, /原文内容/);
+  assert.ok(!h.includes('@end'), '@end 行不残留');
+  // 紧贴写法 "正文\n@end"：内容保留
+  assert.match(render('@part("a", "A")\n\n正文\n@end'), /<p>正文<\/p>/);
+  // 嵌套 part
+  const nested = render('@part("a","外")\n\n甲\n\n@part("b","内")\n\n乙\n@end\n\n@end');
+  assert.match(nested, /<section class="part" id="a">/);
+  assert.match(nested, /<section class="part" id="b">/);
+  // part id 可被 @ref 引用
+  assert.match(render('@part("p1", "片段")\n\n甲\n@end\n\n见 @ref("p1")', { refNumbering: '' }), /见 <a href="#p1"[^>]*>片段<\/a>/);
+  // 孤立 @end 保留
+  assert.match(render('甲\n\n@end'), /@end/);
+});
+
+test('@include 跨文档引用（动态 loader）', async () => {
+  const DOCS = {
+    'a.msl': '@part("p1", "笔记一")\n\n> 原文A\n\n分析A\n@end\n\n@part("p2", "笔记二")\n\n![图](/a.png){#fig:1}\n\n{#fig:1} 实验\n\n见图 @ref("fig:1")\n@end',
+    'b.msl': '@part("p3", "嵌套")\n\n@include("a.msl", "p1")\n@end',
+  };
+  const loader = (p) => DOCS[p];
+  // 引用另一文档的一段话：统一编号 + 引用解析 + @set 剥离
+  const h = render('@include("a.msl", "p1")', { include: loader });
+  assert.match(h, /原文A/);
+  assert.match(h, /分析A/);
+  assert.ok(!h.includes('<h2>笔记一</h2>'), '标记行不渲染');
+  assert.ok(!h.includes('@end'), 'end 不残留');
+  // 图表编号进入汇总文档（caption 归并 + @ref 解析）
+  const h2 = render('@include("a.msl", "p2")', { include: loader });
+  assert.match(h2, /图 1：实验/);
+  assert.match(h2, /href="#fig:1"/);
+  // 嵌套 include（b 内含 a）
+  const h3 = render('@include("b.msl", "p3")', { include: loader });
+  assert.match(h3, /原文A/);
+  // 循环引用
+  const loop = render('@include("c.msl", "x")', {
+    include: (p) => '@part("x", "X")\n\n@include("c.msl", "x")\n@end',
+  });
+  assert.match(loop, /循环引用/);
+  // 缺失：check issues（missing_include/missing_part 合并进 check 结果）
+  const r = render('@include("nope.msl", "x")\n\n@include("a.msl", "nope")', { include: loader, check: true });
+  assert.ok(r.issues.some((i) => i.type === 'missing_include' && i.key === 'nope.msl'));
+  assert.ok(r.issues.some((i) => i.type === 'missing_part' && i.key === 'nope'));
+  assert.match(r.html, /<!-- mslang: include 加载失败 "nope.msl" -->/);
+  assert.match(r.html, /<!-- mslang: 未找到 part "nope" -->/);
+  // 异步 loader
+  const ar = await render('@include("a.msl", "p1")', { include: async (p) => DOCS[p], async: true });
+  assert.match(ar, /原文A/);
+  // blocks 模式
+  const br = render('@include("a.msl", "p1")', { include: loader, blocks: true });
+  assert.match(br.html, /原文A/);
+  // 剥离 @set 保留 @let
+  const setDoc = { 'c.msl': '@part("h", "配置")\n\n@set({ citeStyle: "author-year" })\n@let("v", 42)\n值 @if(v > 0, "V", "X")\n@end' };
+  const h4 = render('@include("c.msl", "h")', { include: (p) => setDoc[p] });
+  assert.match(h4, /V/);
+  assert.ok(!h4.includes('author-year'));
+  // llmReport 文案
+  const report = llmReport(r.issues);
+  assert.match(report, /include 加载失败/);
+  assert.match(report, /引用了不存在的 part/);
 });
