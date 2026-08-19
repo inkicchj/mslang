@@ -67,6 +67,9 @@ class Parser {
 
   /**
    * 将 Token 列表解析为 Raw AST（无结构归并，不执行语义）。
+   * 脚注元数据（定义字典/位置）随 Raw Document 一并产出：
+   * document._footnoteDefs / document._footnoteDefPositions（prepare/parse 从文档读取，
+   * 不依赖 Parser 实例私有状态）。
    * @param {import('./tokens.js').Token[]} tokens
    * @returns {Document}
    */
@@ -105,6 +108,9 @@ class Parser {
     }
 
     // 块源区间与脚注归并移到 finalizeDocument（Raw AST 阶段不执行语义）
+    // 脚注元数据固化到 Raw Document（parse/prepare 从文档读取，不依赖实例私有状态）
+    document._footnoteDefs = this._footnoteDefs;
+    document._footnoteDefPositions = this._footnoteDefPositions;
     return document;
   }
 
@@ -116,7 +122,7 @@ class Parser {
    */
   parse(tokens, source = '') {
     const document = this.parseRaw(tokens, source);
-    return finalizeDocument(document, source, this._footnoteDefs, this._footnoteDefPositions);
+    return finalizeDocument(document, source, document._footnoteDefs, document._footnoteDefPositions);
   }
 
   /**

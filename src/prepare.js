@@ -31,12 +31,10 @@ export function prepare(source, options = {}) {
   const run = (effectiveSource) => {
     let document;
     if (typeof effectiveSource === 'string') {
-      // 唯一管线：Raw 解析 → 单次 normalize/区间/脚注收尾（与其他入口共享 finalizeDocument）
+      // 唯一管线：Raw 解析 → 单次 normalize/区间/脚注收尾（脚注元数据随 Raw Document 产出）
       const parser = new Parser();
-      document = finalizeDocument(
-        parser.parseRaw(new Lexer(effectiveSource).tokenize(), effectiveSource),
-        effectiveSource, parser._footnoteDefs, parser._footnoteDefPositions,
-      );
+      document = parser.parseRaw(new Lexer(effectiveSource).tokenize(), effectiveSource);
+      document = finalizeDocument(document, effectiveSource, document._footnoteDefs, document._footnoteDefPositions);
     } else {
       document = effectiveSource;
     }
