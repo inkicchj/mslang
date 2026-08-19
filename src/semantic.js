@@ -69,8 +69,109 @@ export function walkExprTree(node, onCall, onVar) {
 }
 
 // ================================================================
-// SemanticModel
+// 诊断（opts.check 时）
 // ================================================================
+
+// 诊断 code → 公共 issues type 映射（公共 API 保持 type 命名兼容）
+export const DIAG_ISSUE_TYPE = {
+  'missing-citation': 'missing_cite',
+  'missing-term': 'missing_term',
+  'missing-reference': 'missing_ref',
+  'missing-footnote': 'missing_footnote',
+  'duplicate-label': 'duplicate_label',
+  'orphan-caption': 'orphan_caption',
+  'missing-include': 'missing_include',
+  'missing-part': 'missing_part',
+};
+
+const DIAG_MESSAGES = {
+  'missing-citation': '引用了不存在的文献',
+  'missing-term': '引用了不存在的术语',
+  'missing-reference': '引用了不存在的交叉引用标签',
+  'missing-footnote': '引用了未定义的脚注',
+  'duplicate-label': '重复声明了标签',
+  'orphan-caption': '孤立 caption（未归并到目标块）',
+  'missing-include': 'include 加载失败（文档缺失）',
+  'missing-part': '引用了不存在的 part（@part 区间）',
+};
+
+/**
+ * 引用完整性诊断（opts.check 时）：缺失文献/术语/交叉引用/脚注、
+ * 重复标签、孤立 caption。按 code+label 去重计数，附首次出现块索引与源码区间。
+ * @param {Document} doc
+ * @param {import('./runtime.js').RuntimeContext} runtime
+ * @param {SemanticModel} sm - analyze() 产出（前向引用已完整）
+ * @returns {Array<{code: string, severity: string, message: string, span: {start: number, end: number}, data: {label: string}, block: number, count: number}>}
+ */
+export function checkIntegrity(doc, runtime, sm) {
+  const diagnostics = [];
+  const seen = new Map();
+  const seenLabels = new Set();
+  let currentBlock = -1;
+  const blockAt = (i) => doc.blocks[i];
+  const report = (code, label) => {
+    const id = `${code}|${label}`;
+    if (seen.has(id)) { diagnostics[seen.get(id)].count++; return; }
+    seen.set(id, diagnostics.length);
+    const b = blockAt(currentBlock);
+    diagnostics.push({
+      code, severity: 'warning',
+      message: `${DIAG_MESSAGES[code] || code}「${label}」`,
+      span: b ? { start: b.startPos != null ? b.startPos : 0, end: b.endPos != null ? b.endPos : 0 } : undefined,
+      data: { label }, block: currentBlock, count: 1,
+    });
+  };
+  const handleCall = (call) => {
+    if (call.name === 'cite') {
+      for (const a of call.args) {
+        if (a.type === 'string' && !(runtime.data.bibliography && runtime.data.bibliography[a.value])) {
+          report('missing-citation', a.value);
+        }
+      }
+    } else if (call.name === 'term') {
+      const a = call.args[0];
+      if (a && a.type === 'string' && !(runtime.data.terms && runtime.data.terms[a.value])) {
+        report('missing-term', a.value);
+      }
+    } else if (call.name === 'ref') {
+      const a = call.args[0];
+      if (a && a.type === 'string' && !sm.refs[a.value]) report('missing-reference', a.value);
+    }
+  };
+  const markLabel = (label) => {
+    if (!label) return;
+    if (seenLabels.has(label)) report('duplicate-label', label);
+    else seenLabels.add(label);
+  };
+  const walkInlineList = (n) => {
+    // 顶层 FunctionCall（AST 节点，无 type 字段）；嵌套表达式由 walkExprTree 处理
+    if (n instanceof FunctionCall) {
+      handleCall(n);
+      n.args.forEach(a => walkExprTree(a, handleCall));
+    }
+    if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report('missing-footnote', n.label);
+    if (n instanceof Image) markLabel(n.label);
+  };
+  const walkBlock = (block, blockIdx) => {
+    currentBlock = blockIdx;
+    if (block instanceof PartBlock) {
+      markLabel(block.id);
+      block.blocks.forEach(b => walkBlock(b, blockIdx));
+      return;
+    }
+    // 块级 label（图/表/式/定理/mermaid 共享标签空间）
+    if (block.label && (block instanceof Table || block instanceof Equation
+      || block instanceof Theorem || (block instanceof CodeBlock && block.language === 'mermaid'))) {
+      markLabel(block.label);
+    }
+    // 孤立 caption：降级时由 parser 标记（{#label} 行未归并到目标块）
+    if (block._orphanCaption) report('orphan-caption', block._orphanCaption);
+    if (block.content || block.items) eachBlockInline(block, walkInlineList);
+  };
+  doc.blocks.forEach((block, i) => walkBlock(block, i));
+  currentBlock = -1;
+  return diagnostics;
+}
 
 export class SemanticModel {
   constructor() {

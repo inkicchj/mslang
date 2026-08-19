@@ -21,6 +21,7 @@ import { escapeHTML, escapeAttr } from './escape.js';
 import { RuntimeContext, SET_KEYS, DEFAULT_CAPTION_PREFIX, DEFAULT_KEY_ATTRS, mergeCaptionPrefix } from './runtime.js';
 import {
   SemanticAnalyzer, eachBlockInline, eachBlocksInline, walkExprTree,
+  checkIntegrity, DIAG_ISSUE_TYPE,
 } from './semantic.js';
 import katex from 'katex';
 import hljs from 'highlight.js/lib/core';
@@ -370,72 +371,21 @@ class HTMLRenderer {
   }
 
   /**
-   * 引用完整性检查（opts.check 时）：检测缺失的文献/术语/交叉引用/脚注定义、
-   * 重复标签、孤立 caption。按 type+key 去重并计数，附带首次出现的块索引。
+   * 引用完整性诊断（opts.check 时）：委托 semantic.checkIntegrity（code/severity/span/data
+   * 标准化），转回公共 issues 格式（type = DIAG_ISSUE_TYPE[code]，语义与诊断等价）。
    * _refs 需在 _collectRefs 之后（前向引用已完整）。
    * @param {Document} doc
    * @returns {Array<{type: string, key: string, count: number, block: number}>}
    */
   _checkIntegrity(doc) {
-    const issues = [];
-    const seen = new Map();
-    const seenLabels = new Set();
-    let currentBlock = -1;
-    const report = (type, key) => {
-      const id = `${type}|${key}`;
-      if (seen.has(id)) issues[seen.get(id)].count++;
-      else { seen.set(id, issues.length); issues.push({ type, key, count: 1, block: currentBlock }); }
-    };
-    const handleCall = (call) => {
-      if (call.name === 'cite') {
-        for (const a of call.args) {
-          if (a.type === 'string' && !(this._data.bibliography && this._data.bibliography[a.value])) {
-            report('missing_cite', a.value);
-          }
-        }
-      } else if (call.name === 'term') {
-        const a = call.args[0];
-        if (a && a.type === 'string' && !(this._data.terms && this._data.terms[a.value])) {
-          report('missing_term', a.value);
-        }
-      } else if (call.name === 'ref') {
-        const a = call.args[0];
-        if (a && a.type === 'string' && !this._refs[a.value]) report('missing_ref', a.value);
-      }
-    };
-    const markLabel = (label) => {
-      if (!label) return;
-      if (seenLabels.has(label)) report('duplicate_label', label);
-      else seenLabels.add(label);
-    };
-    const walkInlineList = (n) => {
-      // 顶层 FunctionCall（AST 节点，无 type 字段）；嵌套表达式由 walkExprTree 处理
-      if (n instanceof FunctionCall) {
-        handleCall(n);
-        n.args.forEach(a => walkExprTree(a, handleCall));
-      }
-      if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report('missing_footnote', n.label);
-      if (n instanceof Image) markLabel(n.label);
-    };
-    const walkBlock = (block, blockIdx) => {
-      currentBlock = blockIdx;
-      if (block instanceof PartBlock) {
-        markLabel(block.id);
-        block.blocks.forEach(b => walkBlock(b, blockIdx));
-        return;
-      }
-      // 块级 label（图/表/式/定理/mermaid 共享标签空间）
-      if (block.label && (block instanceof Table || block instanceof Equation
-        || block instanceof Theorem || (block instanceof CodeBlock && block.language === 'mermaid'))) {
-        markLabel(block.label);
-      }
-      // 孤立 caption：降级时由 parser 标记（{#label} 行未归并到目标块）
-      if (block._orphanCaption) report('orphan_caption', block._orphanCaption);
-      if (block.content || block.items) eachBlockInline(block, walkInlineList);
-    };
-    doc.blocks.forEach((block, i) => walkBlock(block, i));
-    currentBlock = -1;
-    return issues;
+    if (!this.semantic) this._collectRefs(doc);
+    return checkIntegrity(doc, this.runtime, this.semantic)
+      .map((d) => ({
+        type: DIAG_ISSUE_TYPE[d.code] || d.code,
+        key: d.data.label,
+        count: d.count,
+        block: d.block,
+      }));
   }
 
   /**

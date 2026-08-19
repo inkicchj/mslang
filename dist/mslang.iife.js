@@ -4298,6 +4298,97 @@ ${items.join("\n")}
       node.items.forEach((a) => walkExprTree(a, onCall, onVar));
     }
   }
+  var DIAG_ISSUE_TYPE = {
+    "missing-citation": "missing_cite",
+    "missing-term": "missing_term",
+    "missing-reference": "missing_ref",
+    "missing-footnote": "missing_footnote",
+    "duplicate-label": "duplicate_label",
+    "orphan-caption": "orphan_caption",
+    "missing-include": "missing_include",
+    "missing-part": "missing_part"
+  };
+  var DIAG_MESSAGES = {
+    "missing-citation": "\u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684\u6587\u732E",
+    "missing-term": "\u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684\u672F\u8BED",
+    "missing-reference": "\u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684\u4EA4\u53C9\u5F15\u7528\u6807\u7B7E",
+    "missing-footnote": "\u5F15\u7528\u4E86\u672A\u5B9A\u4E49\u7684\u811A\u6CE8",
+    "duplicate-label": "\u91CD\u590D\u58F0\u660E\u4E86\u6807\u7B7E",
+    "orphan-caption": "\u5B64\u7ACB caption\uFF08\u672A\u5F52\u5E76\u5230\u76EE\u6807\u5757\uFF09",
+    "missing-include": "include \u52A0\u8F7D\u5931\u8D25\uFF08\u6587\u6863\u7F3A\u5931\uFF09",
+    "missing-part": "\u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684 part\uFF08@part \u533A\u95F4\uFF09"
+  };
+  function checkIntegrity(doc, runtime, sm) {
+    const diagnostics = [];
+    const seen = /* @__PURE__ */ new Map();
+    const seenLabels = /* @__PURE__ */ new Set();
+    let currentBlock = -1;
+    const blockAt = (i) => doc.blocks[i];
+    const report = (code, label) => {
+      const id = `${code}|${label}`;
+      if (seen.has(id)) {
+        diagnostics[seen.get(id)].count++;
+        return;
+      }
+      seen.set(id, diagnostics.length);
+      const b = blockAt(currentBlock);
+      diagnostics.push({
+        code,
+        severity: "warning",
+        message: `${DIAG_MESSAGES[code] || code}\u300C${label}\u300D`,
+        span: b ? { start: b.startPos != null ? b.startPos : 0, end: b.endPos != null ? b.endPos : 0 } : void 0,
+        data: { label },
+        block: currentBlock,
+        count: 1
+      });
+    };
+    const handleCall = (call) => {
+      if (call.name === "cite") {
+        for (const a of call.args) {
+          if (a.type === "string" && !(runtime.data.bibliography && runtime.data.bibliography[a.value])) {
+            report("missing-citation", a.value);
+          }
+        }
+      } else if (call.name === "term") {
+        const a = call.args[0];
+        if (a && a.type === "string" && !(runtime.data.terms && runtime.data.terms[a.value])) {
+          report("missing-term", a.value);
+        }
+      } else if (call.name === "ref") {
+        const a = call.args[0];
+        if (a && a.type === "string" && !sm.refs[a.value]) report("missing-reference", a.value);
+      }
+    };
+    const markLabel = (label) => {
+      if (!label) return;
+      if (seenLabels.has(label)) report("duplicate-label", label);
+      else seenLabels.add(label);
+    };
+    const walkInlineList = (n) => {
+      if (n instanceof FunctionCall) {
+        handleCall(n);
+        n.args.forEach((a) => walkExprTree(a, handleCall));
+      }
+      if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report("missing-footnote", n.label);
+      if (n instanceof Image) markLabel(n.label);
+    };
+    const walkBlock = (block, blockIdx) => {
+      currentBlock = blockIdx;
+      if (block instanceof PartBlock) {
+        markLabel(block.id);
+        block.blocks.forEach((b) => walkBlock(b, blockIdx));
+        return;
+      }
+      if (block.label && (block instanceof Table || block instanceof Equation || block instanceof Theorem || block instanceof CodeBlock && block.language === "mermaid")) {
+        markLabel(block.label);
+      }
+      if (block._orphanCaption) report("orphan-caption", block._orphanCaption);
+      if (block.content || block.items) eachBlockInline(block, walkInlineList);
+    };
+    doc.blocks.forEach((block, i) => walkBlock(block, i));
+    currentBlock = -1;
+    return diagnostics;
+  }
   var SemanticModel = class {
     constructor() {
       this.refs = {};
@@ -27789,71 +27880,20 @@ ${body}
       return this.semantic;
     }
     /**
-     * 引用完整性检查（opts.check 时）：检测缺失的文献/术语/交叉引用/脚注定义、
-     * 重复标签、孤立 caption。按 type+key 去重并计数，附带首次出现的块索引。
+     * 引用完整性诊断（opts.check 时）：委托 semantic.checkIntegrity（code/severity/span/data
+     * 标准化），转回公共 issues 格式（type = DIAG_ISSUE_TYPE[code]，语义与诊断等价）。
      * _refs 需在 _collectRefs 之后（前向引用已完整）。
      * @param {Document} doc
      * @returns {Array<{type: string, key: string, count: number, block: number}>}
      */
     _checkIntegrity(doc) {
-      const issues = [];
-      const seen = /* @__PURE__ */ new Map();
-      const seenLabels = /* @__PURE__ */ new Set();
-      let currentBlock = -1;
-      const report = (type, key) => {
-        const id = `${type}|${key}`;
-        if (seen.has(id)) issues[seen.get(id)].count++;
-        else {
-          seen.set(id, issues.length);
-          issues.push({ type, key, count: 1, block: currentBlock });
-        }
-      };
-      const handleCall = (call) => {
-        if (call.name === "cite") {
-          for (const a of call.args) {
-            if (a.type === "string" && !(this._data.bibliography && this._data.bibliography[a.value])) {
-              report("missing_cite", a.value);
-            }
-          }
-        } else if (call.name === "term") {
-          const a = call.args[0];
-          if (a && a.type === "string" && !(this._data.terms && this._data.terms[a.value])) {
-            report("missing_term", a.value);
-          }
-        } else if (call.name === "ref") {
-          const a = call.args[0];
-          if (a && a.type === "string" && !this._refs[a.value]) report("missing_ref", a.value);
-        }
-      };
-      const markLabel = (label) => {
-        if (!label) return;
-        if (seenLabels.has(label)) report("duplicate_label", label);
-        else seenLabels.add(label);
-      };
-      const walkInlineList = (n) => {
-        if (n instanceof FunctionCall) {
-          handleCall(n);
-          n.args.forEach((a) => walkExprTree(a, handleCall));
-        }
-        if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report("missing_footnote", n.label);
-        if (n instanceof Image) markLabel(n.label);
-      };
-      const walkBlock = (block, blockIdx) => {
-        currentBlock = blockIdx;
-        if (block instanceof PartBlock) {
-          markLabel(block.id);
-          block.blocks.forEach((b) => walkBlock(b, blockIdx));
-          return;
-        }
-        if (block.label && (block instanceof Table || block instanceof Equation || block instanceof Theorem || block instanceof CodeBlock && block.language === "mermaid")) {
-          markLabel(block.label);
-        }
-        if (block._orphanCaption) report("orphan_caption", block._orphanCaption);
-        if (block.content || block.items) eachBlockInline(block, walkInlineList);
-      };
-      doc.blocks.forEach((block, i) => walkBlock(block, i));
-      currentBlock = -1;
-      return issues;
+      if (!this.semantic) this._collectRefs(doc);
+      return checkIntegrity(doc, this.runtime, this.semantic).map((d) => ({
+        type: DIAG_ISSUE_TYPE[d.code] || d.code,
+        key: d.data.label,
+        count: d.count,
+        block: d.block
+      }));
     }
     /**
      * 将 issues 转为面向 LLM 的自查文本（喂回模型定位修复用）。
@@ -28633,4 +28673,4 @@ ${lines.join("\n")}`;
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-19T17:01:32.422Z */
+/*! built: 2026-08-19T17:04:02.541Z */
