@@ -29,8 +29,6 @@
 import { Parser, dumpAST, mergeDocuments, toJSON } from './parser.js';
 import { HTMLRenderer, llmReport } from './renderer.js';
 import { BlockEditor } from './blockeditor.js';
-import { Document } from './nodes.js';
-import { expandIncludes } from './include.js';
 import { prepare } from './prepare.js';
 import { DIAG_ISSUE_TYPE, checkIntegrity } from './semantic.js';
 
@@ -72,13 +70,10 @@ export function analyze(source, options = {}) {
   return prepared instanceof Promise ? prepared.then(gather) : gather(prepared);
 }
 
-/** 显式异步渲染：render(source, { async: true }) 的别名 */
-export function renderAsync(source, options = {}) {
-  return render(source, { ...options, async: true });
-}
-
 /**
- * mslang 唯一渲染入口。
+ * 唯一渲染入口（0.2.1：薄 orchestrator）。
+ * 解析/规范化/运行时/语义全部在 prepare()（唯一管线）；Renderer 只做 AST→HTML。
+ * 数组自动合并；async/blocks 为配置项；完整选项见 mslang.d.ts / overview.md。
  * @param {string|string[]|Document} source - 字符串渲染；数组自动合并（多文档连续编号）
  * @param {object} [options]
  * @param {boolean} [options.async=false] - 异步渲染（支持返回 Promise 的自定义函数），返回 Promise<string>
@@ -94,7 +89,7 @@ export function renderAsync(source, options = {}) {
  * @param {string} [options.termKeyAttr] - 术语 data 属性名
  * @param {string} [options.refKeyAttr] - 交叉引用 data 属性名
  * @param {string} [options.citeStyle] - 引用样式：'numeric'（默认）/ 'author-year' / 'author'
- * @param {boolean} [options.allowPlugins=true] - 允许 @plugin 文档内插件
+ * @param {boolean} [options.allowPlugins=false] - 允许 @plugin 文档内插件（默认关闭，文档不可打开）
  * @param {boolean} [options.escapeHtml=true] - 转义 HTML 特殊字符
  * @param {boolean} [options.pretty=false] - 输出换行美化
  * @param {function} [options.mathRenderer] - 公式渲染器（默认内置 KaTeX）
@@ -103,74 +98,13 @@ export function renderAsync(source, options = {}) {
  * @param {object} [options.functions] - 自定义函数表
  * @param {function} [options.include] - 跨文档引用 loader：@include("path", "part") 时
  *   调用（path）取文档源码；返回 string 同步展开，返回 Promise 需 async: true
- * @param {function} [options.include] - 跨文档引用 loader：@include("path", "part") 时
- *   调用（path）取文档源码；返回 string 同步展开，返回 Promise 需 async: true
  * @returns {string|Promise<string>|{html: string, blockHashes: object}}
  */
 export function render(source, options = {}) {
-  const renderer = new HTMLRenderer(_rendererOpts(options));
-  const opts = _renderOptions(options);
-  const finish = (s) => {
-    if (Array.isArray(s)) {
-      // 多文档合并：字符串自动解析，Document 直接使用（跨文档连续编号、交叉引用、全局 @set）
-      const docs = s.map(x => x instanceof Document ? x : new Parser().parseText(x));
-      return options.async
-        ? renderer.renderAllAsync(docs, opts)
-        : renderer.renderAll(docs, opts);
-    }
-    if (options.async) return renderer.renderAsync(s, opts);
-    if (options.blocks) return renderer.renderBlocks(s, opts);
-    return renderer.render(s, opts);
-  };
-  const attachPreIssues = (result, preIssues) => {
-    if (preIssues && preIssues.length && result && typeof result === 'object'
-      && Array.isArray(result.issues)) {
-      result.issues = [...preIssues, ...result.issues];
-    }
-    return result;
-  };
-  // 跨文档引用：字符串源在 parse 前展开（异步 loader 时预展开先于渲染）
-  if (typeof source === 'string' && options.include) {
-    const preIssues = [];
-    const expanded = expandIncludes(source, { include: options.include, issues: preIssues });
-    if (expanded instanceof Promise) {
-      return expanded.then((s) => attachPreIssues(finish(s), preIssues));
-    }
-    return attachPreIssues(finish(expanded), preIssues);
-  }
-  return finish(source);
+  return new HTMLRenderer(options).render(source, options);
 }
 
-/** 渲染器构造选项（escapeHtml/pretty 仅构造时生效） */
-function _rendererOpts(options) {
-  return {
-    functions: options.functions,
-    escapeHtml: options.escapeHtml,
-    pretty: options.pretty,
-  };
-}
-
-/** render 共用选项透传 */
-function _renderOptions(options) {
-  return {
-    wrapperClass: options.wrapperClass || 'mslang',
-    wrapperId: options.wrapperId || '',
-    data: options.data,
-    variables: options.variables,
-    headingNumbering: options.headingNumbering,
-    refNumbering: options.refNumbering,
-    captionPrefix: options.captionPrefix,
-    citeKeyAttr: options.citeKeyAttr,
-    termKeyAttr: options.termKeyAttr,
-    refKeyAttr: options.refKeyAttr,
-    mathRenderer: options.mathRenderer,
-    mathFontsPath: options.mathFontsPath,
-    codeRenderer: options.codeRenderer,
-    check: options.check,
-    bibStyle: options.bibStyle,
-    blocks: options.blocks,
-    citeStyle: options.citeStyle,
-    allowPlugins: options.allowPlugins,
-    blockMarkers: options.blockMarkers,
-  };
+/** 显式异步渲染：render(source, { async: true }) 的别名 */
+export function renderAsync(source, options = {}) {
+  return render(source, { ...options, async: true });
 }

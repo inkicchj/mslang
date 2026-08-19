@@ -3067,6 +3067,24 @@ var mslang = (() => {
     }
   };
 
+  // src/parse-utils.js
+  function parseInlineFragment(text2) {
+    const parser = new Parser();
+    const doc = parser.parseRaw(new Lexer(text2).tokenize(), text2);
+    return doc.blocks.flatMap((b) => b.content || []);
+  }
+
+  // src/ast-utils.js
+  function walkNodes(node, fn) {
+    fn(node);
+    for (const attr of ["content", "children", "blocks", "items"]) {
+      const children = node[attr];
+      if (Array.isArray(children)) {
+        for (const child of children) walkNodes(child, fn);
+      }
+    }
+  }
+
   // src/normalize.js
   var THEOREM_TYPES = ["theorem", "lemma", "definition", "remark", "example"];
   function mergeText(nodes) {
@@ -3178,7 +3196,7 @@ var mslang = (() => {
   ]);
   var URL_RE = /^(https?:\/\/[^\s<>"{}|\\^`]+)$/;
   var URL_FIND_RE = /https?:\/\/[^\s<>"{}|\\^`]+/g;
-  var Parser = class {
+  var Parser = class _Parser {
     constructor() {
       this._tokens = [];
       this._pos = 0;
@@ -3188,11 +3206,11 @@ var mslang = (() => {
     // 公共接口
     // ================================================================
     /**
-     * 将 Token 列表解析为 Document AST
+     * 将 Token 列表解析为 Raw AST（无结构归并，不执行语义）。
      * @param {import('./tokens.js').Token[]} tokens
      * @returns {Document}
      */
-    parse(tokens, source2 = "") {
+    parseRaw(tokens, source2 = "") {
       this._tokens = tokens;
       this._pos = 0;
       this._footnoteDefs = {};
@@ -3221,27 +3239,30 @@ var mslang = (() => {
         block.startPos = startPos;
         document2.blocks.push(block);
       }
-      normalizeDocument(document2);
-      for (let i = 0; i < document2.blocks.length; i++) {
-        const b = document2.blocks[i];
-        let end = i + 1 < document2.blocks.length ? document2.blocks[i + 1].startPos : source2.length;
-        for (const p of this._footnoteDefPositions) {
-          if (p >= b.startPos && p < end) {
-            end = p;
-            break;
-          }
-        }
-        b.endPos = end;
-        if (source2) b.raw = source2.slice(b.startPos, b.endPos);
-      }
-      if (Object.keys(this._footnoteDefs).length > 0) {
-        document2.footnotes = { ...this._footnoteDefs };
-        normalizeFootnotes(document2);
-      }
       return document2;
     }
     /**
-     * 直接解析原始文本（内部调用 Lexer）
+     * 将 Token 列表解析为 Stable AST（兼容层：Raw + 结构归并 + 区间 + 脚注编号）。
+     * @param {import('./tokens.js').Token[]} tokens
+     * @param {string} [source]
+     * @returns {Document}
+     */
+    parse(tokens, source2 = "") {
+      const document2 = this.parseRaw(tokens, source2);
+      return finalizeDocument(document2, source2, this._footnoteDefs, this._footnoteDefPositions);
+    }
+    /**
+     * 直接解析原始文本为 Raw AST（不执行结构归并/语义）。
+     * @param {string} source
+     * @returns {Document}
+     */
+    parseTextRaw(source2) {
+      const lexer = new Lexer(source2);
+      const tokens = lexer.tokenize();
+      return this.parseRaw(tokens, source2);
+    }
+    /**
+     * 直接解析原始文本为 Stable AST（兼容层：Raw + 结构归并 + 区间 + 脚注编号）。
      * @param {string} source
      * @returns {Document}
      */
@@ -3480,13 +3501,19 @@ var mslang = (() => {
               cells = cells.slice(0, -1);
             }
           }
-          headers.push(...cells.map(parseInlineFragment));
+          headers.push(...cells.map((c2) => this._fragment(c2)));
         } else {
-          rows.push(cells.map(parseInlineFragment));
+          rows.push(cells.map((c2) => this._fragment(c2)));
         }
         if (this._current() && this._current().type === TokenType.LINE_BREAK) this._advance();
       }
       return new Table(headers, rows, label);
+    }
+    /** 短文本 → 行内节点（表格单元格用；独立 Parser Raw，不做语义） */
+    _fragment(text2) {
+      const parser = new _Parser();
+      const doc = parser.parseRaw(new Lexer(text2).tokenize(), text2);
+      return doc.blocks.flatMap((b) => b.content || []);
     }
     /**
      * 查找 caption 的归并目标：前一 block 是 label 匹配的表格，
@@ -3694,15 +3721,6 @@ var mslang = (() => {
   function _isSpacer(node) {
     return node instanceof Paragraph && node.content.length > 0 && node.content.every((n) => n instanceof LineBreak);
   }
-  function walkNodes(node, fn) {
-    fn(node);
-    for (const attr of ["content", "children", "blocks", "items"]) {
-      const children = node[attr];
-      if (Array.isArray(children)) {
-        for (const child of children) walkNodes(child, fn);
-      }
-    }
-  }
   function mergeDocuments(...docs) {
     const blocks = [];
     const footnotes = {};
@@ -3858,9 +3876,25 @@ var mslang = (() => {
     if (node instanceof LineBreak) return `${linePrefix}LineBreak`;
     return `${linePrefix}${name}`;
   }
-  function parseInlineFragment(text2) {
-    const doc = new Parser().parse(new Lexer(text2).tokenize(), text2);
-    return doc.blocks.flatMap((b) => b.content || []);
+  function finalizeDocument(document2, source2, footnoteDefs = {}, footnoteDefPositions = []) {
+    normalizeDocument(document2);
+    for (let i = 0; i < document2.blocks.length; i++) {
+      const b = document2.blocks[i];
+      let end = i + 1 < document2.blocks.length ? document2.blocks[i + 1].startPos : source2.length;
+      for (const p of footnoteDefPositions) {
+        if (p >= b.startPos && p < end) {
+          end = p;
+          break;
+        }
+      }
+      b.endPos = end;
+      if (source2) b.raw = source2.slice(b.startPos, b.endPos);
+    }
+    if (Object.keys(footnoteDefs).length > 0) {
+      document2.footnotes = { ...footnoteDefs };
+      normalizeFootnotes(document2);
+    }
+    return document2;
   }
   function toJSON(node) {
     if (Array.isArray(node)) return node.map(toJSON);
@@ -3874,7 +3908,7 @@ var mslang = (() => {
     return out;
   }
 
-  // src/builtin.js
+  // src/numbering.js
   var RE_NUM_ARABIC = /^(\d+(?:\.\d+)*)/;
   var RE_NUM_CN = /^(第[一二三四五六七八九十百]+[章节篇]|[一二三四五六七八九十百]+[、．.]|（[一二三四五六七八九十百]+）|\([一二三四五六七八九十百]+\))/;
   function extractHeadingNumber(text2, mode) {
@@ -3886,7 +3920,47 @@ var mslang = (() => {
     if (mode === "\u4E00") num = num.replace(/[、．.]+$/, "");
     return num;
   }
-  function builtinFunctions(renderer) {
+
+  // src/builtin.js
+  function runtimeBuiltins(runtime) {
+    return {
+      if: (cond, then, els) => cond ? then : els === void 0 ? "" : els,
+      not: (x) => !x,
+      and: (...xs) => xs.every(Boolean),
+      or: (...xs) => xs.some(Boolean),
+      /** 文档内配置：@set({ headingNumbering: '1.1', ... })，无输出 */
+      set: (config) => {
+        if (config && typeof config === "object") runtime.applySetConfig(config);
+        return "";
+      },
+      /** 宏定义：@define("name", "模板")，无输出（预扫描注册，渲染时静默） */
+      define: () => "",
+      /** 宏展开：@use("name", { key: value }) 替换模板 {key} 占位符后按行内语法渲染。
+       *  值按 mslang 字面转义（模板内 md 语法仍生效，值原样显示）；未定义宏抛错。 */
+      use: (name, kwargs) => {
+        const template = runtime.macros && runtime.macros[name];
+        if (typeof template !== "string") throw new Error(`undefined macro '${name}'`);
+        const escMd = (v) => String(v).replace(/([*_~`^$[\]@<>!\\])/g, "\\$1");
+        const kwargsObj = kwargs && typeof kwargs === "object" ? kwargs : {};
+        return template.replace(/\{([^{}]+)\}/g, (m, k) => k in kwargsObj ? escMd(kwargsObj[k]) : m);
+      },
+      /** 插件注册：@plugin("name", "(args, kwargs) => ...")，无输出（安全边界：allowPlugins 默认 false） */
+      plugin: (name, body) => {
+        if (typeof name === "string" && typeof body === "string") runtime.registerPlugin(name, body);
+        return "";
+      },
+      /** 变量声明：@let("name", value)，无输出；变量全文档可见（预扫描注册） */
+      let: (name, value) => {
+        if (typeof name === "string") runtime.variables[name] = value;
+        return "";
+      },
+      /** 文献键是否存在（供 if 条件使用） */
+      has_cite: (key) => !!(runtime.data.bibliography && runtime.data.bibliography[key]),
+      /** 术语是否存在（供 if 条件使用） */
+      has_term: (name) => !!(runtime.data.terms && runtime.data.terms[name])
+    };
+  }
+  function htmlBuiltins(renderer) {
     const esc = (t) => renderer._esc(t);
     const escAttr = (t) => renderer._escAttr(t);
     const citeAnchor = (key, entry, num) => {
@@ -3911,40 +3985,6 @@ var mslang = (() => {
       return `<sup><a ${anchor}>[${esc(String(num))}]</a></sup>`;
     };
     return {
-      if: (cond, then, els) => cond ? then : els === void 0 ? "" : els,
-      not: (x) => !x,
-      and: (...xs) => xs.every(Boolean),
-      or: (...xs) => xs.some(Boolean),
-      /** 文档内配置：@set({ headingNumbering: '1.1', ... })，无输出 */
-      set: (config) => {
-        if (config && typeof config === "object") renderer.runtime.applySetConfig(config);
-        return "";
-      },
-      /** 宏定义：@define("name", "模板")，无输出（预扫描注册，渲染时静默） */
-      define: () => "",
-      /** 宏展开：@use("name", { key: value }) 替换模板 {key} 占位符后按行内语法渲染。
-       *  值按 mslang 字面转义（模板内 md 语法仍生效，值原样显示）；未定义宏抛错。 */
-      use: (name, kwargs) => {
-        const template = renderer._macros && renderer._macros[name];
-        if (typeof template !== "string") throw new Error(`undefined macro '${name}'`);
-        const escMd = (v) => String(v).replace(/([*_~`^$[\]@<>!\\])/g, "\\$1");
-        const kwargsObj = kwargs && typeof kwargs === "object" ? kwargs : {};
-        return template.replace(/\{([^{}]+)\}/g, (m, k) => k in kwargsObj ? escMd(kwargsObj[k]) : m);
-      },
-      /** 插件注册：@plugin("name", "(args, kwargs) => ...")，无输出；文档内定义可复用函数（new Function 全局作用域） */
-      plugin: (name, body) => {
-        if (typeof name === "string" && typeof body === "string") renderer.runtime.registerPlugin(name, body);
-        return "";
-      },
-      /** 变量声明：@let("name", value)，无输出；变量全文档可见（预扫描注册） */
-      let: (name, value) => {
-        if (typeof name === "string") renderer._variables[name] = value;
-        return "";
-      },
-      /** 文献键是否存在（供 if 条件使用） */
-      has_cite: (key) => !!(renderer._data.bibliography && renderer._data.bibliography[key]),
-      /** 术语是否存在（供 if 条件使用） */
-      has_term: (name) => !!(renderer._data.terms && renderer._data.terms[name]),
       /** 文献引用：支持一次引多篇 @cite("a","b","c")。
        *  numeric → 上标 [1-3]（连续区间合并）/[1,3]（非连续），逐 key 锚点（连续区间保留首尾）；
        *  author-year / author → (Doe, 2020a; Smith, 2019) 共享括号，分号分隔。 */
@@ -4132,7 +4172,7 @@ ${items.join("\n")}
   var RuntimeContext = class {
     /** @param {{functions?: object, escapeHtml?: boolean, pretty?: boolean}} [renderOpts] 渲染期固定项（构造后不随渲染重置） */
     constructor(renderOpts = {}) {
-      this.functions = { ...renderOpts.functions || {} };
+      this.functions = { ...runtimeBuiltins(this), ...renderOpts.functions || {} };
       this.escapeHtml = renderOpts.escapeHtml !== false;
       this.pretty = renderOpts.pretty !== false;
       this._renderHost = {
@@ -4153,13 +4193,21 @@ ${items.join("\n")}
       this.pluginCache = /* @__PURE__ */ new Map();
       for (const key of Object.keys(CONFIG_DEFAULTS)) {
         if (key === "escapeHtml" || key === "pretty") continue;
+        if (key === "captionPrefix") {
+          const v2 = key in opts && opts[key] !== void 0 ? opts[key] : null;
+          this.captionPrefix = v2 ? mergeCaptionPrefix(DEFAULT_CAPTION_PREFIX, v2) : DEFAULT_CAPTION_PREFIX;
+          continue;
+        }
         const v = key in opts ? opts[key] : CONFIG_DEFAULTS[key];
         this[key] = v === void 0 ? CONFIG_DEFAULTS[key] : v;
       }
       if (this.headingNumbering === true) this.headingNumbering = "1.1";
       else this.headingNumbering = this.headingNumbering || "";
       this.allowPlugins = this.allowPlugins !== false;
-      this.evalCtx = { functions: this.functions, variables: this.variables };
+    }
+    /** 表达式求值上下文（getter：functions/variables 变化即时可见，如 Renderer 注入 HTML builtin 后） */
+    get evalCtx() {
+      return { functions: this.functions, variables: this.variables };
     }
     /** 注册自定义函数（builtin 由 Renderer 构造后注入，覆盖同名 host 函数） */
     registerFunction(name, fn) {
@@ -4578,6 +4626,140 @@ ${items.join("\n")}
       return sm;
     }
   };
+
+  // src/include.js
+  var INCLUDE_RE = /^\s*@include\(\s*("(?:\\.|[^"])*")\s*(?:,\s*("(?:\\.|[^"])*")\s*)?\)\s*$/;
+  var PART_OPEN_RE = /^\s*@part\(\s*("(?:\\.|[^"])*")\s*(?:,\s*("(?:\\.|[^"])*")\s*)?\)\s*$/;
+  var PART_SETTER_RE = /^\s*@set\(/;
+  var parseStr = (raw) => JSON.parse(raw);
+  function extractPart(text2, id, ctx) {
+    const lines = text2.split("\n");
+    let start = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(PART_OPEN_RE);
+      if (m && parseStr(m[1]) === id) {
+        start = i;
+        break;
+      }
+    }
+    if (start === -1) {
+      ctx.issues.push({ type: "missing_part", key: id, count: 1, block: void 0 });
+      return `<!-- mslang: \u672A\u627E\u5230 part "${id}" -->`;
+    }
+    let depth = 0, end = -1;
+    for (let i = start; i < lines.length; i++) {
+      if (PART_OPEN_RE.test(lines[i])) depth++;
+      if (/^\s*@end\s*$/.test(lines[i])) {
+        depth--;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    const inner2 = lines.slice(start + 1, end === -1 ? lines.length : end);
+    return inner2.filter((l) => !PART_SETTER_RE.test(l)).join("\n");
+  }
+  function getTarget(path2, id, opts, ctx) {
+    const inStack = ctx.stack.includes(path2);
+    if (ctx.cache.has(path2)) {
+      return inStack ? `<!-- mslang: \u5FAA\u73AF\u5F15\u7528 @include("${path2}") -->` : extractPart(ctx.cache.get(path2), id, ctx);
+    }
+    let loaded;
+    try {
+      loaded = opts.include(path2);
+    } catch (e) {
+      loaded = null;
+    }
+    if (loaded instanceof Promise) {
+      return loaded.then((src) => {
+        if (!src) {
+          ctx.issues.push({ type: "missing_include", key: path2, count: 1, block: void 0 });
+          return `<!-- mslang: include \u52A0\u8F7D\u5931\u8D25 "${path2}" -->`;
+        }
+        ctx.cache.set(path2, src);
+        const expanded2 = expandIncludes(src, opts, [...ctx.stack, path2], ctx.cache);
+        return Promise.resolve(expanded2).then((e) => extractPart(e, id, ctx));
+      });
+    }
+    if (!loaded) {
+      ctx.issues.push({ type: "missing_include", key: path2, count: 1, block: void 0 });
+      return `<!-- mslang: include \u52A0\u8F7D\u5931\u8D25 "${path2}" -->`;
+    }
+    ctx.cache.set(path2, loaded);
+    if (inStack) return `<!-- mslang: \u5FAA\u73AF\u5F15\u7528 @include("${path2}") -->`;
+    const expanded = expandIncludes(loaded, opts, [...ctx.stack, path2], ctx.cache);
+    return expanded instanceof Promise ? expanded.then((e) => extractPart(e, id, ctx)) : extractPart(expanded, id, ctx);
+  }
+  function expandIncludes(source2, opts, stack = [], cache = /* @__PURE__ */ new Map()) {
+    const ctx = { stack, issues: opts.issues || [], cache };
+    const lines = source2.split("\n");
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(INCLUDE_RE);
+      if (!m) {
+        out.push(lines[i]);
+        continue;
+      }
+      const path2 = parseStr(m[1]);
+      const id = m[2] ? parseStr(m[2]) : null;
+      if (!id) {
+        out.push("<!-- mslang: @include \u9700\u6307\u5B9A part id\uFF08\u6574\u6587\u6863\u5408\u5E76\u8BF7\u7528 render([...])) -->");
+        continue;
+      }
+      const replaced = getTarget(path2, id, opts, ctx);
+      if (replaced instanceof Promise) {
+        return replaced.then((text2) => {
+          const rest = expandIncludes(lines.slice(i + 1).join("\n"), opts, stack, cache);
+          return Promise.resolve(rest).then((r) => out.concat(text2, r).join("\n"));
+        });
+      }
+      out.push(replaced);
+    }
+    return out.join("\n");
+  }
+
+  // src/prepare.js
+  function applyDocConfig(runtime, blocks) {
+    eachBlocksInline(blocks, (n) => {
+      if (n instanceof FunctionCall) {
+        if (n.name === "set") runtime.applySet(n);
+        else if (n.name === "let") runtime.applyLet(n);
+        else if (n.name === "define") runtime.applyDefine(n);
+      }
+    });
+  }
+  function prepare(source2, options = {}) {
+    const issues = [];
+    const run = (effectiveSource) => {
+      let document2;
+      if (typeof effectiveSource === "string") {
+        const parser = new Parser();
+        document2 = finalizeDocument(
+          parser.parseRaw(new Lexer(effectiveSource).tokenize(), effectiveSource),
+          effectiveSource,
+          parser._footnoteDefs,
+          parser._footnoteDefPositions
+        );
+      } else {
+        document2 = effectiveSource;
+      }
+      const runtime = new RuntimeContext({
+        functions: options.functions,
+        escapeHtml: options.escapeHtml,
+        pretty: options.pretty
+      });
+      runtime.resetHost(options);
+      applyDocConfig(runtime, document2.blocks);
+      const semantic = new SemanticAnalyzer({ runtime }).analyze(document2);
+      return { document: document2, runtime, semantic, issues };
+    };
+    if (typeof source2 === "string" && options.include) {
+      const expanded = expandIncludes(source2, { include: options.include, issues });
+      return expanded instanceof Promise ? expanded.then(run) : run(expanded);
+    }
+    return run(source2);
+  }
 
   // node_modules/katex/dist/katex.mjs
   var ParseError = class _ParseError extends Error {
@@ -27647,14 +27829,48 @@ ${items.join("\n")}
      * @param {Object<string, Function>} [opts.functions] - 自定义函数（覆盖同名内置函数）
      */
     constructor(opts = {}) {
-      this.runtime = new RuntimeContext({
-        functions: opts.functions,
-        escapeHtml: opts.escapeHtml,
-        pretty: opts.pretty
-      });
-      this.runtime.resetHost(opts);
-      this.runtime.functions = { ...builtinFunctions(this), ...opts.functions || {} };
+      this._hostFunctions = { ...opts.functions || {} };
+      this.runtime = opts.runtime instanceof RuntimeContext ? opts.runtime : new RuntimeContext({ functions: opts.functions, escapeHtml: opts.escapeHtml, pretty: opts.pretty });
+      this.runtime.functions = { ...htmlBuiltins(this), ...this.runtime.functions };
       this._output = [];
+    }
+    /**
+     * 绑定 PreparedDocument（prepare() 唯一管线产物）：共享 runtime/semantic，
+     * 同步渲染期语义视图（builtin 读 _refs/_citeNumbers 等），设置渲染专用字段。
+     * 不再 resetHost/解析/扫描语义——全部来自 prepared。
+     */
+    _bindPrepared(prepared, opts) {
+      this.runtime = prepared.runtime;
+      this.runtime.functions = {
+        ...htmlBuiltins(this),
+        ...prepared.runtime.functions || {},
+        ...this._hostFunctions
+      };
+      this.semantic = prepared.semantic;
+      this._refs = this.semantic.refs;
+      this._citeNumbers = this.semantic.citeNumbers;
+      this._citeOrder = this.semantic.citeOrder;
+      this._citeYearSuffix = this.semantic.citeYearSuffix;
+      this._termOrder = this.semantic.termOrder;
+      this._headingSeq = this.semantic.headingSeq;
+      this._headingIdx = 0;
+      const {
+        mathRenderer = null,
+        mathFontsPath = "",
+        codeRenderer = null,
+        blockMarkers = false
+      } = opts;
+      this._mathRenderer = mathRenderer || ((src, inline) => katex.renderToString(src, { displayMode: !inline, throwOnError: false }));
+      this._mathFontsPath = mathFontsPath || "";
+      this._codeRenderer = codeRenderer || null;
+      this._blockMarkers = blockMarkers === true;
+      this._blockHashes = {};
+      this._output = [];
+      this._asyncSlots = this._asyncSlots !== void 0 ? this._asyncSlots : null;
+      this._hasMath = false;
+      this._mathRendererCustom = !!mathRenderer;
+      this._hasHighlight = false;
+      this._useDepth = 0;
     }
     // 配置视图：渲染/内置函数统一经 getter 读 runtime（单一配置源，@set 即时生效）
     get escapeHtml() {
@@ -27715,6 +27931,7 @@ ${items.join("\n")}
      */
     addFunction(name, func) {
       this.runtime.functions[name] = func;
+      this._hostFunctions[name] = func;
     }
     /**
      * 渲染为 HTML 片段。
@@ -27732,15 +27949,24 @@ ${items.join("\n")}
      * @returns {string}
      */
     render(source2, opts = {}) {
-      const doc = this._prepare(source2, opts);
+      if (Array.isArray(source2)) return this.renderAll(source2, opts);
+      if (opts.async) return this.renderAsync(source2, opts);
+      if (opts.blocks) return this.renderBlocks(source2, opts);
+      const prepared = prepare(source2, opts);
+      return prepared instanceof Promise ? prepared.then((p) => this._renderPrepared(p, opts)) : this._renderPrepared(prepared, opts);
+    }
+    /** 核心渲染：基于 PreparedDocument（prepare 唯一管线），只做 AST→HTML */
+    _renderPrepared(prepared, opts) {
+      this._bindPrepared(prepared, opts);
+      const doc = prepared.document;
       doc.accept(this);
       const body = this._output.join("");
       const html = this._inlineStyles() + this._wrap(body, opts);
-      if (opts.check) return { html, issues: this._checkIntegrity(doc) };
+      if (opts.check) return { html, issues: toLegacyIssues(prepared, this) };
       return html;
     }
     /**
-     * 单块渲染（块级编辑闭环）：_prepare 全量收集编号上下文后只渲染第 index 块。
+     * 单块渲染（块级编辑闭环）：prepare 全量收集语义后只渲染第 index 块。
      * 返回该块的 HTML（无 wrapper/哨兵），宿主替换对应 DOM 即可。
      * @param {string|Document} source
      * @param {number} index - 块索引（与 Parser.parseText(source).blocks 对齐）
@@ -27748,7 +27974,12 @@ ${items.join("\n")}
      * @returns {string}
      */
     renderBlock(source2, index, opts = {}) {
-      const doc = this._prepare(source2, opts);
+      const prepared = prepare(source2, opts);
+      if (prepared instanceof Promise) {
+        throw new Error("renderBlock \u4E0D\u652F\u6301\u5F02\u6B65 include loader\uFF08\u8BF7\u7528\u540C\u6B65 loader\uFF09");
+      }
+      this._bindPrepared(prepared, opts);
+      const doc = prepared.document;
       const block = doc.blocks[index];
       if (!block) return "";
       let headingIdx = 0;
@@ -27772,15 +28003,20 @@ ${items.join("\n")}
      * @returns {{ html: string, blockHashes: Object }}
      */
     renderBlocks(source2, opts = {}) {
-      const doc = this._prepare(source2, { ...opts, blockMarkers: true });
-      doc.accept(this);
-      const body = this._output.join("");
-      const out = {
-        html: this._inlineStyles() + this._wrap(body, opts),
-        blockHashes: this._blockHashes
+      const prepared = prepare(source2, { ...opts, blockMarkers: true });
+      const run = (p) => {
+        this._bindPrepared(p, { ...opts, blockMarkers: true });
+        const doc = p.document;
+        doc.accept(this);
+        const body = this._output.join("");
+        const out = {
+          html: this._inlineStyles() + this._wrap(body, opts),
+          blockHashes: this._blockHashes
+        };
+        if (opts.check) out.issues = toLegacyIssues(p, this);
+        return out;
       };
-      if (opts.check) out.issues = this._checkIntegrity(doc);
-      return out;
+      return prepared instanceof Promise ? prepared.then(run) : run(prepared);
     }
     /**
      * 异步渲染：支持返回 Promise 的自定义函数（如网络请求）。
@@ -27791,17 +28027,18 @@ ${items.join("\n")}
      * @returns {Promise<string>}
      */
     async renderAsync(source2, opts = {}) {
-      const doc = this._prepare(source2, opts);
+      const prepared = await prepare(source2, opts);
+      this._bindPrepared(prepared, opts);
       this._asyncSlots = [];
       this._asyncId = 0;
-      doc.accept(this);
+      prepared.document.accept(this);
       await Promise.all(this._asyncSlots.map((s) => s.promise));
       let body = this._output.join("");
       for (const slot of this._asyncSlots) {
         body = body.split(slot.token).join(slot.html);
       }
       const html = this._inlineStyles() + this._wrap(body, opts);
-      if (opts.check) return { html, issues: this._checkIntegrity(doc) };
+      if (opts.check) return { html, issues: toLegacyIssues(prepared, this) };
       return html;
     }
     /**
@@ -27811,51 +28048,18 @@ ${items.join("\n")}
      * @returns {string}
      */
     renderAll(sources, opts = {}) {
-      const docs = sources.map((s) => this._parseDoc(s));
-      const merged = mergeDocuments(...docs);
+      const merged = mergeDocuments(...sources.map((s) => this._toStable(s)));
       if (opts.blocks) return this.renderBlocks(merged, opts);
       return this.render(merged, opts);
     }
     /** 异步版 renderAll，语义与 renderAsync 相同 */
     async renderAllAsync(sources, opts = {}) {
-      const docs = sources.map((s) => this._parseDoc(s));
-      const merged = mergeDocuments(...docs);
+      const merged = mergeDocuments(...sources.map((s) => this._toStable(s)));
       if (opts.blocks) return this.renderBlocks(merged, opts);
       return this.renderAsync(merged, opts);
     }
-    /** 渲染管线公共部分：选项应用 + 解析 + 预扫描 + 编号收集（render / renderAsync 共用） */
-    _prepare(source2, opts) {
-      this._applyOpts(opts);
-      const doc = this._parseDoc(source2);
-      this._applySets(doc);
-      this._collectRefs(doc);
-      return doc;
-    }
-    /** 应用渲染选项（render / renderAsync 共用）：runtime 配置重置 + 渲染专用字段 */
-    _applyOpts(opts) {
-      const {
-        captionPrefix = {},
-        mathRenderer = null,
-        mathFontsPath = "",
-        codeRenderer = null,
-        blockMarkers = false
-      } = opts;
-      this.runtime.resetHost({ ...opts, captionPrefix: mergeCaptionPrefix(DEFAULT_CAPTION_PREFIX, captionPrefix) });
-      this._mathRenderer = mathRenderer || ((src, inline) => katex.renderToString(src, { displayMode: !inline, throwOnError: false }));
-      this._mathFontsPath = mathFontsPath || "";
-      this._codeRenderer = codeRenderer || null;
-      this._blockMarkers = blockMarkers === true;
-      this._blockHashes = {};
-      this._output = [];
-      this._asyncSlots = null;
-      this._hasMath = false;
-      this._mathRendererCustom = !!mathRenderer;
-      this._termOrder = [];
-      this._hasHighlight = false;
-      this._useDepth = 0;
-    }
-    /** 解析输入为 Document（render / renderAsync 共用）；Document 输入直接使用（无源区间） */
-    _parseDoc(source2) {
+    /** 输入收敛为 Stable AST（Document 直接用；字符串经 Parser Stable 兼容层） */
+    _toStable(source2) {
       return source2 instanceof Document ? source2 : new Parser().parse(new Lexer(source2).tokenize(), source2);
     }
     /** 包一层 wrapper div */
@@ -27868,63 +28072,7 @@ ${items.join("\n")}
 ${body}
 </div>`;
     }
-    /**
-     * 预扫描文档顶层的 @set({...}) 调用并应用配置。
-     * 必须在 _collectRefs 之前执行，使编号计算使用最终配置。
-     * @set 全文档生效（建议放文档开头），仅识别块级内容中的顶层调用。
-     */
-    /**
-     * 预扫描应用文档配置/变量/宏（委托 runtime；@set/@let/@plugin/@define 块级顶层调用）
-     */
-    _applySets(doc) {
-      eachBlocksInline(doc.blocks, (n) => {
-        if (n instanceof FunctionCall) {
-          if (n.name === "set") this.runtime.applySet(n);
-          else if (n.name === "let") this.runtime.applyLet(n);
-          else if (n.name === "plugin") this.runtime.applyPlugin(n);
-          else if (n.name === "define") this.runtime.applyDefine(n);
-        }
-      });
-    }
-    // ================================================================
-    // 编号收集（渲染前对 AST 遍历一遍）
-    // ================================================================
-    /**
-       * 收集引用编号，供渲染阶段回填（委托 SemanticAnalyzer，状态经同引用同步）。
-    
-       * 渲染期动态注册（builtin cite/term 的变量参数）经 _registerCite/_registerTerm 写入同一对象。
-       */
-    _collectRefs(doc) {
-      this.semantic = new SemanticAnalyzer({ runtime: this.runtime }).analyze(doc);
-      this._refs = this.semantic.refs;
-      this._citeNumbers = this.semantic.citeNumbers;
-      this._citeOrder = this.semantic.citeOrder;
-      this._citeYearSuffix = this.semantic.citeYearSuffix;
-      this._termOrder = this.semantic.termOrder;
-      this._headingSeq = this.semantic.headingSeq;
-      this._headingIdx = 0;
-      return this.semantic;
-    }
-    /**
-     * 引用完整性诊断（opts.check 时）：委托 semantic.checkIntegrity（code/severity/span/data
-     * 标准化），转回公共 issues 格式（type = DIAG_ISSUE_TYPE[code]，语义与诊断等价）。
-     * _refs 需在 _collectRefs 之后（前向引用已完整）。
-     * @param {Document} doc
-     * @returns {Array<{type: string, key: string, count: number, block: number}>}
-     */
-    _checkIntegrity(doc) {
-      if (!this.semantic) this._collectRefs(doc);
-      return checkIntegrity(doc, this.runtime, this.semantic).map((d) => ({
-        type: DIAG_ISSUE_TYPE[d.code] || d.code,
-        key: d.data.label,
-        count: d.count,
-        block: d.block
-      }));
-    }
-    /**
-     * 文献键编号：首次出现分配顺序号（_collectRefs 预收集与运行时 cite 共用）。
-     * @param {string} key
-     */
+    /** 参考文献键编号：首次出现分配顺序号（预收集与运行时 cite 共用）。 */
     _registerCite(key) {
       if (!(key in this._citeNumbers)) {
         this._citeNumbers[key] = this._citeOrder.length + 1;
@@ -28438,97 +28586,14 @@ ${lines.join("\n")}`;
       return String(a).localeCompare(String(b));
     });
   }
-
-  // src/include.js
-  var INCLUDE_RE = /^\s*@include\(\s*("(?:\\.|[^"])*")\s*(?:,\s*("(?:\\.|[^"])*")\s*)?\)\s*$/;
-  var PART_OPEN_RE = /^\s*@part\(\s*("(?:\\.|[^"])*")\s*(?:,\s*("(?:\\.|[^"])*")\s*)?\)\s*$/;
-  var PART_SETTER_RE = /^\s*@set\(/;
-  var parseStr = (raw) => JSON.parse(raw);
-  function extractPart(text2, id, ctx) {
-    const lines = text2.split("\n");
-    let start = -1;
-    for (let i = 0; i < lines.length; i++) {
-      const m = lines[i].match(PART_OPEN_RE);
-      if (m && parseStr(m[1]) === id) {
-        start = i;
-        break;
-      }
-    }
-    if (start === -1) {
-      ctx.issues.push({ type: "missing_part", key: id, count: 1, block: void 0 });
-      return `<!-- mslang: \u672A\u627E\u5230 part "${id}" -->`;
-    }
-    let depth = 0, end = -1;
-    for (let i = start; i < lines.length; i++) {
-      if (PART_OPEN_RE.test(lines[i])) depth++;
-      if (/^\s*@end\s*$/.test(lines[i])) {
-        depth--;
-        if (depth === 0) {
-          end = i;
-          break;
-        }
-      }
-    }
-    const inner2 = lines.slice(start + 1, end === -1 ? lines.length : end);
-    return inner2.filter((l) => !PART_SETTER_RE.test(l)).join("\n");
-  }
-  function getTarget(path2, id, opts, ctx) {
-    const inStack = ctx.stack.includes(path2);
-    if (ctx.cache.has(path2)) {
-      return inStack ? `<!-- mslang: \u5FAA\u73AF\u5F15\u7528 @include("${path2}") -->` : extractPart(ctx.cache.get(path2), id, ctx);
-    }
-    let loaded;
-    try {
-      loaded = opts.include(path2);
-    } catch (e) {
-      loaded = null;
-    }
-    if (loaded instanceof Promise) {
-      return loaded.then((src) => {
-        if (!src) {
-          ctx.issues.push({ type: "missing_include", key: path2, count: 1, block: void 0 });
-          return `<!-- mslang: include \u52A0\u8F7D\u5931\u8D25 "${path2}" -->`;
-        }
-        ctx.cache.set(path2, src);
-        const expanded2 = expandIncludes(src, opts, [...ctx.stack, path2], ctx.cache);
-        return Promise.resolve(expanded2).then((e) => extractPart(e, id, ctx));
-      });
-    }
-    if (!loaded) {
-      ctx.issues.push({ type: "missing_include", key: path2, count: 1, block: void 0 });
-      return `<!-- mslang: include \u52A0\u8F7D\u5931\u8D25 "${path2}" -->`;
-    }
-    ctx.cache.set(path2, loaded);
-    if (inStack) return `<!-- mslang: \u5FAA\u73AF\u5F15\u7528 @include("${path2}") -->`;
-    const expanded = expandIncludes(loaded, opts, [...ctx.stack, path2], ctx.cache);
-    return expanded instanceof Promise ? expanded.then((e) => extractPart(e, id, ctx)) : extractPart(expanded, id, ctx);
-  }
-  function expandIncludes(source2, opts, stack = [], cache = /* @__PURE__ */ new Map()) {
-    const ctx = { stack, issues: opts.issues || [], cache };
-    const lines = source2.split("\n");
-    const out = [];
-    for (let i = 0; i < lines.length; i++) {
-      const m = lines[i].match(INCLUDE_RE);
-      if (!m) {
-        out.push(lines[i]);
-        continue;
-      }
-      const path2 = parseStr(m[1]);
-      const id = m[2] ? parseStr(m[2]) : null;
-      if (!id) {
-        out.push("<!-- mslang: @include \u9700\u6307\u5B9A part id\uFF08\u6574\u6587\u6863\u5408\u5E76\u8BF7\u7528 render([...])) -->");
-        continue;
-      }
-      const replaced = getTarget(path2, id, opts, ctx);
-      if (replaced instanceof Promise) {
-        return replaced.then((text2) => {
-          const rest = expandIncludes(lines.slice(i + 1).join("\n"), opts, stack, cache);
-          return Promise.resolve(rest).then((r) => out.concat(text2, r).join("\n"));
-        });
-      }
-      out.push(replaced);
-    }
-    return out.join("\n");
+  function toLegacyIssues(prepared, _renderer) {
+    const fromDiag = checkIntegrity(prepared.document, prepared.runtime, prepared.semantic).map((d) => ({
+      type: DIAG_ISSUE_TYPE[d.code] || d.code,
+      key: d.data.label,
+      count: d.count,
+      block: d.block
+    }));
+    return [...prepared.issues || [], ...fromDiag];
   }
 
   // src/blockeditor.js
@@ -28636,44 +28701,6 @@ ${lines.join("\n")}`;
     }
   };
 
-  // src/prepare.js
-  function applyDocConfig(runtime, blocks) {
-    eachBlocksInline(blocks, (n) => {
-      if (n instanceof FunctionCall) {
-        if (n.name === "set") runtime.applySet(n);
-        else if (n.name === "let") runtime.applyLet(n);
-        else if (n.name === "define") runtime.applyDefine(n);
-      }
-    });
-  }
-  function prepare(source2, options = {}) {
-    const issues = [];
-    const run = (effectiveSource) => {
-      let document2;
-      if (typeof effectiveSource === "string") {
-        document2 = new Parser().parse(new Lexer(effectiveSource).tokenize(), effectiveSource);
-      } else {
-        document2 = effectiveSource;
-      }
-      normalizeDocument(document2);
-      if (document2.footnotes) normalizeFootnotes(document2);
-      const runtime = new RuntimeContext({
-        functions: options.functions,
-        escapeHtml: options.escapeHtml,
-        pretty: options.pretty
-      });
-      runtime.resetHost(options);
-      applyDocConfig(runtime, document2.blocks);
-      const semantic = new SemanticAnalyzer({ runtime }).analyze(document2);
-      return { document: document2, runtime, semantic, issues };
-    };
-    if (typeof source2 === "string" && options.include) {
-      const expanded = expandIncludes(source2, { include: options.include, issues });
-      return expanded instanceof Promise ? expanded.then(run) : run(expanded);
-    }
-    return run(source2);
-  }
-
   // src/index.js
   function parse(source2, ...args) {
     return new Parser().parseText(String(source2), ...args);
@@ -28697,67 +28724,12 @@ ${lines.join("\n")}`;
     const prepared = prepare(source2, options);
     return prepared instanceof Promise ? prepared.then(gather) : gather(prepared);
   }
+  function render3(source2, options = {}) {
+    return new HTMLRenderer(options).render(source2, options);
+  }
   function renderAsync(source2, options = {}) {
     return render3(source2, { ...options, async: true });
   }
-  function render3(source2, options = {}) {
-    const renderer = new HTMLRenderer(_rendererOpts(options));
-    const opts = _renderOptions(options);
-    const finish = (s) => {
-      if (Array.isArray(s)) {
-        const docs = s.map((x) => x instanceof Document ? x : new Parser().parseText(x));
-        return options.async ? renderer.renderAllAsync(docs, opts) : renderer.renderAll(docs, opts);
-      }
-      if (options.async) return renderer.renderAsync(s, opts);
-      if (options.blocks) return renderer.renderBlocks(s, opts);
-      return renderer.render(s, opts);
-    };
-    const attachPreIssues = (result, preIssues) => {
-      if (preIssues && preIssues.length && result && typeof result === "object" && Array.isArray(result.issues)) {
-        result.issues = [...preIssues, ...result.issues];
-      }
-      return result;
-    };
-    if (typeof source2 === "string" && options.include) {
-      const preIssues = [];
-      const expanded = expandIncludes(source2, { include: options.include, issues: preIssues });
-      if (expanded instanceof Promise) {
-        return expanded.then((s) => attachPreIssues(finish(s), preIssues));
-      }
-      return attachPreIssues(finish(expanded), preIssues);
-    }
-    return finish(source2);
-  }
-  function _rendererOpts(options) {
-    return {
-      functions: options.functions,
-      escapeHtml: options.escapeHtml,
-      pretty: options.pretty
-    };
-  }
-  function _renderOptions(options) {
-    return {
-      wrapperClass: options.wrapperClass || "mslang",
-      wrapperId: options.wrapperId || "",
-      data: options.data,
-      variables: options.variables,
-      headingNumbering: options.headingNumbering,
-      refNumbering: options.refNumbering,
-      captionPrefix: options.captionPrefix,
-      citeKeyAttr: options.citeKeyAttr,
-      termKeyAttr: options.termKeyAttr,
-      refKeyAttr: options.refKeyAttr,
-      mathRenderer: options.mathRenderer,
-      mathFontsPath: options.mathFontsPath,
-      codeRenderer: options.codeRenderer,
-      check: options.check,
-      bibStyle: options.bibStyle,
-      blocks: options.blocks,
-      citeStyle: options.citeStyle,
-      allowPlugins: options.allowPlugins,
-      blockMarkers: options.blockMarkers
-    };
-  }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-19T17:31:18.929Z */
+/*! built: 2026-08-19T18:28:23.003Z */

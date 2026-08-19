@@ -20,10 +20,8 @@ import { evaluate } from './expression.js';
 import { htmlBuiltins } from './builtin.js';
 import { escapeHTML, escapeAttr } from './escape.js';
 import { RuntimeContext, SET_KEYS, DEFAULT_CAPTION_PREFIX, DEFAULT_KEY_ATTRS, mergeCaptionPrefix } from './runtime.js';
-import {
-  SemanticAnalyzer, eachBlockInline, eachBlocksInline, walkExprTree,
-  checkIntegrity, DIAG_ISSUE_TYPE,
-} from './semantic.js';
+import { prepare } from './prepare.js';
+import { checkIntegrity, DIAG_ISSUE_TYPE } from './semantic.js';
 import katex from 'katex';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
@@ -128,15 +126,58 @@ class HTMLRenderer {
    * @param {Object<string, Function>} [opts.functions] - 自定义函数（覆盖同名内置函数）
    */
   constructor(opts = {}) {
-    this.runtime = new RuntimeContext({
-      functions: opts.functions,
-      escapeHtml: opts.escapeHtml,
-      pretty: opts.pretty,
-    });
-    this.runtime.resetHost(opts);
-    // HTML 内置函数注入 renderer 的 runtime（host/runtime builtin 覆盖 — host 可覆盖 cite 等既有行为）
+    // 预注册 host 函数（独立 new HTMLRenderer + addFunction 场景；prepare 注入时合并保留）
+    this._hostFunctions = { ...(opts.functions || {}) };
+    // runtime 通常由 prepare() 注入（PreparedDocument.runtime）；此处兜底独立创建
+    this.runtime = opts.runtime instanceof RuntimeContext
+      ? opts.runtime
+      : new RuntimeContext({ functions: opts.functions, escapeHtml: opts.escapeHtml, pretty: opts.pretty });
+    // HTML 内置函数注入（host/runtime builtin 覆盖 — host 可覆盖 cite 等既有行为）
     this.runtime.functions = { ...htmlBuiltins(this), ...this.runtime.functions };
     this._output = [];
+  }
+
+  /**
+   * 绑定 PreparedDocument（prepare() 唯一管线产物）：共享 runtime/semantic，
+   * 同步渲染期语义视图（builtin 读 _refs/_citeNumbers 等），设置渲染专用字段。
+   * 不再 resetHost/解析/扫描语义——全部来自 prepared。
+   */
+  _bindPrepared(prepared, opts) {
+    this.runtime = prepared.runtime;
+    // 合并 renderer 预注册 host 函数（独立 new HTMLRenderer + addFunction 场景）+ HTML builtin
+    this.runtime.functions = {
+      ...htmlBuiltins(this),
+      ...(prepared.runtime.functions || {}),
+      ...this._hostFunctions,
+    };
+    this.semantic = prepared.semantic;
+    // 同引用同步语义状态（渲染期动态注册与 builtin 读取共享同一份）
+    this._refs = this.semantic.refs;
+    this._citeNumbers = this.semantic.citeNumbers;
+    this._citeOrder = this.semantic.citeOrder;
+    this._citeYearSuffix = this.semantic.citeYearSuffix;
+    this._termOrder = this.semantic.termOrder;
+    this._headingSeq = this.semantic.headingSeq;
+    this._headingIdx = 0;
+    // 渲染专用字段（每次渲染重置）
+    const {
+      mathRenderer = null,
+      mathFontsPath = '',
+      codeRenderer = null,
+      blockMarkers = false,
+    } = opts;
+    this._mathRenderer = mathRenderer || ((src, inline) =>
+      katex.renderToString(src, { displayMode: !inline, throwOnError: false }));
+    this._mathFontsPath = mathFontsPath || '';
+    this._codeRenderer = codeRenderer || null;
+    this._blockMarkers = blockMarkers === true;
+    this._blockHashes = {};
+    this._output = [];
+    this._asyncSlots = this._asyncSlots !== undefined ? this._asyncSlots : null;
+    this._hasMath = false;
+    this._mathRendererCustom = !!mathRenderer;
+    this._hasHighlight = false;
+    this._useDepth = 0;
   }
 
   // 配置视图：渲染/内置函数统一经 getter 读 runtime（单一配置源，@set 即时生效）
@@ -165,6 +206,7 @@ class HTMLRenderer {
    */
   addFunction(name, func) {
     this.runtime.functions[name] = func;
+    this._hostFunctions[name] = func;
   }
 
   /**
@@ -183,16 +225,28 @@ class HTMLRenderer {
    * @returns {string}
    */
   render(source, opts = {}) {
-    const doc = this._prepare(source, opts);
+    if (Array.isArray(source)) return this.renderAll(source, opts);
+    if (opts.async) return this.renderAsync(source, opts);
+    if (opts.blocks) return this.renderBlocks(source, opts);
+    const prepared = prepare(source, opts);
+    return prepared instanceof Promise
+      ? prepared.then((p) => this._renderPrepared(p, opts))
+      : this._renderPrepared(prepared, opts);
+  }
+
+  /** 核心渲染：基于 PreparedDocument（prepare 唯一管线），只做 AST→HTML */
+  _renderPrepared(prepared, opts) {
+    this._bindPrepared(prepared, opts);
+    const doc = prepared.document;
     doc.accept(this);
     const body = this._output.join('');
     const html = this._inlineStyles() + this._wrap(body, opts);
-    if (opts.check) return { html, issues: this._checkIntegrity(doc) };
+    if (opts.check) return { html, issues: toLegacyIssues(prepared, this) };
     return html;
   }
 
   /**
-   * 单块渲染（块级编辑闭环）：_prepare 全量收集编号上下文后只渲染第 index 块。
+   * 单块渲染（块级编辑闭环）：prepare 全量收集语义后只渲染第 index 块。
    * 返回该块的 HTML（无 wrapper/哨兵），宿主替换对应 DOM 即可。
    * @param {string|Document} source
    * @param {number} index - 块索引（与 Parser.parseText(source).blocks 对齐）
@@ -200,7 +254,12 @@ class HTMLRenderer {
    * @returns {string}
    */
   renderBlock(source, index, opts = {}) {
-    const doc = this._prepare(source, opts);
+    const prepared = prepare(source, opts);
+    if (prepared instanceof Promise) {
+      throw new Error('renderBlock 不支持异步 include loader（请用同步 loader）');
+    }
+    this._bindPrepared(prepared, opts);
+    const doc = prepared.document;
     const block = doc.blocks[index];
     if (!block) return '';
     // visit_Heading 用 _headingIdx 消费 _headingSeq：定位到该块对应的标题偏移
@@ -226,15 +285,20 @@ class HTMLRenderer {
    * @returns {{ html: string, blockHashes: Object }}
    */
   renderBlocks(source, opts = {}) {
-    const doc = this._prepare(source, { ...opts, blockMarkers: true });
-    doc.accept(this);
-    const body = this._output.join('');
-    const out = {
-      html: this._inlineStyles() + this._wrap(body, opts),
-      blockHashes: this._blockHashes,
+    const prepared = prepare(source, { ...opts, blockMarkers: true });
+    const run = (p) => {
+      this._bindPrepared(p, { ...opts, blockMarkers: true });
+      const doc = p.document;
+      doc.accept(this);
+      const body = this._output.join('');
+      const out = {
+        html: this._inlineStyles() + this._wrap(body, opts),
+        blockHashes: this._blockHashes,
+      };
+      if (opts.check) out.issues = toLegacyIssues(p, this);
+      return out;
     };
-    if (opts.check) out.issues = this._checkIntegrity(doc);
-    return out;
+    return prepared instanceof Promise ? prepared.then(run) : run(prepared);
   }
 
   /**
@@ -246,17 +310,18 @@ class HTMLRenderer {
    * @returns {Promise<string>}
    */
   async renderAsync(source, opts = {}) {
-    const doc = this._prepare(source, opts);
+    const prepared = await prepare(source, opts);
+    this._bindPrepared(prepared, opts);
     this._asyncSlots = [];
     this._asyncId = 0;
-    doc.accept(this);
+    prepared.document.accept(this);
     await Promise.all(this._asyncSlots.map(s => s.promise));
     let body = this._output.join('');
     for (const slot of this._asyncSlots) {
       body = body.split(slot.token).join(slot.html);
     }
     const html = this._inlineStyles() + this._wrap(body, opts);
-    if (opts.check) return { html, issues: this._checkIntegrity(doc) };
+    if (opts.check) return { html, issues: toLegacyIssues(prepared, this) };
     return html;
   }
 
@@ -267,8 +332,7 @@ class HTMLRenderer {
    * @returns {string}
    */
   renderAll(sources, opts = {}) {
-    const docs = sources.map(s => this._parseDoc(s));
-    const merged = mergeDocuments(...docs);
+    const merged = mergeDocuments(...sources.map((s) => this._toStable(s)));
     // blocks 选项转发：多文档合并的块级渲染（跨文档连续编号 + 哨兵）
     if (opts.blocks) return this.renderBlocks(merged, opts);
     return this.render(merged, opts);
@@ -276,50 +340,13 @@ class HTMLRenderer {
 
   /** 异步版 renderAll，语义与 renderAsync 相同 */
   async renderAllAsync(sources, opts = {}) {
-    const docs = sources.map(s => this._parseDoc(s));
-    const merged = mergeDocuments(...docs);
+    const merged = mergeDocuments(...sources.map((s) => this._toStable(s)));
     if (opts.blocks) return this.renderBlocks(merged, opts);
     return this.renderAsync(merged, opts);
   }
 
-  /** 渲染管线公共部分：选项应用 + 解析 + 预扫描 + 编号收集（render / renderAsync 共用） */
-  _prepare(source, opts) {
-    this._applyOpts(opts);
-    const doc = this._parseDoc(source);
-    this._applySets(doc);
-    this._collectRefs(doc);
-    return doc;
-  }
-
-  /** 应用渲染选项（render / renderAsync 共用）：runtime 配置重置 + 渲染专用字段 */
-  _applyOpts(opts) {
-    const {
-      captionPrefix = {},
-      mathRenderer = null,
-      mathFontsPath = '',
-      codeRenderer = null,
-      blockMarkers = false,
-    } = opts;
-    // 执行环境配置（变量/数据/文档配置链）整体重置：host > @set > defaults
-    this.runtime.resetHost({ ...opts, captionPrefix: mergeCaptionPrefix(DEFAULT_CAPTION_PREFIX, captionPrefix) });
-    // 渲染专用字段（每次渲染重置）
-    this._mathRenderer = mathRenderer || ((src, inline) =>
-      katex.renderToString(src, { displayMode: !inline, throwOnError: false }));
-    this._mathFontsPath = mathFontsPath || '';
-    this._codeRenderer = codeRenderer || null;
-    this._blockMarkers = blockMarkers === true;
-    this._blockHashes = {};
-    this._output = [];
-    this._asyncSlots = null;
-    this._hasMath = false;
-    this._mathRendererCustom = !!mathRenderer;
-    this._termOrder = [];
-    this._hasHighlight = false;
-    this._useDepth = 0;
-  }
-
-  /** 解析输入为 Document（render / renderAsync 共用）；Document 输入直接使用（无源区间） */
-  _parseDoc(source) {
+  /** 输入收敛为 Stable AST（Document 直接用；字符串经 Parser Stable 兼容层） */
+  _toStable(source) {
     return source instanceof Document
       ? source
       : new Parser().parse(new Lexer(source).tokenize(), source);
@@ -344,69 +371,7 @@ class HTMLRenderer {
   static DEFAULT_CAPTION_PREFIX = DEFAULT_CAPTION_PREFIX;
   static _mergeCaptionPrefix = mergeCaptionPrefix;
 
-  /**
-   * 预扫描文档顶层的 @set({...}) 调用并应用配置。
-   * 必须在 _collectRefs 之前执行，使编号计算使用最终配置。
-   * @set 全文档生效（建议放文档开头），仅识别块级内容中的顶层调用。
-   */
-  /**
-   * 预扫描应用文档配置/变量/宏（委托 runtime；@set/@let/@plugin/@define 块级顶层调用）
-   */
-  _applySets(doc) {
-    eachBlocksInline(doc.blocks, (n) => {
-      if (n instanceof FunctionCall) {
-        if (n.name === 'set') this.runtime.applySet(n);
-        else if (n.name === 'let') this.runtime.applyLet(n);
-        else if (n.name === 'plugin') this.runtime.applyPlugin(n);
-        else if (n.name === 'define') this.runtime.applyDefine(n);
-      }
-    });
-  }
-
-  // ================================================================
-  // 编号收集（渲染前对 AST 遍历一遍）
-  // ================================================================
-
-  /**
-   * 收集引用编号，供渲染阶段回填（委托 SemanticAnalyzer，状态经同引用同步）。
-
-   * 渲染期动态注册（builtin cite/term 的变量参数）经 _registerCite/_registerTerm 写入同一对象。
-   */
-  _collectRefs(doc) {
-    this.semantic = new SemanticAnalyzer({ runtime: this.runtime }).analyze(doc);
-    // 同引用同步：渲染期动态注册与 builtin 读取共享同一份状态
-    this._refs = this.semantic.refs;
-    this._citeNumbers = this.semantic.citeNumbers;
-    this._citeOrder = this.semantic.citeOrder;
-    this._citeYearSuffix = this.semantic.citeYearSuffix;
-    this._termOrder = this.semantic.termOrder;
-    this._headingSeq = this.semantic.headingSeq;
-    this._headingIdx = 0;
-    return this.semantic;
-  }
-
-  /**
-   * 引用完整性诊断（opts.check 时）：委托 semantic.checkIntegrity（code/severity/span/data
-   * 标准化），转回公共 issues 格式（type = DIAG_ISSUE_TYPE[code]，语义与诊断等价）。
-   * _refs 需在 _collectRefs 之后（前向引用已完整）。
-   * @param {Document} doc
-   * @returns {Array<{type: string, key: string, count: number, block: number}>}
-   */
-  _checkIntegrity(doc) {
-    if (!this.semantic) this._collectRefs(doc);
-    return checkIntegrity(doc, this.runtime, this.semantic)
-      .map((d) => ({
-        type: DIAG_ISSUE_TYPE[d.code] || d.code,
-        key: d.data.label,
-        count: d.count,
-        block: d.block,
-      }));
-  }
-
-  /**
-   * 文献键编号：首次出现分配顺序号（_collectRefs 预收集与运行时 cite 共用）。
-   * @param {string} key
-   */
+  /** 参考文献键编号：首次出现分配顺序号（预收集与运行时 cite 共用）。 */
   _registerCite(key) {
     if (!(key in this._citeNumbers)) {
       this._citeNumbers[key] = this._citeOrder.length + 1;
@@ -968,6 +933,25 @@ export function diffBlocks(oldHashes, newHashes) {
       if (typeof a === 'number' && typeof b === 'number') return a - b;
       return String(a).localeCompare(String(b));
     });
+}
+
+/**
+ * 将 PreparedDocument 的诊断合并为公共 issues（check 模式）：
+ * include 层（prepared.issues 为 legacy {type,key,count,block}）+ checkIntegrity
+ * （code 转 legacy type）。Renderer 不自行 analyze，只消费 prepared。
+ * @param {{issues: Array, document: Object, runtime: Object, semantic: Object}} prepared
+ * @param {HTMLRenderer} _renderer - 保留（签名稳定）
+ * @returns {Array<{type: string, key: string, count: number, block: number}>}
+ */
+export function toLegacyIssues(prepared, _renderer) {
+  const fromDiag = checkIntegrity(prepared.document, prepared.runtime, prepared.semantic)
+    .map((d) => ({
+      type: DIAG_ISSUE_TYPE[d.code] || d.code,
+      key: d.data.label,
+      count: d.count,
+      block: d.block,
+    }));
+  return [...((prepared.issues || [])), ...fromDiag];
 }
 
 export { HTMLRenderer, escapeHTML, escapeAttr };

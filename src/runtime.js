@@ -85,6 +85,14 @@ export class RuntimeContext {
     this.pluginCache = new Map();
     for (const key of Object.keys(CONFIG_DEFAULTS)) {
       if (key === 'escapeHtml' || key === 'pretty') continue; // 构造期固定（@set 可改）
+      if (key === 'captionPrefix') {
+        // caption 前缀默认深合并（thm 嵌套）；host 值覆盖默认
+        const v = key in opts && opts[key] !== undefined ? opts[key] : null;
+        this.captionPrefix = v
+          ? mergeCaptionPrefix(DEFAULT_CAPTION_PREFIX, v)
+          : DEFAULT_CAPTION_PREFIX;
+        continue;
+      }
       const v = key in opts ? opts[key] : CONFIG_DEFAULTS[key];
       this[key] = v === undefined ? CONFIG_DEFAULTS[key] : v;
     }
@@ -92,7 +100,11 @@ export class RuntimeContext {
     if (this.headingNumbering === true) this.headingNumbering = '1.1';
     else this.headingNumbering = this.headingNumbering || '';
     this.allowPlugins = this.allowPlugins !== false;
-    this.evalCtx = { functions: this.functions, variables: this.variables };
+  }
+
+  /** 表达式求值上下文（getter：functions/variables 变化即时可见，如 Renderer 注入 HTML builtin 后） */
+  get evalCtx() {
+    return { functions: this.functions, variables: this.variables };
   }
 
   /** 注册自定义函数（builtin 由 Renderer 构造后注入，覆盖同名 host 函数） */
