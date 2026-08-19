@@ -3892,7 +3892,7 @@ function builtinFunctions(renderer) {
     or: (...xs) => xs.some(Boolean),
     /** 文档内配置：@set({ headingNumbering: '1.1', ... })，无输出 */
     set: (config) => {
-      if (config && typeof config === "object") renderer._mergeSet(config);
+      if (config && typeof config === "object") renderer.runtime.applySetConfig(config);
       return "";
     },
     /** 宏定义：@define("name", "模板")，无输出（预扫描注册，渲染时静默） */
@@ -3908,7 +3908,7 @@ function builtinFunctions(renderer) {
     },
     /** 插件注册：@plugin("name", "(args, kwargs) => ...")，无输出；文档内定义可复用函数（new Function 全局作用域） */
     plugin: (name, body) => {
-      if (typeof name === "string" && typeof body === "string") renderer._registerPlugin(name, body);
+      if (typeof name === "string" && typeof body === "string") renderer.runtime.registerPlugin(name, body);
       return "";
     },
     /** 变量声明：@let("name", value)，无输出；变量全文档可见（预扫描注册） */
@@ -4064,6 +4064,395 @@ function escapeHTML(text2) {
 function escapeAttr(text2) {
   return text2.replace(/[&<>"']/g, (ch) => ESC_ATTR_MAP[ch] || ch);
 }
+
+// src/runtime.js
+var SET_KEYS = ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables", "terms", "bibliography", "captionPrefix", "citeKeyAttr", "termKeyAttr", "refKeyAttr", "citeStyle", "allowPlugins", "bibStyle"];
+var SECURE_KEYS = ["allowPlugins"];
+var SET_STRING_KEYS = {
+  refNumbering: { def: "" },
+  citeStyle: { def: "numeric" },
+  bibStyle: { def: "default" },
+  citeKeyAttr: { def: "" },
+  termKeyAttr: { def: "" },
+  refKeyAttr: { def: "" }
+};
+var CONFIG_DEFAULTS = {
+  headingNumbering: "",
+  captionPrefix: {},
+  escapeHtml: true,
+  pretty: true,
+  citeStyle: "numeric",
+  bibStyle: "default",
+  citeKeyAttr: "data-cite-key",
+  termKeyAttr: "data-term-key",
+  refKeyAttr: "data-ref-label",
+  allowPlugins: true
+  // Phase 9 收紧为 default=false（安全边界）
+};
+function mergeCaptionPrefix(base, incoming) {
+  const cp = incoming || {};
+  return { ...base, ...cp, thm: { ...base.thm || {}, ...cp.thm || {} } };
+}
+var DEFAULT_KEY_ATTRS = {
+  citeKeyAttr: "data-cite-key",
+  termKeyAttr: "data-term-key",
+  refKeyAttr: "data-ref-label"
+};
+var DEFAULT_CAPTION_PREFIX = {
+  fig: "\u56FE",
+  tbl: "\u8868",
+  eq: "\u5F0F",
+  thm: { theorem: "\u5B9A\u7406", lemma: "\u5F15\u7406", definition: "\u5B9A\u4E49", remark: "\u6CE8\u8BB0", example: "\u4F8B" }
+};
+var RuntimeContext = class {
+  /** @param {{functions?: object, escapeHtml?: boolean, pretty?: boolean}} [renderOpts] 渲染期固定项（构造后不随渲染重置） */
+  constructor(renderOpts = {}) {
+    this.functions = { ...renderOpts.functions || {} };
+    this.escapeHtml = renderOpts.escapeHtml !== false;
+    this.pretty = renderOpts.pretty !== false;
+    this.resetHost({});
+  }
+  /** 每渲染生命周期重置：document 层归零，应用 host 配置（host 优先于 @set）。
+   *  escapeHtml/pretty 为构造期固定（渲染 opts 不含它们，避免覆盖构造值） */
+  resetHost(opts = {}) {
+    this.hostConfig = { ...opts };
+    this.variables = { ...opts.variables || {} };
+    this.macros = {};
+    this.data = { ...opts.data || {} };
+    this.pluginCache = /* @__PURE__ */ new Map();
+    for (const key of Object.keys(CONFIG_DEFAULTS)) {
+      if (key === "escapeHtml" || key === "pretty") continue;
+      const v = key in opts ? opts[key] : CONFIG_DEFAULTS[key];
+      this[key] = v === void 0 ? CONFIG_DEFAULTS[key] : v;
+    }
+    if (this.headingNumbering === true) this.headingNumbering = "1.1";
+    else this.headingNumbering = this.headingNumbering || "";
+    this.allowPlugins = this.allowPlugins !== false;
+    this.evalCtx = { functions: this.functions, variables: this.variables };
+  }
+  /** 注册自定义函数（builtin 由 Renderer 构造后注入，覆盖同名 host 函数） */
+  registerFunction(name, fn) {
+    this.functions[name] = fn;
+  }
+  /** 文档 @set 合并（白名单；安全键被宿主显式锁定时不可覆盖） */
+  applySetConfig(config) {
+    if (!config || typeof config !== "object") return;
+    for (const key of SET_KEYS) {
+      if (!(key in config)) continue;
+      if (SECURE_KEYS.includes(key) && this.hostConfig[key] !== void 0) continue;
+      const v = config[key];
+      if (key === "data" || key === "terms" || key === "bibliography") {
+        this.data = this.mergeData(this.data, key === "data" ? v : { [key]: v });
+      } else if (key === "variables") {
+        Object.assign(this.variables, v || {});
+      } else if (key === "captionPrefix") {
+        this.captionPrefix = this.mergeCaptionPrefix(this.captionPrefix, v);
+      } else if (key === "headingNumbering") {
+        this.headingNumbering = v === true ? "1.1" : v || "";
+      } else if (key in SET_STRING_KEYS) {
+        this[key] = v || SET_STRING_KEYS[key].def;
+      } else {
+        this[key] = v;
+      }
+    }
+  }
+  /** 数据合并：一层深合并（terms/bibliography 按 key 合并），其余键整体替换 */
+  mergeData(existing, incoming) {
+    if (!incoming || typeof incoming !== "object") return existing;
+    const out = { ...existing };
+    for (const [k, v] of Object.entries(incoming)) {
+      const isPlainObj = v && typeof v === "object" && !Array.isArray(v);
+      if (isPlainObj && out[k] && typeof out[k] === "object" && !Array.isArray(out[k])) {
+        out[k] = { ...out[k], ...v };
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  }
+  /** caption 前缀深合并（thm 为嵌套对象，避免浅合并整体覆盖） */
+  mergeCaptionPrefix(base, incoming) {
+    return mergeCaptionPrefix(base, incoming);
+  }
+  /** 预扫描应用 @set({...})（块级内容中的顶层调用；求值失败忽略） */
+  applySet(node) {
+    if (node.error || !node.args[0]) return;
+    try {
+      const config = evaluate(node.args[0], this.evalCtx);
+      this.applySetConfig(config);
+    } catch (e) {
+    }
+  }
+  /** 预扫描应用 @let("name", value)：变量全文档可见；求值失败忽略 */
+  applyLet(node) {
+    if (node.error || node.args.length < 2) return;
+    try {
+      const name = evaluate(node.args[0], this.evalCtx);
+      const value = evaluate(node.args[1], this.evalCtx);
+      if (typeof name === "string") this.variables[name] = value;
+    } catch (e) {
+    }
+  }
+  /** 预扫描应用 @plugin(name, body)：编译失败/未开启时忽略 */
+  applyPlugin(node) {
+    if (node.error || node.args.length < 2) return;
+    try {
+      const name = evaluate(node.args[0], this.evalCtx);
+      const body = evaluate(node.args[1], this.evalCtx);
+      if (typeof name === "string" && typeof body === "string") this.registerPlugin(name, body);
+    } catch (e) {
+    }
+  }
+  /** 预扫描应用 @define(name, template)：宏模板（含 {key} 占位符），@use 时展开 */
+  applyDefine(node) {
+    if (node.error || node.args.length < 2) return;
+    try {
+      const name = evaluate(node.args[0], this.evalCtx);
+      const template = evaluate(node.args[1], this.evalCtx);
+      if (typeof name === "string" && typeof template === "string") {
+        this.macros[name] = template;
+      }
+    } catch (e) {
+    }
+  }
+  /** 插件编译注册：new Function 编译（同 body 缓存）；allowPlugins 关闭时不注册 */
+  registerPlugin(name, body) {
+    if (!this.allowPlugins) return;
+    let fn = this.pluginCache.get(body);
+    if (fn === void 0) {
+      try {
+        fn = new Function(`return (${body});`)();
+      } catch (e) {
+        fn = null;
+      }
+      this.pluginCache.set(body, fn);
+    }
+    if (typeof fn === "function") this.functions[name] = fn;
+  }
+};
+
+// src/semantic.js
+function eachBlockInline(block, fn) {
+  const walk = (inlines) => {
+    for (const n of inlines) {
+      fn(n);
+      if (n.content) walk(n.content);
+      if (n.caption) walk(n.caption);
+      if (n.title) walk(n.title);
+    }
+  };
+  if (block.content) walk(block.content);
+  if (block.items) {
+    for (const item of block.items) {
+      walk(item.content);
+      if (item.children) {
+        for (const child of item.children) {
+          if (child.content) walk(child.content);
+        }
+      }
+    }
+  }
+}
+function eachBlocksInline(blocks, fn) {
+  for (const b of blocks) {
+    if (b instanceof PartBlock) {
+      eachBlocksInline(b.blocks, fn);
+      continue;
+    }
+    eachBlockInline(b, fn);
+  }
+}
+function walkExprTree(node, onCall, onVar) {
+  if (!node || typeof node !== "object") return;
+  if (node.type === "call") {
+    if (onCall) onCall(node);
+    node.args.forEach((a) => walkExprTree(a, onCall, onVar));
+    Object.values(node.kwargs).forEach((a) => walkExprTree(a, onCall, onVar));
+  } else if (node.type === "var") {
+    if (onVar) onVar(node);
+  } else if (node.type === "unary") {
+    walkExprTree(node.operand, onCall, onVar);
+  } else if (node.type === "binary") {
+    walkExprTree(node.left, onCall, onVar);
+    walkExprTree(node.right, onCall, onVar);
+  } else if (node.type === "object") {
+    Object.values(node.value).forEach((a) => walkExprTree(a, onCall, onVar));
+  } else if (node.type === "array") {
+    node.items.forEach((a) => walkExprTree(a, onCall, onVar));
+  }
+}
+var SemanticModel = class {
+  constructor() {
+    this.refs = {};
+    this.citeNumbers = {};
+    this.citeOrder = [];
+    this.citeYearSuffix = {};
+    this.termOrder = [];
+    this.headingSeq = [];
+    this.diagnostics = [];
+  }
+  /** 文献键编号：首次出现分配顺序号（预收集 + 运行时动态 cite 共用） */
+  registerCite(key) {
+    if (!(key in this.citeNumbers)) {
+      this.citeNumbers[key] = this.citeOrder.length + 1;
+      this.citeOrder.push(key);
+    }
+  }
+  /** 术语键收集：首次出现加入 termOrder */
+  registerTerm(name) {
+    if (!this.termOrder.includes(name)) this.termOrder.push(name);
+  }
+};
+var SemanticAnalyzer = class {
+  /**
+   * @param {{ runtime: import('./runtime.js').RuntimeContext }} deps
+   */
+  constructor({ runtime } = {}) {
+    this.runtime = runtime;
+  }
+  /**
+   * 收集引用编号与依赖（渲染前整篇遍历，顺序与渲染一致）：
+   *   - cite("key") 按出现顺序编号；图/表/标题/定理 label → refs
+   *   - 块渲染依赖（变量/宏/data）与编号前缀快照写回 block._deps/_prefixCounts
+   *     （供块级编辑哈希定位变化块）
+   * @param {Document} doc
+   * @returns {SemanticModel}
+   */
+  analyze(doc) {
+    const runtime = this.runtime;
+    const sm = new SemanticModel();
+    const counters = { fig: 0, tbl: 0, sec: 0, eq: 0, thm: 0 };
+    let currentDeps = null;
+    const sep = (runtime.headingNumbering.match(/[^\d1]/) || ["."])[0];
+    const levelCounts = [0, 0, 0, 0, 0, 0];
+    const nextSecNumber = (level) => {
+      levelCounts[level - 1]++;
+      for (let i = level; i < 6; i++) levelCounts[i] = 0;
+      const parts = [];
+      for (let i = 0; i < level; i++) parts.push(levelCounts[i]);
+      return parts.join(sep);
+    };
+    const handleCall = (call) => {
+      var _a, _b;
+      if (call.name === "cite") {
+        for (const a of call.args) {
+          if (a.type !== "string") continue;
+          sm.registerCite(a.value);
+          const entry = runtime.data.bibliography && runtime.data.bibliography[a.value];
+          if (entry !== void 0) ((_a = currentDeps.d).cite || (_a.cite = {}))[a.value] = entry;
+        }
+      }
+      if (call.name === "term" && call.args[0] && call.args[0].type === "string") {
+        sm.registerTerm(call.args[0].value);
+        const entry = runtime.data.terms && runtime.data.terms[call.args[0].value];
+        if (entry !== void 0) ((_b = currentDeps.d).term || (_b.term = {}))[call.args[0].value] = entry;
+      }
+      if (call.name === "use" && call.args[0] && call.args[0].type === "string") {
+        const t = runtime.macros[call.args[0].value];
+        if (t !== void 0) currentDeps.m[call.args[0].value] = t;
+      }
+      if (call.name === "bibliography") currentDeps["bib-all"] = runtime.data.bibliography;
+      if (call.name === "glossary") currentDeps["term-all"] = runtime.data.terms;
+    };
+    const walkInlineList = (n) => {
+      if (n instanceof Image && n.label) {
+        counters.fig++;
+        sm.refs[n.label] = { kind: "fig", number: counters.fig };
+      }
+      if (n instanceof FunctionCall) {
+        handleCall(n);
+        n.args.forEach((a) => walkExprTree(a, handleCall, (v) => {
+          if (v.name in runtime.variables) currentDeps.v[v.name] = runtime.variables[v.name];
+        }));
+      }
+    };
+    const headingText = (nodes) => {
+      let out = "";
+      for (const n of nodes) {
+        if (n instanceof RawText) out += n.text;
+        else if (n.content) out += headingText(n.content);
+      }
+      return out;
+    };
+    const collectBlock = (block) => {
+      const deps = { v: {}, m: {}, d: {} };
+      block._deps = deps;
+      currentDeps = deps;
+      block._prefixCounts = {
+        fig: counters.fig,
+        tbl: counters.tbl,
+        sec: counters.sec,
+        eq: counters.eq,
+        thm: counters.thm,
+        cite: sm.citeOrder.length,
+        term: sm.termOrder.length
+      };
+      if (block instanceof PartBlock) {
+        if (block.id) {
+          const text2 = headingText(block.title) || block.id;
+          let display;
+          if (runtime.refNumbering) display = extractHeadingNumber(text2, runtime.refNumbering);
+          if (display === void 0) display = text2;
+          sm.refs[block.id] = { kind: "part", display };
+        }
+        block.blocks.forEach(collectBlock);
+        return;
+      }
+      if (block instanceof Heading) {
+        const autoNum = runtime.headingNumbering ? nextSecNumber(block.level) : "";
+        sm.headingSeq.push(autoNum);
+        if (block.id) {
+          counters.sec++;
+          const text2 = headingText(block.content);
+          let display;
+          if (runtime.refNumbering) {
+            display = extractHeadingNumber(text2, runtime.refNumbering);
+          }
+          if (display === void 0 && autoNum) display = autoNum;
+          if (display === void 0) display = text2 || `\u7B2C ${counters.sec} \u8282`;
+          sm.refs[block.id] = { kind: "sec", display };
+        }
+      }
+      if (block instanceof Table && block.label) {
+        counters.tbl++;
+        sm.refs[block.label] = { kind: "tbl", number: counters.tbl };
+      }
+      if (block instanceof Equation && block.label) {
+        counters.eq++;
+        sm.refs[block.label] = { kind: "eq", number: counters.eq };
+      }
+      if (block instanceof CodeBlock && block.label && block.language === "mermaid") {
+        counters.fig++;
+        sm.refs[block.label] = { kind: "fig", number: counters.fig };
+      }
+      if (block instanceof Theorem && block.label) {
+        counters.thm++;
+        sm.refs[block.label] = { kind: "thm", type: block.type, number: counters.thm };
+      }
+      if (block.content || block.items) eachBlockInline(block, walkInlineList);
+    };
+    doc.blocks.forEach(collectBlock);
+    currentDeps = null;
+    if (runtime.citeStyle !== "numeric") {
+      const counts = {};
+      for (const key of sm.citeOrder) {
+        const entry = runtime.data.bibliography && runtime.data.bibliography[key];
+        if (!entry || typeof entry !== "object" || !entry.authors || entry.year === void 0) continue;
+        const g = `${String(entry.authors).toLowerCase()}|${entry.year}`;
+        counts[g] = (counts[g] || 0) + 1;
+      }
+      const seen = {};
+      for (const key of sm.citeOrder) {
+        const entry = runtime.data.bibliography && runtime.data.bibliography[key];
+        if (!entry || typeof entry !== "object" || !entry.authors || entry.year === void 0) continue;
+        const g = `${String(entry.authors).toLowerCase()}|${entry.year}`;
+        const idx = seen[g] = (seen[g] || 0) + 1;
+        sm.citeYearSuffix[key] = counts[g] > 1 ? String.fromCharCode(96 + idx) : "";
+      }
+    }
+    return sm;
+  }
+};
 
 // node_modules/katex/dist/katex.mjs
 var ParseError = class _ParseError extends Error {
@@ -27089,14 +27478,6 @@ function cacheSet(map, key, value) {
   map.set(key, value);
   return value;
 }
-var SET_STRING_KEYS = {
-  refNumbering: { field: "_refNumbering", def: "" },
-  citeStyle: { field: "_citeStyle", def: "numeric" },
-  bibStyle: { field: "_bibStyle", def: "default" },
-  citeKeyAttr: { field: "_citeKeyAttr", def: "" },
-  termKeyAttr: { field: "_termKeyAttr", def: "" },
-  refKeyAttr: { field: "_refKeyAttr", def: "" }
-};
 function djb2(str) {
   let h = 5381;
   for (let i = 0; i < str.length; i++) h = (h << 5) + h + str.charCodeAt(i) >>> 0;
@@ -27125,7 +27506,7 @@ try {
   highlightCss = "";
 }
 var KATEX_FONTS_CDN = `https://cdn.jsdelivr.net/npm/katex@${katex.version}/dist/fonts/`;
-var _HTMLRenderer = class _HTMLRenderer {
+var HTMLRenderer = class {
   /**
    * @param {object} [opts]
    * @param {boolean} [opts.pretty=true]
@@ -27133,12 +27514,66 @@ var _HTMLRenderer = class _HTMLRenderer {
    * @param {Object<string, Function>} [opts.functions] - 自定义函数（覆盖同名内置函数）
    */
   constructor(opts = {}) {
-    this.pretty = opts.pretty !== false;
-    this.escapeHtml = opts.escapeHtml !== false;
-    this._data = {};
-    this._variables = {};
-    this._functions = { ...builtinFunctions(this), ...opts.functions || {} };
+    this.runtime = new RuntimeContext({
+      functions: opts.functions,
+      escapeHtml: opts.escapeHtml,
+      pretty: opts.pretty
+    });
+    this.runtime.resetHost(opts);
+    this.runtime.functions = { ...builtinFunctions(this), ...opts.functions || {} };
     this._output = [];
+  }
+  // 配置视图：渲染/内置函数统一经 getter 读 runtime（单一配置源，@set 即时生效）
+  get escapeHtml() {
+    return this.runtime.escapeHtml;
+  }
+  get pretty() {
+    return this.runtime.pretty;
+  }
+  get _allowPlugins() {
+    return this.runtime.allowPlugins;
+  }
+  get _headingNumbering() {
+    return this.runtime.headingNumbering;
+  }
+  get _refNumbering() {
+    return this.runtime.refNumbering;
+  }
+  get _captionPrefix() {
+    return this.runtime.captionPrefix;
+  }
+  get _citeKeyAttr() {
+    return this.runtime.citeKeyAttr;
+  }
+  get _termKeyAttr() {
+    return this.runtime.termKeyAttr;
+  }
+  get _refKeyAttr() {
+    return this.runtime.refKeyAttr;
+  }
+  get _citeStyle() {
+    return this.runtime.citeStyle;
+  }
+  get _bibStyle() {
+    return this.runtime.bibStyle;
+  }
+  get _data() {
+    return this.runtime.data;
+  }
+  get _variables() {
+    return this.runtime.variables;
+  }
+  get _macros() {
+    return this.runtime.macros;
+  }
+  get _functions() {
+    return this.runtime.functions;
+  }
+  get _pluginCache() {
+    return this.runtime.pluginCache;
+  }
+  get _evalCtx() {
+    return this.runtime.evalCtx;
   }
   /**
    * 注册自定义函数
@@ -27146,7 +27581,7 @@ var _HTMLRenderer = class _HTMLRenderer {
    * @param {Function} func
    */
   addFunction(name, func) {
-    this._functions[name] = func;
+    this.runtime.functions[name] = func;
   }
   /**
    * 渲染为 HTML 片段。
@@ -27263,50 +27698,27 @@ var _HTMLRenderer = class _HTMLRenderer {
     this._collectRefs(doc);
     return doc;
   }
-  /** 应用渲染选项（render / renderAsync 共用） */
+  /** 应用渲染选项（render / renderAsync 共用）：runtime 配置重置 + 渲染专用字段 */
   _applyOpts(opts) {
     const {
-      data = {},
-      variables = {},
-      headingNumbering = "",
-      refNumbering = "",
       captionPrefix = {},
-      citeKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.citeKeyAttr,
-      termKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.termKeyAttr,
-      refKeyAttr = _HTMLRenderer.DEFAULT_KEY_ATTRS.refKeyAttr,
       mathRenderer = null,
       mathFontsPath = "",
       codeRenderer = null,
-      citeStyle = "numeric",
-      bibStyle = "default",
-      allowPlugins = true,
       blockMarkers = false
     } = opts;
-    this._data = data || {};
-    this._variables = variables || {};
-    this._macros = {};
-    this._headingNumbering = headingNumbering === true ? "1.1" : headingNumbering || "";
-    this._refNumbering = refNumbering || "";
-    this._captionPrefix = _HTMLRenderer._mergeCaptionPrefix(_HTMLRenderer.DEFAULT_CAPTION_PREFIX, captionPrefix);
-    this._citeKeyAttr = citeKeyAttr || "";
-    this._termKeyAttr = termKeyAttr || "";
-    this._refKeyAttr = refKeyAttr || "";
+    this.runtime.resetHost({ ...opts, captionPrefix: mergeCaptionPrefix(DEFAULT_CAPTION_PREFIX, captionPrefix) });
     this._mathRenderer = mathRenderer || ((src, inline) => katex.renderToString(src, { displayMode: !inline, throwOnError: false }));
     this._mathFontsPath = mathFontsPath || "";
     this._codeRenderer = codeRenderer || null;
-    this._citeStyle = citeStyle || "numeric";
-    this._bibStyle = bibStyle || "default";
-    this._allowPlugins = allowPlugins !== false;
     this._blockMarkers = blockMarkers === true;
     this._blockHashes = {};
-    this._evalCtx = { functions: this._functions, variables: this._variables };
     this._output = [];
     this._asyncSlots = null;
     this._hasMath = false;
     this._mathRendererCustom = !!mathRenderer;
     this._termOrder = [];
     this._hasHighlight = false;
-    this._pluginCache = /* @__PURE__ */ new Map();
   }
   /** 解析输入为 Document（render / renderAsync 共用）；Document 输入直接使用（无源区间） */
   _parseDoc(source2) {
@@ -27322,312 +27734,42 @@ var _HTMLRenderer = class _HTMLRenderer {
 ${body}
 </div>`;
   }
-  /** 深合并 captionPrefix（thm 为嵌套对象，避免浅合并整体覆盖） */
-  static _mergeCaptionPrefix(base, incoming) {
-    const cp = incoming || {};
-    return {
-      ...base,
-      ...cp,
-      thm: { ...base.thm || {}, ...cp.thm || {} }
-    };
-  }
   /**
    * 预扫描文档顶层的 @set({...}) 调用并应用配置。
    * 必须在 _collectRefs 之前执行，使编号计算使用最终配置。
    * @set 全文档生效（建议放文档开头），仅识别块级内容中的顶层调用。
    */
   /**
-   * 遍历单个块的全部行内节点（content/items/children，递归穿过行内容器）。
-   * _eachInline 与 _collectRefs 共用，顺序与渲染顺序一致。
+   * 预扫描应用文档配置/变量/宏（委托 runtime；@set/@let/@plugin/@define 块级顶层调用）
    */
-  _eachBlockInline(block, fn) {
-    const walk = (inlines) => {
-      for (const n of inlines) {
-        fn(n);
-        if (n.content) walk(n.content);
-        if (n.caption) walk(n.caption);
-        if (n.title) walk(n.title);
-      }
-    };
-    if (block.content) walk(block.content);
-    if (block.items) {
-      for (const item of block.items) {
-        walk(item.content);
-        if (item.children) {
-          for (const child of item.children) {
-            if (child.content) walk(child.content);
-          }
-        }
-      }
-    }
-  }
-  /** 遍历块数组的行内节点（PartBlock 递归进内部块） */
-  _eachBlocksInline(blocks, fn) {
-    for (const b of blocks) {
-      if (b instanceof PartBlock) {
-        this._eachBlocksInline(b.blocks, fn);
-        continue;
-      }
-      this._eachBlockInline(b, fn);
-    }
-  }
   _applySets(doc) {
-    this._eachBlocksInline(doc.blocks, (n) => {
-      if (n instanceof FunctionCall && n.name === "set") this._applySet(n);
-      else if (n instanceof FunctionCall && n.name === "let") this._applyLet(n);
-      else if (n instanceof FunctionCall && n.name === "plugin") this._applyPlugin(n);
-      else if (n instanceof FunctionCall && n.name === "define") this._applyDefine(n);
+    eachBlocksInline(doc.blocks, (n) => {
+      if (n instanceof FunctionCall) {
+        if (n.name === "set") this.runtime.applySet(n);
+        else if (n.name === "let") this.runtime.applyLet(n);
+        else if (n.name === "plugin") this.runtime.applyPlugin(n);
+        else if (n.name === "define") this.runtime.applyDefine(n);
+      }
     });
-  }
-  _applySet(node) {
-    if (node.error || !node.args[0]) return;
-    try {
-      const config = evaluate(node.args[0], this._evalCtx);
-      if (config && typeof config === "object") this._mergeSet(config);
-    } catch (e) {
-    }
-  }
-  /**
-   * 预扫描注册 @let 声明的变量（与 _applySet 同步执行），
-   * 使变量全文档可见：@set 参数、@ref 编号计算、渲染阶段均可引用。
-   * 求值失败时忽略，渲染阶段由 let 函数输出错误注释。
-   */
-  _applyLet(node) {
-    if (node.error || node.args.length < 2) return;
-    try {
-      const name = evaluate(node.args[0], this._evalCtx);
-      const value = evaluate(node.args[1], this._evalCtx);
-      if (typeof name === "string") this._variables[name] = value;
-    } catch (e) {
-    }
-  }
-  /**
-   * 预扫描注册 @plugin 声明的函数（与 @set/@let 同步执行）。
-   * 编译失败/未开启时忽略，渲染阶段由函数调用输出错误注释。
-   */
-  _applyPlugin(node) {
-    if (node.error || node.args.length < 2) return;
-    try {
-      const name = evaluate(node.args[0], this._evalCtx);
-      const body = evaluate(node.args[1], this._evalCtx);
-      if (typeof name === "string" && typeof body === "string") this._registerPlugin(name, body);
-    } catch (e) {
-    }
-  }
-  /**
-   * 预扫描注册 @define 声明的宏（与 @set/@let/@plugin 同步执行）。
-   * 模板为含 {key} 占位符的 mslang 行内片段，渲染时 @use 展开并二次解析。
-   */
-  _applyDefine(node) {
-    if (node.error || node.args.length < 2) return;
-    try {
-      const name = evaluate(node.args[0], this._evalCtx);
-      const template = evaluate(node.args[1], this._evalCtx);
-      if (typeof name === "string" && typeof template === "string") {
-        this._macros[name] = template;
-      }
-    } catch (e) {
-    }
-  }
-  /**
-   * 插件编译注册：new Function 编译函数表达式（全局作用域，签名与内置一致 ...args, kwargs）。
-   * 同 body 编译缓存；allowPlugins 关闭时不注册。
-   */
-  _registerPlugin(name, body) {
-    if (!this._allowPlugins) return;
-    let fn = this._pluginCache.get(body);
-    if (fn === void 0) {
-      try {
-        fn = new Function(`return (${body});`)();
-      } catch (e) {
-        fn = null;
-      }
-      this._pluginCache.set(body, fn);
-    }
-    if (typeof fn === "function") this._functions[name] = fn;
-  }
-  /** 白名单合并：@set 覆盖同名选项；terms/bibliography 增量合并（可多次设置） */
-  _mergeSet(config) {
-    for (const key of _HTMLRenderer.SET_KEYS) {
-      if (!(key in config)) continue;
-      const v = config[key];
-      if (key === "data" || key === "terms" || key === "bibliography") {
-        this._data = this._mergeData(this._data, key === "data" ? v : { [key]: v });
-      } else if (key === "variables") {
-        Object.assign(this._variables, v || {});
-      } else if (key === "captionPrefix") {
-        this._captionPrefix = _HTMLRenderer._mergeCaptionPrefix(this._captionPrefix, v);
-      } else if (key === "allowPlugins") {
-        this._allowPlugins = v !== false;
-      } else if (key === "headingNumbering") {
-        this._headingNumbering = v === true ? "1.1" : v || "";
-      } else if (key in SET_STRING_KEYS) {
-        const { field, def } = SET_STRING_KEYS[key];
-        this[field] = v || def;
-      } else {
-        this[key] = v;
-      }
-    }
-  }
-  /** 数据合并：一层深合并（terms/bibliography 按 key 合并），其余键整体替换 */
-  _mergeData(existing, incoming) {
-    if (!incoming || typeof incoming !== "object") return existing;
-    const out = { ...existing };
-    for (const [k, v] of Object.entries(incoming)) {
-      const isPlainObj = v && typeof v === "object" && !Array.isArray(v);
-      if (isPlainObj && out[k] && typeof out[k] === "object" && !Array.isArray(out[k])) {
-        out[k] = { ...out[k], ...v };
-      } else {
-        out[k] = v;
-      }
-    }
-    return out;
   }
   // ================================================================
   // 编号收集（渲染前对 AST 遍历一遍）
   // ================================================================
   /**
-   * 收集引用编号，供渲染阶段回填：
-   *   - cite("key") 按文档出现顺序编号 → _citeNumbers / _citeOrder
-   *   - 图片/表格/标题的 label → _refs { label: { kind, number } }
-   * 遍历顺序与渲染顺序一致（块 → 行内 → 表达式参数）。
-   */
+     * 收集引用编号，供渲染阶段回填（委托 SemanticAnalyzer，状态经同引用同步）。
+  
+     * 渲染期动态注册（builtin cite/term 的变量参数）经 _registerCite/_registerTerm 写入同一对象。
+     */
   _collectRefs(doc) {
-    this._citeNumbers = {};
-    this._citeOrder = [];
-    this._refs = {};
-    this._headingSeq = [];
+    this.semantic = new SemanticAnalyzer({ runtime: this.runtime }).analyze(doc);
+    this._refs = this.semantic.refs;
+    this._citeNumbers = this.semantic.citeNumbers;
+    this._citeOrder = this.semantic.citeOrder;
+    this._citeYearSuffix = this.semantic.citeYearSuffix;
+    this._termOrder = this.semantic.termOrder;
+    this._headingSeq = this.semantic.headingSeq;
     this._headingIdx = 0;
-    const counters = { fig: 0, tbl: 0, sec: 0, eq: 0, thm: 0 };
-    const sep = this._headingNumbering.match(/[^\d1]/)?.[0] || ".";
-    const levelCounts = [0, 0, 0, 0, 0, 0];
-    const nextSecNumber = (level) => {
-      levelCounts[level - 1]++;
-      for (let i = level; i < 6; i++) levelCounts[i] = 0;
-      const parts = [];
-      for (let i = 0; i < level; i++) parts.push(levelCounts[i]);
-      return parts.join(sep);
-    };
-    let currentDeps = null;
-    const handleCall = (call) => {
-      var _a, _b;
-      if (call.name === "cite") {
-        for (const a of call.args) {
-          if (a.type !== "string") continue;
-          this._registerCite(a.value);
-          const entry = this._data.bibliography && this._data.bibliography[a.value];
-          if (entry !== void 0) ((_a = currentDeps.d).cite || (_a.cite = {}))[a.value] = entry;
-        }
-      }
-      if (call.name === "term" && call.args[0] && call.args[0].type === "string") {
-        this._registerTerm(call.args[0].value);
-        const entry = this._data.terms && this._data.terms[call.args[0].value];
-        if (entry !== void 0) ((_b = currentDeps.d).term || (_b.term = {}))[call.args[0].value] = entry;
-      }
-      if (call.name === "use" && call.args[0] && call.args[0].type === "string") {
-        const t = this._macros[call.args[0].value];
-        if (t !== void 0) currentDeps.m[call.args[0].value] = t;
-      }
-      if (call.name === "bibliography") currentDeps["bib-all"] = this._data.bibliography;
-      if (call.name === "glossary") currentDeps["term-all"] = this._data.terms;
-    };
-    const walkInlineList = (n) => {
-      if (n instanceof Image && n.label) {
-        counters.fig++;
-        this._refs[n.label] = { kind: "fig", number: counters.fig };
-      }
-      if (n instanceof FunctionCall) {
-        handleCall(n);
-        n.args.forEach((a) => this._walkExprTree(a, handleCall, (v) => {
-          if (v.name in this._variables) currentDeps.v[v.name] = this._variables[v.name];
-        }));
-      }
-    };
-    const headingText = (nodes) => {
-      let out = "";
-      for (const n of nodes) {
-        if (n instanceof RawText) out += n.text;
-        else if (n.content) out += headingText(n.content);
-      }
-      return out;
-    };
-    const collectBlock = (block) => {
-      const deps = { v: {}, m: {}, d: {} };
-      block._deps = deps;
-      currentDeps = deps;
-      block._prefixCounts = {
-        fig: counters.fig,
-        tbl: counters.tbl,
-        sec: counters.sec,
-        eq: counters.eq,
-        thm: counters.thm,
-        cite: this._citeOrder.length,
-        term: this._termOrder.length
-      };
-      if (block instanceof PartBlock) {
-        if (block.id) {
-          const text2 = headingText(block.title) || block.id;
-          let display;
-          if (this._refNumbering) display = extractHeadingNumber(text2, this._refNumbering);
-          if (display === void 0) display = text2;
-          this._refs[block.id] = { kind: "part", display };
-        }
-        block.blocks.forEach(collectBlock);
-        return;
-      }
-      if (block instanceof Heading) {
-        const autoNum = this._headingNumbering ? nextSecNumber(block.level) : "";
-        this._headingSeq.push(autoNum);
-        if (block.id) {
-          counters.sec++;
-          const text2 = headingText(block.content);
-          let display;
-          if (this._refNumbering) {
-            display = extractHeadingNumber(text2, this._refNumbering);
-          }
-          if (display === void 0 && autoNum) display = autoNum;
-          if (display === void 0) display = text2 || `\u7B2C ${counters.sec} \u8282`;
-          this._refs[block.id] = { kind: "sec", display };
-        }
-      }
-      if (block instanceof Table && block.label) {
-        counters.tbl++;
-        this._refs[block.label] = { kind: "tbl", number: counters.tbl };
-      }
-      if (block instanceof Equation && block.label) {
-        counters.eq++;
-        this._refs[block.label] = { kind: "eq", number: counters.eq };
-      }
-      if (block instanceof CodeBlock && block.label && block.language === "mermaid") {
-        counters.fig++;
-        this._refs[block.label] = { kind: "fig", number: counters.fig };
-      }
-      if (block instanceof Theorem && block.label) {
-        counters.thm++;
-        this._refs[block.label] = { kind: "thm", type: block.type, number: counters.thm };
-      }
-      if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
-    };
-    doc.blocks.forEach(collectBlock);
-    currentDeps = null;
-    this._citeYearSuffix = {};
-    if (this._citeStyle !== "numeric") {
-      const counts = {};
-      for (const key of this._citeOrder) {
-        const entry = this._data.bibliography && this._data.bibliography[key];
-        if (!entry || typeof entry !== "object" || !entry.authors || entry.year === void 0) continue;
-        const g = `${String(entry.authors).toLowerCase()}|${entry.year}`;
-        counts[g] = (counts[g] || 0) + 1;
-      }
-      const seen = {};
-      for (const key of this._citeOrder) {
-        const entry = this._data.bibliography && this._data.bibliography[key];
-        if (!entry || typeof entry !== "object" || !entry.authors || entry.year === void 0) continue;
-        const g = `${String(entry.authors).toLowerCase()}|${entry.year}`;
-        const idx = seen[g] = (seen[g] || 0) + 1;
-        this._citeYearSuffix[key] = counts[g] > 1 ? String.fromCharCode(96 + idx) : "";
-      }
-    }
+    return this.semantic;
   }
   /**
    * 引用完整性检查（opts.check 时）：检测缺失的文献/术语/交叉引用/脚注定义、
@@ -27674,7 +27816,7 @@ ${body}
     const walkInlineList = (n) => {
       if (n instanceof FunctionCall) {
         handleCall(n);
-        n.args.forEach((a) => this._walkExprTree(a, handleCall));
+        n.args.forEach((a) => walkExprTree(a, handleCall));
       }
       if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report("missing_footnote", n.label);
       if (n instanceof Image) markLabel(n.label);
@@ -27690,7 +27832,7 @@ ${body}
         markLabel(block.label);
       }
       if (block._orphanCaption) report("orphan_caption", block._orphanCaption);
-      if (block.content || block.items) this._eachBlockInline(block, walkInlineList);
+      if (block.content || block.items) eachBlockInline(block, walkInlineList);
     };
     doc.blocks.forEach((block, i) => walkBlock(block, i));
     currentBlock = -1;
@@ -27703,33 +27845,6 @@ ${body}
    */
   llmReport(issues) {
     return llmReport(issues);
-  }
-  /**
-   * 遍历表达式树（嵌套在函数参数中的 call/var/unary/binary/object/array），
-   * 对每个 call 节点调用 onCall、每个变量节点调用 onVar。
-   * _collectRefs / _checkIntegrity 共用。
-   * @param {object} node
-   * @param {function} [onCall]
-   * @param {function} [onVar]
-   */
-  _walkExprTree(node, onCall, onVar) {
-    if (!node || typeof node !== "object") return;
-    if (node.type === "call") {
-      if (onCall) onCall(node);
-      node.args.forEach((a) => this._walkExprTree(a, onCall, onVar));
-      Object.values(node.kwargs).forEach((a) => this._walkExprTree(a, onCall, onVar));
-    } else if (node.type === "var") {
-      if (onVar) onVar(node);
-    } else if (node.type === "unary") {
-      this._walkExprTree(node.operand, onCall, onVar);
-    } else if (node.type === "binary") {
-      this._walkExprTree(node.left, onCall, onVar);
-      this._walkExprTree(node.right, onCall, onVar);
-    } else if (node.type === "object") {
-      Object.values(node.value).forEach((a) => this._walkExprTree(a, onCall, onVar));
-    } else if (node.type === "array") {
-      node.items.forEach((a) => this._walkExprTree(a, onCall, onVar));
-    }
   }
   /**
    * 文献键编号：首次出现分配顺序号（_collectRefs 预收集与运行时 cite 共用）。
@@ -28210,18 +28325,11 @@ ${body}
 // ================================================================
 // 文档内配置（@set）
 // ================================================================
-// @set 白名单：仅这些键可被文档内配置覆盖
-__publicField(_HTMLRenderer, "SET_KEYS", ["headingNumbering", "refNumbering", "escapeHtml", "pretty", "data", "variables", "terms", "bibliography", "captionPrefix", "citeKeyAttr", "termKeyAttr", "refKeyAttr", "citeStyle", "allowPlugins", "bibStyle"]);
-// 引用/术语 data 属性名（工作台交互定位用；空串关闭）
-__publicField(_HTMLRenderer, "DEFAULT_KEY_ATTRS", { citeKeyAttr: "data-cite-key", termKeyAttr: "data-term-key", refKeyAttr: "data-ref-label" });
-// caption 前缀（默认中文，可用 @set 覆盖；thm 按定理类型细分）
-__publicField(_HTMLRenderer, "DEFAULT_CAPTION_PREFIX", {
-  fig: "\u56FE",
-  tbl: "\u8868",
-  eq: "\u5F0F",
-  thm: { theorem: "\u5B9A\u7406", lemma: "\u5F15\u7406", definition: "\u5B9A\u4E49", remark: "\u6CE8\u8BB0", example: "\u4F8B" }
-});
-var HTMLRenderer = _HTMLRenderer;
+// @set 白名单 / 默认常量（定义于 runtime.js，此处别名兼容内部/外部引用）
+__publicField(HTMLRenderer, "SET_KEYS", SET_KEYS);
+__publicField(HTMLRenderer, "DEFAULT_KEY_ATTRS", DEFAULT_KEY_ATTRS);
+__publicField(HTMLRenderer, "DEFAULT_CAPTION_PREFIX", DEFAULT_CAPTION_PREFIX);
+__publicField(HTMLRenderer, "_mergeCaptionPrefix", mergeCaptionPrefix);
 function llmReport(issues) {
   const LABELS = {
     missing_cite: "\u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684\u6587\u732E",
@@ -28514,4 +28622,4 @@ export {
   render3 as render,
   toJSON
 };
-/*! built: 2026-08-19T13:11:44.929Z */
+/*! built: 2026-08-19T17:01:32.422Z */
