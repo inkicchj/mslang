@@ -37,7 +37,7 @@ const CONFIG_DEFAULTS = {
   citeKeyAttr: 'data-cite-key',
   termKeyAttr: 'data-term-key',
   refKeyAttr: 'data-ref-label',
-  allowPlugins: true, // Phase 9 收紧为 default=false（安全边界）
+  allowPlugins: false, // 安全边界：文档内 @plugin 默认关闭（宿主显式 allowPlugins:true 开启）
 };
 
 export function mergeCaptionPrefix(base, incoming) {
@@ -91,13 +91,13 @@ export class RuntimeContext {
     this.functions[name] = fn;
   }
 
-  /** 文档 @set 合并（白名单；安全键被宿主显式锁定时不可覆盖） */
+  /** 文档 @set 合并（白名单；安全键 allowPlugins 由宿主决定，文档不可覆盖/打开） */
   applySetConfig(config) {
     if (!config || typeof config !== 'object') return;
     for (const key of SET_KEYS) {
       if (!(key in config)) continue;
-      // 宿主显式锁定安全键（如 allowPlugins:false）时文档不可开
-      if (SECURE_KEYS.includes(key) && this.hostConfig[key] !== undefined) continue;
+      // 安全键（当前 allowPlugins）：文档 @set 一律无效，仅宿主显式配置可开启
+      if (SECURE_KEYS.includes(key)) continue;
       const v = config[key];
       if (key === 'data' || key === 'terms' || key === 'bibliography') {
         this.data = this.mergeData(this.data, key === 'data' ? v : { [key]: v });

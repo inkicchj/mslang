@@ -4108,8 +4108,8 @@ ${items.join("\n")}
     citeKeyAttr: "data-cite-key",
     termKeyAttr: "data-term-key",
     refKeyAttr: "data-ref-label",
-    allowPlugins: true
-    // Phase 9 收紧为 default=false（安全边界）
+    allowPlugins: false
+    // 安全边界：文档内 @plugin 默认关闭（宿主显式 allowPlugins:true 开启）
   };
   function mergeCaptionPrefix(base, incoming) {
     const cp = incoming || {};
@@ -4156,12 +4156,12 @@ ${items.join("\n")}
     registerFunction(name, fn) {
       this.functions[name] = fn;
     }
-    /** 文档 @set 合并（白名单；安全键被宿主显式锁定时不可覆盖） */
+    /** 文档 @set 合并（白名单；安全键 allowPlugins 由宿主决定，文档不可覆盖/打开） */
     applySetConfig(config) {
       if (!config || typeof config !== "object") return;
       for (const key of SET_KEYS) {
         if (!(key in config)) continue;
-        if (SECURE_KEYS.includes(key) && this.hostConfig[key] !== void 0) continue;
+        if (SECURE_KEYS.includes(key)) continue;
         const v = config[key];
         if (key === "data" || key === "terms" || key === "bibliography") {
           this.data = this.mergeData(this.data, key === "data" ? v : { [key]: v });
@@ -27580,6 +27580,14 @@ ${items.join("\n")}
     diff
   };
   for (const [name, lang] of Object.entries(HLJS_LANGUAGES)) core_default.registerLanguage(name, lang);
+  function safeUrl(url) {
+    const u = String(url == null ? "" : url).trim();
+    if (!u) return "";
+    if (/^javascript:/i.test(u)) return "";
+    if (/^data:/i.test(u) && !/^data:image\//i.test(u)) return "";
+    return u;
+  }
+  var MAX_MACRO_DEPTH = 32;
   var MATH_CACHE = /* @__PURE__ */ new Map();
   var CODE_CACHE = /* @__PURE__ */ new Map();
   var CACHE_LIMIT = 500;
@@ -27832,6 +27840,7 @@ ${items.join("\n")}
       this._mathRendererCustom = !!mathRenderer;
       this._termOrder = [];
       this._hasHighlight = false;
+      this._useDepth = 0;
     }
     /** 解析输入为 Document（render / renderAsync 共用）；Document 输入直接使用（无源区间） */
     _parseDoc(source2) {
@@ -27920,7 +27929,7 @@ ${body}
       if (typeof entry === "string") return this._esc(entry);
       const e = entry || {};
       const title = e.title ? this._esc(String(e.title)) : "";
-      const titleHtml = e.url ? `<a href="${this._escAttr(String(e.url))}">${title}</a>` : title;
+      const titleHtml = e.url ? `<a href="${this._escAttr(safeUrl(e.url))}">${title}</a>` : title;
       if (this._bibStyle === "gbt7714") {
         const parts2 = [];
         if (e.authors) parts2.push(this._esc(String(e.authors)));
@@ -28036,7 +28045,7 @@ ${body}
       const num = ref ? ref.number : "";
       const id = image.label ? ` id="${this._escAttr(image.label)}"` : "";
       const width = image.width ? ` width="${image.width}"` : "";
-      const img = `<img src="${this._escAttr(image.url)}" alt="${this._escAttr(image.alt)}"${width} referrerpolicy="no-referrer">`;
+      const img = `<img src="${this._escAttr(safeUrl(image.url))}" alt="${this._escAttr(image.alt)}"${width} referrerpolicy="no-referrer">`;
       this._writeFigure(id, img, image.caption, this._captionPrefix.fig, num);
     }
     visit_CodeBlock(node) {
@@ -28247,12 +28256,12 @@ ${body}
       this._write(`<code>${this._esc(node.code)}</code>`);
     }
     visit_Link(node) {
-      this._write(`<a href="${this._escAttr(node.url)}">${this._esc(node.text)}</a>`);
+      this._write(`<a href="${this._escAttr(safeUrl(node.url))}">${this._esc(node.text)}</a>`);
     }
     visit_Image(node) {
       const w = node.width ? ` width="${node.width}"` : "";
       const id = node.label ? ` id="${this._escAttr(node.label)}"` : "";
-      this._write(`<img src="${this._escAttr(node.url)}" alt="${this._escAttr(node.alt)}"${w}${id} referrerpolicy="no-referrer">`);
+      this._write(`<img src="${this._escAttr(safeUrl(node.url))}" alt="${this._escAttr(node.alt)}"${w}${id} referrerpolicy="no-referrer">`);
     }
     visit_FunctionCall(node) {
       if (node.error) {
@@ -28295,7 +28304,13 @@ ${body}
         return;
       }
       if (node.name === "use" && typeof result === "string") {
+        if (this._useDepth >= MAX_MACRO_DEPTH) {
+          this._write("<!-- mslang: \u5B8F\u9012\u5F52\u8D85\u9650\uFF08@use \u5D4C\u5957\u8FC7\u6DF1\uFF09 -->");
+          return;
+        }
+        this._useDepth++;
         parseInlineFragment(result).forEach((n) => n.accept(this));
+        this._useDepth--;
         return;
       }
       this._write(this._renderValue(result));
@@ -28670,4 +28685,4 @@ ${lines.join("\n")}`;
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-19T17:13:38.831Z */
+/*! built: 2026-08-19T17:20:09.043Z */

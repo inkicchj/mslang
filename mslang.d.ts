@@ -34,7 +34,7 @@ export interface RenderOptions {
   citeStyle?: 'numeric' | 'author-year' | 'author';
   /** 文献表条目样式：default / gbt7714 */
   bibStyle?: 'default' | 'gbt7714';
-  /** 允许 @plugin 文档内插件（默认 true） */
+  /** 允许文档内 @plugin（默认 false；文档 @set 无法打开，仅宿主显式开启） */
   allowPlugins?: boolean;
   escapeHtml?: boolean;
   pretty?: boolean;

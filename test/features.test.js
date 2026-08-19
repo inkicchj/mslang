@@ -140,35 +140,53 @@ test('错误容错：表达式语法错误输出注释不崩溃', () => {
   assert.match(h, /参数解析错误/);
 });
 
-test('插件：@plugin 注册与调用', () => {
-  assert.match(render('@plugin("double", "(x) => x * 2")\n\n@double(21)'), /42/);
+test('插件：@plugin 注册与调用（需宿主显式 allowPlugins:true）', () => {
+  const PO = { allowPlugins: true };
+  assert.match(render('@plugin("double", "(x) => x * 2")\n\n@double(21)', PO), /42/);
   // kwargs
-  const h = render('@plugin("wrap", "(x, kwargs) => \\"<\\" + kwargs.tag + \\">\\" + x + \\"</\\" + kwargs.tag + \\">\\"")\n\n@wrap("hi", tag="em")');
+  const h = render('@plugin("wrap", "(x, kwargs) => \\"<\\" + kwargs.tag + \\">\\" + x + \\"</\\" + kwargs.tag + \\">\\"")\n\n@wrap("hi", tag="em")', PO);
   assert.match(h, /<em>hi<\/em>/);
   // 动态 HTML 渲染
-  const h2 = render('@plugin("ul", "(items) => items.map(i => \\"<li>\\" + i + \\"</li>\\").join(\\"\\")")\n\n@ul(["a", "b"])');
+  const h2 = render('@plugin("ul", "(items) => items.map(i => \\"<li>\\" + i + \\"</li>\\").join(\\"\\")")\n\n@ul(["a", "b"])', PO);
   assert.match(h2, /<li>a<\/li><li>b<\/li>/);
 });
 
-test('插件：覆盖内置/宿主函数、错误容错、开关', () => {
+test('插件：默认关闭、host 锁、覆盖内置/宿主函数、错误容错', () => {
+  // 默认关闭：@plugin 不注册（调用 unknown 占位）；宿主显式 allowPlugins:true 开启
+  assert.match(render('@plugin("f", "(x) => x * 2")\n\n@f(21)'), /unknown function @f/);
+  assert.match(render('@plugin("f", "(x) => x * 2")\n\n@f(21)', { allowPlugins: true }), /42/);
+  // 文档 @set 不能打开（host 锁）
+  assert.match(render('@set({ allowPlugins: true })\n@plugin("f", "(x) => x * 2")\n\n@f(21)'), /unknown function @f/);
   // 覆盖内置 cite
   const h = render('@plugin("cite", "(x) => \\"X\\"") 与 @cite("k")', {
     data: { bibliography: { k: { number: 1 } } },
+    allowPlugins: true,
   });
   assert.match(h, /X/);
   assert.ok(!h.includes('cite-1'));
   // 编译错误容错（不崩溃）
-  assert.match(render('@plugin("bad", "((")\n\n@bad(1)'), /<!-- mslang/);
-  // allowPlugins 默认开启；可关闭（API 与 @set）
-  assert.match(render('@plugin("f", "(x) => 1")\n\n@f(1)', { allowPlugins: false }), /<!-- mslang/);
-  assert.match(render('@set({ allowPlugins: false })\n@plugin("f", "(x) => 1")\n\n@f(1)'), /<!-- mslang/);
+  assert.match(render('@plugin("bad", "((")\n\n@bad(1)', { allowPlugins: true }), /<!-- mslang/);
+});
+
+test('安全边界：URL scheme 白名单 + 宏递归深度', () => {
+  // javascript:/非 image data: 拒绝（链接与图片）
+  assert.ok(!render('[x](javascript:alert(1))').includes('href="javascript:'));
+  assert.ok(!render('![x](javascript:alert(1))').includes('src="javascript:'));
+  assert.ok(!render('[x](data:text/html;base64,ABC)').includes('data:text/html'));
+  // 合法链接保留
+  assert.match(render('[官网](https://example.com/a)'), /href="https:\/\/example.com\/a"/);
+  assert.match(render('![图](data:image/png;base64,AAAA)'), /src="data:image\/png/);
+  // 宏递归超限（自引用宏）
+  const r = render('@define("loop", "@use(\\"loop\\")")\n\n@use("loop")', { allowPlugins: false });
+  assert.match(r, /宏递归超限/);
 });
 
 test('插件：异步与跨文档合并', async () => {
-  const ah = await render('@plugin("fetch", "async (u) => \\"<b>\\" + u + \\"</b>\\"")\n\n@fetch("api")', { async: true });
+  const PO = { allowPlugins: true };
+  const ah = await render('@plugin("fetch", "async (u) => \\"<b>\\" + u + \\"</b>\\"")\n\n@fetch("api")', { ...PO, async: true });
   assert.match(ah, /<b>api<\/b>/);
   // 文档1注册，文档2调用
-  const h = render(['@plugin("inc", "(x) => x + 1")', '@inc(41)']);
+  const h = render(['@plugin("inc", "(x) => x + 1")', '@inc(41)'], PO);
   assert.match(h, /42/);
 });
 

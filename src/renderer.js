@@ -55,6 +55,19 @@ const HLJS_LANGUAGES = {
 };
 for (const [name, lang] of Object.entries(HLJS_LANGUAGES)) hljs.registerLanguage(name, lang);
 
+// URL 白名单（安全边界）：http/https/mailto/ftp、锚点(#)、相对路径；
+// data: 仅允许 image（页内图片数据）；javascript:/其它 data: 拒绝（输出空 href/src）
+function safeUrl(url) {
+  const u = String(url == null ? '' : url).trim();
+  if (!u) return '';
+  if (/^javascript:/i.test(u)) return '';
+  if (/^data:/i.test(u) && !/^data:image\//i.test(u)) return '';
+  return u;
+}
+
+// 宏展开递归深度上限（@use 模板内嵌 @use 的自引用防护）
+const MAX_MACRO_DEPTH = 32;
+
 // KaTeX / hljs 渲染结果缓存（跨 render 实例共享，供工作台增量重渲复用）。
 // 二者输出是确定性纯函数，memoization 安全；上限防内存膨胀（超限淘汰最早插入）。
 const MATH_CACHE = new Map();
@@ -301,6 +314,7 @@ class HTMLRenderer {
     this._mathRendererCustom = !!mathRenderer;
     this._termOrder = [];
     this._hasHighlight = false;
+    this._useDepth = 0;
   }
 
   /** 解析输入为 Document（render / renderAsync 共用）；Document 输入直接使用（无源区间） */
@@ -411,7 +425,7 @@ class HTMLRenderer {
     const e = entry || {};
     const title = e.title ? this._esc(String(e.title)) : '';
     const titleHtml = e.url
-      ? `<a href="${this._escAttr(String(e.url))}">${title}</a>` : title;
+      ? `<a href="${this._escAttr(safeUrl(e.url))}">${title}</a>` : title;
     if (this._bibStyle === 'gbt7714') {
       const parts = [];
       if (e.authors) parts.push(this._esc(String(e.authors)));
@@ -540,7 +554,7 @@ class HTMLRenderer {
     const num = ref ? ref.number : '';
     const id = image.label ? ` id="${this._escAttr(image.label)}"` : '';
     const width = image.width ? ` width="${image.width}"` : '';
-    const img = `<img src="${this._escAttr(image.url)}" alt="${this._escAttr(image.alt)}"${width} referrerpolicy="no-referrer">`;
+    const img = `<img src="${this._escAttr(safeUrl(image.url))}" alt="${this._escAttr(image.alt)}"${width} referrerpolicy="no-referrer">`;
     this._writeFigure(id, img, image.caption, this._captionPrefix.fig, num);
   }
 
@@ -764,14 +778,14 @@ class HTMLRenderer {
   }
 
   visit_Link(node) {
-    this._write(`<a href="${this._escAttr(node.url)}">${this._esc(node.text)}</a>`);
+    this._write(`<a href="${this._escAttr(safeUrl(node.url))}">${this._esc(node.text)}</a>`);
   }
 
   visit_Image(node) {
     const w = node.width ? ` width="${node.width}"` : '';
     const id = node.label ? ` id="${this._escAttr(node.label)}"` : '';
     // referrerpolicy="no-referrer": 绕过源站 Referer 防盗链
-    this._write(`<img src="${this._escAttr(node.url)}" alt="${this._escAttr(node.alt)}"${w}${id} referrerpolicy="no-referrer">`);
+    this._write(`<img src="${this._escAttr(safeUrl(node.url))}" alt="${this._escAttr(node.alt)}"${w}${id} referrerpolicy="no-referrer">`);
   }
 
   visit_FunctionCall(node) {
@@ -814,9 +828,16 @@ class HTMLRenderer {
       return;
     }
 
-    // 宏展开：@use 返回的模板字符串（含行内语法）二次解析后渲染
+    // 宏展开：@use 返回的模板字符串（含行内语法）二次解析后渲染；
+    // 递归深度防护（宏模板内嵌 @use 自引用 → 超限输出占位，防无限递归）
     if (node.name === 'use' && typeof result === 'string') {
+      if (this._useDepth >= MAX_MACRO_DEPTH) {
+        this._write('<!-- mslang: 宏递归超限（@use 嵌套过深） -->');
+        return;
+      }
+      this._useDepth++;
       parseInlineFragment(result).forEach(n => n.accept(this));
+      this._useDepth--;
       return;
     }
 

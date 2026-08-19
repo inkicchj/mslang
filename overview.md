@@ -476,7 +476,7 @@ const html = await render('标题：@fetch_title("paper1")', {
 
 ## 插件（文档内自定义函数）
 
-在 md 里直接写 JS 注册可复用函数（**默认开启**）：
+在 md 里直接写 JS 注册可复用函数（**默认关闭，需宿主显式开启**）：
 
 ```md
 @plugin("double", "(x, kwargs) => x * 2")     // new Function 编译，签名与内置一致 (...args, kwargs)
@@ -488,11 +488,21 @@ const html = await render('标题：@fetch_title("paper1")', {
 @plugin("fetch", `async (u) => "<b>" + u + "</b>"`)   // 异步插件需 { async: true }
 ```
 
-- 预扫描阶段注册（与 `@set`/`@let` 同机制）：**全文档可见、跨文档合并可用**
-- 可覆盖内置/宿主同名函数；同 body 编译缓存；编译失败不崩溃（调用输出错误注释）
-- 关闭：`allowPlugins: false`（API 或 `@set`）
-- ⚠️ **安全提示**：插件函数体是真实 JS（`new Function` 全局作用域），文档即代码——仅在可信文档上开启
+**安全边界（0.2）**：
+- `allowPlugins` **默认 false**：文档内 `@plugin` 默认不生效（调用输出 unknown 占位）。
+  仅宿主显式开启：
+  ```javascript
+  render(src, { allowPlugins: true });
+  ```
+- **host 锁**：文档 `@set({ allowPlugins: true })` **无法打开**（安全键由宿主决定，文档不可提升权限）
+- ⚠️ 插件函数体是真实 JS（`new Function` 全局作用域），文档即代码——仅在可信文档上开启
+- **推荐替代**：宿主用 `render(src, { functions: { double: (x) => x*2 } })` 注入（安全、可调试）
 - 函数体无法捕获文档内 `@let` 变量（全局作用域），请通过参数/kwargs 传值
+
+**其它安全边界**：
+- **URL scheme 白名单**：链接/图片 `javascript:` 与非 image 的 `data:` 协议被拒绝（输出空 href/src）；`data:image/` 内联图片保留
+- **宏递归深度**：`@use` 模板内嵌自引用时嵌套超 32 层输出占位注释，防无限递归
+- **配置优先级**：`Host > @set > Defaults`（文档配置不能覆盖宿主显式设置的安全项）
 
 ---
 
