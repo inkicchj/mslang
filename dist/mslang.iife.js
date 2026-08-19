@@ -2990,14 +2990,16 @@ var mslang = (() => {
      * @param {Object<string, object>} [kwargs] - 关键字参数（表达式 AST）
      * @param {string} [rawArgs]
      * @param {string} [error] - 参数表达式解析错误信息（空串表示无错误）
+     * @param {{start:number,end:number}} [span] - 源码区间（诊断精确定位）
      */
-    constructor(name = "", args = [], kwargs = {}, rawArgs = "", error = "") {
+    constructor(name = "", args = [], kwargs = {}, rawArgs = "", error = "", span = null) {
       super();
       this.name = name;
       this.args = args;
       this.kwargs = kwargs;
       this.rawArgs = rawArgs;
       this.error = error;
+      this.span = span;
     }
     accept(visitor) {
       return visitor.visit_FunctionCall(this);
@@ -3051,11 +3053,13 @@ var mslang = (() => {
     /**
      * @param {string} [label]
      * @param {number} [number]
+     * @param {{start:number,end:number}} [span] - 源码区间（诊断精确定位）
      */
-    constructor(label = "", number = 0) {
+    constructor(label = "", number = 0, span = null) {
       super();
       this.label = label;
       this.number = number;
+      this.span = span;
     }
     accept(visitor) {
       return visitor.visit_FootnoteRef(this);
@@ -3206,7 +3210,11 @@ var mslang = (() => {
     // 公共接口
     // ================================================================
     /**
-     * 将 Token 列表解析为 Raw AST（无结构归并，不执行语义）。
+     * 【内部 API】将 Token 列表解析为 Raw AST（纯语法，无结构归并/语义）。
+     * 供 prepare() 等管线内部使用；对外语义分析请用公共 parse()（返回 Stable AST）。
+     * 脚注元数据（定义字典/位置）随 Raw Document 一并产出：
+     * document._footnoteDefs / document._footnoteDefPositions（prepare/parse 从文档读取，
+     * 不依赖 Parser 实例私有状态）。
      * @param {import('./tokens.js').Token[]} tokens
      * @returns {Document}
      */
@@ -3239,6 +3247,8 @@ var mslang = (() => {
         block.startPos = startPos;
         document2.blocks.push(block);
       }
+      document2._footnoteDefs = this._footnoteDefs;
+      document2._footnoteDefPositions = this._footnoteDefPositions;
       return document2;
     }
     /**
@@ -3249,10 +3259,10 @@ var mslang = (() => {
      */
     parse(tokens, source2 = "") {
       const document2 = this.parseRaw(tokens, source2);
-      return finalizeDocument(document2, source2, this._footnoteDefs, this._footnoteDefPositions);
+      return finalizeDocument(document2, source2, document2._footnoteDefs, document2._footnoteDefPositions);
     }
     /**
-     * 直接解析原始文本为 Raw AST（不执行结构归并/语义）。
+     * 【内部 API】直接解析原始文本为 Raw AST（不执行结构归并/语义；语义请用 parseText()）。
      * @param {string} source
      * @returns {Document}
      */
@@ -3592,7 +3602,8 @@ var mslang = (() => {
         } catch (e) {
           error = e.message;
         }
-        return new FunctionCall(token.value, args, kwargs, rawArgs, error);
+        const span = { start: token.position.index, end: token.position.index + 1 + token.value.length + rawArgs.length + 1 };
+        return new FunctionCall(token.value, args, kwargs, rawArgs, error, span);
       }
       if (token.type === TokenType.COLOR) {
         return new Color(token.metadata.color || "", token.value);
@@ -3604,7 +3615,8 @@ var mslang = (() => {
         return new Subscript(this._parseInline(token.value));
       }
       if (token.type === TokenType.FOOTNOTE_REF) {
-        return new FootnoteRef(token.value);
+        const end = token.position.index + `[^${token.value}]`.length;
+        return new FootnoteRef(token.value, 0, { start: token.position.index, end });
       }
       if (token.type === TokenType.RAW_HTML) {
         return new RawHtml(token.value);
@@ -4389,7 +4401,7 @@ ${items.join("\n")}
     const seenLabels = /* @__PURE__ */ new Set();
     let currentBlock = -1;
     const blockAt = (i) => doc.blocks[i];
-    const report = (code, label) => {
+    const report = (code, label, span) => {
       const id = `${code}|${label}`;
       if (seen.has(id)) {
         diagnostics[seen.get(id)].count++;
@@ -4401,7 +4413,8 @@ ${items.join("\n")}
         code,
         severity: "warning",
         message: `${DIAG_MESSAGES[code] || code}\u300C${label}\u300D`,
-        span: b ? { start: b.startPos != null ? b.startPos : 0, end: b.endPos != null ? b.endPos : 0 } : void 0,
+        // 节点级 span（@cite/@ref/@term/[^n] 精确位置），缺失时回退块区间
+        span: span && span.start < span.end ? { start: span.start, end: span.end } : b ? { start: b.startPos != null ? b.startPos : 0, end: b.endPos != null ? b.endPos : 0 } : void 0,
         data: { label },
         block: currentBlock,
         count: 1
@@ -4411,17 +4424,17 @@ ${items.join("\n")}
       if (call.name === "cite") {
         for (const a of call.args) {
           if (a.type === "string" && !(runtime.data.bibliography && runtime.data.bibliography[a.value])) {
-            report("missing-citation", a.value);
+            report("missing-citation", a.value, call.span);
           }
         }
       } else if (call.name === "term") {
         const a = call.args[0];
         if (a && a.type === "string" && !(runtime.data.terms && runtime.data.terms[a.value])) {
-          report("missing-term", a.value);
+          report("missing-term", a.value, call.span);
         }
       } else if (call.name === "ref") {
         const a = call.args[0];
-        if (a && a.type === "string" && !sm.refs[a.value]) report("missing-reference", a.value);
+        if (a && a.type === "string" && !sm.refs[a.value]) report("missing-reference", a.value, call.span);
       }
     };
     const markLabel = (label) => {
@@ -4434,7 +4447,7 @@ ${items.join("\n")}
         handleCall(n);
         n.args.forEach((a) => walkExprTree(a, handleCall));
       }
-      if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report("missing-footnote", n.label);
+      if (n instanceof FootnoteRef && !(n.label in doc.footnotes)) report("missing-footnote", n.label, n.span);
       if (n instanceof Image) markLabel(n.label);
     };
     const walkBlock = (block, blockIdx) => {
@@ -4729,21 +4742,18 @@ ${items.join("\n")}
       }
     });
   }
+  function toDocument(source2, options, issues) {
+    if (source2 instanceof Document) return source2;
+    if (typeof source2 !== "string") throw new TypeError("prepare \u8F93\u5165\u987B\u4E3A string | Document | \u6570\u7EC4");
+    const parser = new Parser();
+    let document2 = parser.parseRaw(new Lexer(source2).tokenize(), source2);
+    document2 = finalizeDocument(document2, source2, document2._footnoteDefs, document2._footnoteDefPositions);
+    return document2;
+  }
   function prepare(source2, options = {}) {
     const issues = [];
     const run = (effectiveSource) => {
-      let document2;
-      if (typeof effectiveSource === "string") {
-        const parser = new Parser();
-        document2 = finalizeDocument(
-          parser.parseRaw(new Lexer(effectiveSource).tokenize(), effectiveSource),
-          effectiveSource,
-          parser._footnoteDefs,
-          parser._footnoteDefPositions
-        );
-      } else {
-        document2 = effectiveSource;
-      }
+      let document2 = toDocument(effectiveSource, options, issues);
       const runtime = new RuntimeContext({
         functions: options.functions,
         escapeHtml: options.escapeHtml,
@@ -4754,6 +4764,15 @@ ${items.join("\n")}
       const semantic = new SemanticAnalyzer({ runtime }).analyze(document2);
       return { document: document2, runtime, semantic, issues };
     };
+    if (Array.isArray(source2)) {
+      const expandedList = source2.map((s) => typeof s === "string" && options.include ? expandIncludes(s, { include: options.include, issues }) : s);
+      const buildMerged = (list) => mergeDocuments(...list.map((s) => toDocument(s, options, issues)));
+      const anyPromise = expandedList.some((x) => x instanceof Promise);
+      if (anyPromise) {
+        return Promise.all(expandedList).then((list) => run(buildMerged(list)));
+      }
+      return run(buildMerged(expandedList));
+    }
     if (typeof source2 === "string" && options.include) {
       const expanded = expandIncludes(source2, { include: options.include, issues });
       return expanded instanceof Promise ? expanded.then(run) : run(expanded);
@@ -28067,19 +28086,18 @@ ${items.join("\n")}
      * @returns {string}
      */
     renderAll(sources, opts = {}) {
-      const merged = mergeDocuments(...sources.map((s) => this._toStable(s)));
-      if (opts.blocks) return this.renderBlocks(merged, opts);
-      return this.render(merged, opts);
+      const prepared = prepare(sources, opts);
+      const run = (p) => {
+        if (opts.blocks) return this.renderBlocks(p.document, opts);
+        return this._renderPrepared(p, opts);
+      };
+      return prepared instanceof Promise ? prepared.then(run) : run(prepared);
     }
     /** 异步版 renderAll，语义与 renderAsync 相同 */
-    async renderAllAsync(sources, opts = {}) {
-      const merged = mergeDocuments(...sources.map((s) => this._toStable(s)));
-      if (opts.blocks) return this.renderBlocks(merged, opts);
-      return this.renderAsync(merged, opts);
-    }
-    /** 输入收敛为 Stable AST（Document 直接用；字符串经 Parser Stable 兼容层） */
-    _toStable(source2) {
-      return source2 instanceof Document ? source2 : new Parser().parse(new Lexer(source2).tokenize(), source2);
+    renderAllAsync(sources, opts = {}) {
+      const prepared = prepare(sources, opts);
+      const run = (p) => opts.blocks ? this.renderBlocks(p.document, opts) : this.renderAsync(p.document, opts);
+      return prepared instanceof Promise ? prepared.then(run) : run(prepared);
     }
     /** 包一层 wrapper div */
     _wrap(body, opts) {
@@ -28751,4 +28769,4 @@ ${lines.join("\n")}`;
   }
   return __toCommonJS(index_exports);
 })();
-/*! built: 2026-08-19T18:36:26.803Z */
+/*! built: 2026-08-19T19:10:07.397Z */
