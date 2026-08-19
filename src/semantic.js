@@ -6,7 +6,7 @@
  * 配置（headingNumbering/refNumbering/citeStyle/data/...）来自 RuntimeContext。
  */
 
-import { extractHeadingNumber } from './builtin.js';
+import { extractHeadingNumber } from './numbering.js';
 import {
   FunctionCall, RawText, Image, PartBlock, Heading,
   Table, Equation, CodeBlock, Theorem, FootnoteRef,

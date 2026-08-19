@@ -24,6 +24,7 @@ import {
 } from './nodes.js';
 
 import { normalizeDocument, normalizeFootnotes } from './normalize.js';
+import { walkNodes } from './ast-utils.js';
 
 // 会终止段落/引用的块级 Token 类型
 const BLOCK_BOUNDARY_TYPES = new Set([
@@ -710,20 +711,6 @@ function _isSpacer(node) {
   return node instanceof Paragraph &&
     node.content.length > 0 &&
     node.content.every(n => n instanceof LineBreak);
-}
-
-/**
- * 深度遍历 AST 节点（递归穿过 content/children/blocks/items 数组属性）。
- * normalizeFootnotes 与 mergeDocuments 共用。
- */
-export function walkNodes(node, fn) {
-  fn(node);
-  for (const attr of ['content', 'children', 'blocks', 'items']) {
-    const children = node[attr];
-    if (Array.isArray(children)) {
-      for (const child of children) walkNodes(child, fn);
-    }
-  }
 }
 
 /**
