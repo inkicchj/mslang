@@ -3047,8 +3047,102 @@ var LineBreak = class extends InlineNode {
   }
 };
 
-// src/parser.js
+// src/normalize.js
 var THEOREM_TYPES = ["theorem", "lemma", "definition", "remark", "example"];
+function mergeText(nodes) {
+  if (!nodes.length) return nodes;
+  const merged = [];
+  for (const node of nodes) {
+    if (merged.length && merged[merged.length - 1] instanceof RawText && node instanceof RawText) {
+      merged[merged.length - 1] = new RawText(merged[merged.length - 1].text + node.text);
+    } else {
+      merged.push(node);
+    }
+  }
+  return merged;
+}
+function normalizeTheorems(doc) {
+  const blocks = doc.blocks;
+  for (let i = 0; i < blocks.length - 1; i++) {
+    const b = blocks[i];
+    if (!(b instanceof Paragraph)) continue;
+    const fc = b.content.length === 1 ? b.content[0] : null;
+    if (!(fc instanceof FunctionCall) || !THEOREM_TYPES.includes(fc.name)) continue;
+    const label = fc.args[0] && fc.args[0].type === "string" ? fc.args[0].value : "";
+    const title = fc.args[1] && fc.args[1].type === "string" ? parseInlineFragment(fc.args[1].value) : [];
+    const next = blocks[i + 1];
+    if (!(next instanceof Paragraph)) continue;
+    blocks[i] = new Theorem(fc.name, label, title, next.content);
+    blocks.splice(i + 1, 1);
+  }
+}
+function normalizeParts(doc) {
+  const blocks = doc.blocks;
+  const partMarker = (b) => {
+    if (!(b instanceof Paragraph)) return null;
+    const c2 = b.content;
+    const fc = c2.length === 1 && c2[0] instanceof FunctionCall ? c2[0] : c2.length === 2 && c2[0] instanceof FunctionCall && c2[1] instanceof LineBreak ? c2[0] : null;
+    return fc && !fc.error && fc.name === "part" ? fc : null;
+  };
+  const endMarker = (b) => {
+    if (!(b instanceof Paragraph)) return null;
+    const c2 = b.content;
+    if (c2.length === 1 && c2[0] instanceof RawText && c2[0].text.trim() === "@end") return c2[0];
+    const last = c2[c2.length - 1];
+    if (last instanceof RawText && last.text.trim() === "@end" && (c2.length === 1 || c2[c2.length - 2] instanceof LineBreak)) return last;
+    if (last instanceof FunctionCall && !last.error && last.name === "end" && c2.length >= 2 && c2[c2.length - 2] instanceof LineBreak) return last;
+    return null;
+  };
+  const strArg = (fc, i) => fc.args[i] && fc.args[i].type === "string" ? fc.args[i].value : "";
+  const collect = (start, top) => {
+    const out = [];
+    let i = start;
+    while (i < blocks.length) {
+      const b = blocks[i];
+      const eMark = endMarker(b);
+      if (eMark) {
+        if (top) {
+          out.push(b);
+          i++;
+          continue;
+        }
+        if (b instanceof Paragraph) {
+          const c2 = b.content;
+          const idx = c2.findIndex((n) => n instanceof FunctionCall && n.name === "end" || n instanceof RawText && n.text.trim() === "@end");
+          const keep = idx > 0 ? c2.slice(0, idx - (c2[idx - 1] instanceof LineBreak ? 1 : 0)) : [];
+          if (keep.length) out.push(new Paragraph(mergeText(keep)));
+        }
+        return { blocks: out, next: i + 1 };
+      }
+      const fc = partMarker(b);
+      if (fc) {
+        const inner2 = collect(i + 1, false);
+        out.push(new PartBlock(strArg(fc, 0), parseInlineFragment(strArg(fc, 1)), inner2.blocks));
+        i = inner2.next;
+      } else {
+        out.push(b);
+        i++;
+      }
+    }
+    return { blocks: out, next: i };
+  };
+  doc.blocks = collect(0, true).blocks;
+}
+function normalizeFootnotes(doc) {
+  let counter = 0;
+  walkNodes(doc, (node) => {
+    if (node instanceof FootnoteRef) {
+      counter++;
+      node.number = counter;
+    }
+  });
+}
+function normalizeDocument(doc) {
+  normalizeTheorems(doc);
+  normalizeParts(doc);
+}
+
+// src/parser.js
 var BLOCK_BOUNDARY_TYPES = /* @__PURE__ */ new Set([
   TokenType.HEADING,
   TokenType.HORIZONTAL_RULE,
@@ -3107,8 +3201,7 @@ var Parser = class {
       block.startPos = startPos;
       document2.blocks.push(block);
     }
-    this._attachTheorems(document2);
-    this._attachParts(document2);
+    normalizeDocument(document2);
     for (let i = 0; i < document2.blocks.length; i++) {
       const b = document2.blocks[i];
       let end = i + 1 < document2.blocks.length ? document2.blocks[i + 1].startPos : source2.length;
@@ -3123,86 +3216,9 @@ var Parser = class {
     }
     if (Object.keys(this._footnoteDefs).length > 0) {
       document2.footnotes = { ...this._footnoteDefs };
-      this._numberFootnotes(document2);
+      normalizeFootnotes(document2);
     }
     return document2;
-  }
-  /**
-   * 定理环境归并：纯 FunctionCall(@theorem/@lemma/…) 段落 + 下一段落 → Theorem 块。
-   * 内容限单段落；不匹配（无下一段/非段落）时降级为普通段落（保留原文本）。
-   * @param {Document} doc
-   */
-  _attachTheorems(doc) {
-    const blocks = doc.blocks;
-    for (let i = 0; i < blocks.length - 1; i++) {
-      const b = blocks[i];
-      if (!(b instanceof Paragraph)) continue;
-      const fc = b.content.length === 1 ? b.content[0] : null;
-      if (!(fc instanceof FunctionCall) || !THEOREM_TYPES.includes(fc.name)) continue;
-      const label = fc.args[0] && fc.args[0].type === "string" ? fc.args[0].value : "";
-      const title = fc.args[1] && fc.args[1].type === "string" ? parseInlineFragment(fc.args[1].value) : [];
-      const next = blocks[i + 1];
-      if (!(next instanceof Paragraph)) continue;
-      blocks[i] = new Theorem(fc.name, label, title, next.content);
-      blocks.splice(i + 1, 1);
-    }
-  }
-  /**
-   * @part 区间归并：@part("id", "标题") 标记行（纯 FunctionCall 段落）+ 到匹配 @end 的
-   * 多块区间 → PartBlock（嵌套 @part 递归归并）。@end 缺失/孤立时降级为普通段落（保留原文）。
-   * @param {Document} doc
-   */
-  _attachParts(doc) {
-    const blocks = doc.blocks;
-    const partMarker = (b) => {
-      if (!(b instanceof Paragraph)) return null;
-      const c2 = b.content;
-      const fc = c2.length === 1 && c2[0] instanceof FunctionCall ? c2[0] : c2.length === 2 && c2[0] instanceof FunctionCall && c2[1] instanceof LineBreak ? c2[0] : null;
-      return fc && !fc.error && fc.name === "part" ? fc : null;
-    };
-    const endMarker = (b) => {
-      if (!(b instanceof Paragraph)) return null;
-      const c2 = b.content;
-      if (c2.length === 1 && c2[0] instanceof RawText && c2[0].text.trim() === "@end") return c2[0];
-      const last = c2[c2.length - 1];
-      if (last instanceof RawText && last.text.trim() === "@end" && (c2.length === 1 || c2[c2.length - 2] instanceof LineBreak)) return last;
-      if (last instanceof FunctionCall && !last.error && last.name === "end" && c2.length >= 2 && c2[c2.length - 2] instanceof LineBreak) return last;
-      return null;
-    };
-    const strArg = (fc, i) => fc.args[i] && fc.args[i].type === "string" ? fc.args[i].value : "";
-    const collect = (start, top) => {
-      const out = [];
-      let i = start;
-      while (i < blocks.length) {
-        const b = blocks[i];
-        const eMark = endMarker(b);
-        if (eMark) {
-          if (top) {
-            out.push(b);
-            i++;
-            continue;
-          }
-          if (b instanceof Paragraph) {
-            const c2 = b.content;
-            const idx = c2.findIndex((n) => n instanceof FunctionCall && n.name === "end" || n instanceof RawText && n.text.trim() === "@end");
-            const keep = idx > 0 ? c2.slice(0, idx - (c2[idx - 1] instanceof LineBreak ? 1 : 0)) : [];
-            if (keep.length) out.push(new Paragraph(this._mergeAdjacentText(keep)));
-          }
-          return { blocks: out, next: i + 1 };
-        }
-        const fc = partMarker(b);
-        if (fc) {
-          const inner2 = collect(i + 1, false);
-          out.push(new PartBlock(strArg(fc, 0), parseInlineFragment(strArg(fc, 1)), inner2.blocks));
-          i = inner2.next;
-        } else {
-          out.push(b);
-          i++;
-        }
-      }
-      return { blocks: out, next: i };
-    };
-    doc.blocks = collect(0, true).blocks;
   }
   /**
    * 直接解析原始文本（内部调用 Lexer）
@@ -3452,17 +3468,6 @@ var Parser = class {
     }
     return new Table(headers, rows, label);
   }
-  _numberFootnotes(doc) {
-    let counter = 0;
-    for (const block of doc.blocks) {
-      _walkNodes(block, (node) => {
-        if (node instanceof FootnoteRef) {
-          counter++;
-          node.number = counter;
-        }
-      });
-    }
-  }
   /**
    * 查找 caption 的归并目标：前一 block 是 label 匹配的表格，
    * 或仅含单个 label 匹配图片的段落（图片需单独成段）。
@@ -3669,12 +3674,12 @@ var Parser = class {
 function _isSpacer(node) {
   return node instanceof Paragraph && node.content.length > 0 && node.content.every((n) => n instanceof LineBreak);
 }
-function _walkNodes(node, fn) {
+function walkNodes(node, fn) {
   fn(node);
   for (const attr of ["content", "children", "blocks", "items"]) {
     const children = node[attr];
     if (Array.isArray(children)) {
-      for (const child of children) _walkNodes(child, fn);
+      for (const child of children) walkNodes(child, fn);
     }
   }
 }
@@ -3688,7 +3693,7 @@ function mergeDocuments(...docs) {
   const ordered = {};
   let counter = 0;
   for (const block of blocks) {
-    _walkNodes(block, (node) => {
+    walkNodes(block, (node) => {
       if (node instanceof FootnoteRef && footnotes[node.label] !== void 0) {
         counter++;
         node.number = counter;
@@ -28662,4 +28667,4 @@ export {
   render3 as render,
   toJSON
 };
-/*! built: 2026-08-19T17:04:02.541Z */
+/*! built: 2026-08-19T17:11:56.902Z */

@@ -23,8 +23,7 @@ import {
   Table, AlignBlock, Caption, Equation, Theorem, PartBlock,
 } from './nodes.js';
 
-// 定理环境类型（@theorem/@lemma/@definition/@remark/@example 标记行）
-const THEOREM_TYPES = ['theorem', 'lemma', 'definition', 'remark', 'example'];
+import { normalizeDocument, normalizeFootnotes } from './normalize.js';
 
 // 会终止段落/引用的块级 Token 类型
 const BLOCK_BOUNDARY_TYPES = new Set([
@@ -104,12 +103,9 @@ class Parser {
       document.blocks.push(block);
     }
 
-    // 定理环境归并：@theorem("label", "标题") 标记行 + 下一段落 → Theorem 块
-    // （在块区间计算前 splice，标记块保留 startPos 覆盖两行区间）
-    this._attachTheorems(document);
-
-    // @part("@id", "标题") ... @end 区间归并：栈式合并多块 → PartBlock
-    this._attachParts(document);
+    // 结构归并（Raw AST → Stable AST）：定理环境 + @part 区间
+    // （在块区间计算前执行，标记块保留 startPos 覆盖多块区间）
+    normalizeDocument(document);
 
     // 块源区间：[startPos, 下一块 startPos)，末块到文档末尾（caption 归并行自然落入前块区间）
     // 脚注定义行不属于任何块：区间截断到其后的第一个脚注定义位置
@@ -125,95 +121,10 @@ class Parser {
 
     if (Object.keys(this._footnoteDefs).length > 0) {
       document.footnotes = { ...this._footnoteDefs };
-      this._numberFootnotes(document);
+      normalizeFootnotes(document);
     }
 
     return document;
-  }
-
-  /**
-   * 定理环境归并：纯 FunctionCall(@theorem/@lemma/…) 段落 + 下一段落 → Theorem 块。
-   * 内容限单段落；不匹配（无下一段/非段落）时降级为普通段落（保留原文本）。
-   * @param {Document} doc
-   */
-  _attachTheorems(doc) {
-    const blocks = doc.blocks;
-    for (let i = 0; i < blocks.length - 1; i++) {
-      const b = blocks[i];
-      if (!(b instanceof Paragraph)) continue;
-      const fc = b.content.length === 1 ? b.content[0] : null;
-      if (!(fc instanceof FunctionCall) || !THEOREM_TYPES.includes(fc.name)) continue;
-      const label = fc.args[0] && fc.args[0].type === 'string' ? fc.args[0].value : '';
-      const title = fc.args[1] && fc.args[1].type === 'string'
-        ? parseInlineFragment(fc.args[1].value) : [];
-      const next = blocks[i + 1];
-      if (!(next instanceof Paragraph)) continue;
-      blocks[i] = new Theorem(fc.name, label, title, next.content);
-      blocks.splice(i + 1, 1);
-    }
-  }
-
-  /**
-   * @part 区间归并：@part("id", "标题") 标记行（纯 FunctionCall 段落）+ 到匹配 @end 的
-   * 多块区间 → PartBlock（嵌套 @part 递归归并）。@end 缺失/孤立时降级为普通段落（保留原文）。
-   * @param {Document} doc
-   */
-  _attachParts(doc) {
-    const blocks = doc.blocks;
-    // @part 标记行 = 独立段落的纯 FunctionCall（段尾可有 LineBreak 节点）
-    const partMarker = (b) => {
-      if (!(b instanceof Paragraph)) return null;
-      const c = b.content;
-      const fc = c.length === 1 && c[0] instanceof FunctionCall
-        ? c[0]
-        : c.length === 2 && c[0] instanceof FunctionCall && c[1] instanceof LineBreak ? c[0] : null;
-      return fc && !fc.error && fc.name === 'part' ? fc : null;
-    };
-    // @end 行 = 段末行首的标记（RawText('@end') 无括号写法，或 FunctionCall('end')）
-    const endMarker = (b) => {
-      if (!(b instanceof Paragraph)) return null;
-      const c = b.content;
-      if (c.length === 1 && c[0] instanceof RawText && c[0].text.trim() === '@end') return c[0];
-      const last = c[c.length - 1];
-      if (last instanceof RawText && last.text.trim() === '@end'
-        && (c.length === 1 || c[c.length - 2] instanceof LineBreak)) return last;
-      if (last instanceof FunctionCall && !last.error && last.name === 'end'
-        && c.length >= 2 && c[c.length - 2] instanceof LineBreak) return last;
-      return null;
-    };
-    const strArg = (fc, i) => fc.args[i] && fc.args[i].type === 'string' ? fc.args[i].value : '';
-    /** 递归收集：返回 { blocks, next }；next 指向本层 @end 之后 */
-    const collect = (start, top) => {
-      const out = [];
-      let i = start;
-      while (i < blocks.length) {
-        const b = blocks[i];
-        const eMark = endMarker(b);
-        if (eMark) {
-          if (top) { out.push(b); i++; continue; } // 孤立 @end（无 part）：保留为普通段落
-          // 紧贴写法 "正文\n@end"：@end 前的内容保留，仅剥 @end 行
-          if (b instanceof Paragraph) {
-            const c = b.content;
-            const idx = c.findIndex((n) => (n instanceof FunctionCall && n.name === 'end')
-              || (n instanceof RawText && n.text.trim() === '@end'));
-            const keep = idx > 0 ? c.slice(0, idx - (c[idx - 1] instanceof LineBreak ? 1 : 0)) : [];
-            if (keep.length) out.push(new Paragraph(this._mergeAdjacentText(keep)));
-          }
-          return { blocks: out, next: i + 1 };
-        }
-        const fc = partMarker(b);
-        if (fc) {
-          const inner = collect(i + 1, false);
-          out.push(new PartBlock(strArg(fc, 0), parseInlineFragment(strArg(fc, 1)), inner.blocks));
-          i = inner.next;
-        } else {
-          out.push(b);
-          i++;
-        }
-      }
-      return { blocks: out, next: i };
-    };
-    doc.blocks = collect(0, true).blocks;
   }
 
   /**
@@ -552,18 +463,6 @@ class Parser {
     return new Table(headers, rows, label);
   }
 
-  _numberFootnotes(doc) {
-    let counter = 0;
-    for (const block of doc.blocks) {
-      _walkNodes(block, (node) => {
-        if (node instanceof FootnoteRef) {
-          counter++;
-          node.number = counter;
-        }
-      });
-    }
-  }
-
   /**
    * 查找 caption 的归并目标：前一 block 是 label 匹配的表格，
    * 或仅含单个 label 匹配图片的段落（图片需单独成段）。
@@ -815,14 +714,14 @@ function _isSpacer(node) {
 
 /**
  * 深度遍历 AST 节点（递归穿过 content/children/blocks/items 数组属性）。
- * _numberFootnotes 与 mergeDocuments 共用。
+ * normalizeFootnotes 与 mergeDocuments 共用。
  */
-function _walkNodes(node, fn) {
+export function walkNodes(node, fn) {
   fn(node);
   for (const attr of ['content', 'children', 'blocks', 'items']) {
     const children = node[attr];
     if (Array.isArray(children)) {
-      for (const child of children) _walkNodes(child, fn);
+      for (const child of children) walkNodes(child, fn);
     }
   }
 }
@@ -843,7 +742,7 @@ function mergeDocuments(...docs) {
   const ordered = {};
   let counter = 0;
   for (const block of blocks) {
-    _walkNodes(block, (node) => {
+    walkNodes(block, (node) => {
       if (node instanceof FootnoteRef && footnotes[node.label] !== undefined) {
         counter++;
         node.number = counter;
@@ -1037,3 +936,4 @@ export function toJSON(node) {
   if (node.constructor && node.constructor.name !== 'Object') out.type = node.constructor.name;
   return out;
 }
+
