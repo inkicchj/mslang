@@ -92,13 +92,19 @@ export function htmlBuiltins(renderer) {
     return `href="#cite-${num}" id="ref-cite-${num}"${keyAttr} data-cite-index="${num - 1}"`;
   };
 
-  /** 单个文献引用渲染（numeric → 上标 [n]；author-year/author → (Doe, 2020a) 风格，缺 authors 回退数字） */
+  /** 单个文献引用渲染（numeric → 上标 [n]；author-year/author → (Doe, 2020a) 风格；
+   *  CSL 模式（citation.style + 可用）→ citeproc 文本，缺 authors 回退数字） */
   const renderCiteOne = (key) => {
     const entry = renderer._data.bibliography && renderer._data.bibliography[key];
     if (!entry) return `<sup>[${esc(String(key))}?]</sup>`;
     renderer._registerCite(key); // 收集阶段未覆盖的键（如变量参数）在此动态编号
     const num = renderer._citeNumbers[key];
     const anchor = citeAnchor(key, entry, num);
+    // CSL 模式：cite 文本交 CitationEngine（格式化职责收口到 citation.js）
+    if (renderer.citation.enabled) {
+      const text = renderer.citation.formatCitation([key], { bibliography: renderer._data.bibliography });
+      return text ? `<a ${anchor}>(${esc(text)})</a>` : `<sup>[${esc(String(num))}]</sup>`;
+    }
     if (renderer._citeStyle !== 'numeric') {
       const authors = entry && entry.authors ? String(entry.authors) : '';
       if (authors) {
@@ -119,13 +125,18 @@ export function htmlBuiltins(renderer) {
       // 渲染器调用时末尾附 kwargs 对象（无 kwargs 时为空对象），剔除
       if (keys.length && typeof keys[keys.length - 1] === 'object') keys = keys.slice(0, -1);
       if (keys.length === 1) return renderCiteOne(keys[0]);
-      if (renderer._citeStyle !== 'numeric') {
+      if (renderer.citation.enabled || renderer._citeStyle !== 'numeric') {
         const parts = keys.map((key) => {
           const entry = renderer._data.bibliography && renderer._data.bibliography[key];
           if (!entry) return `[${esc(String(key))}?]`;
           renderer._registerCite(key);
           const num = renderer._citeNumbers[key];
           const anchor = citeAnchor(key, entry, num);
+          // CSL 模式：文本交 CitationEngine（formatCitation 收口）
+          if (renderer.citation.enabled) {
+            const text = renderer.citation.formatCitation([key], { bibliography: renderer._data.bibliography });
+            return text ? `<a ${anchor}>${esc(text)}</a>` : `<sup><a ${anchor}>[${esc(String(num))}]</a></sup>`;
+          }
           const authors = entry && entry.authors ? String(entry.authors) : '';
           if (!authors) return `<sup><a ${anchor}>[${esc(String(num))}]</a></sup>`;
           const suffix = renderer._citeYearSuffix && renderer._citeYearSuffix[key] || '';

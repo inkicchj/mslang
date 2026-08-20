@@ -26,6 +26,8 @@
   ],
   "license": "Apache-2.0",
   "devDependencies": {
+    "@citation-js/core": "^0.8.2",
+    "@citation-js/plugin-csl": "^0.8.2",
     "esbuild": "^0.28.0"
   },
   "dependencies": {

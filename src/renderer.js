@@ -16,10 +16,11 @@ import {
 import { parseInlineFragment } from './parse-utils.js';
 import { evaluate } from './expression.js';
 import { htmlBuiltins } from './builtin.js';
-import { escapeHTML, escapeAttr } from './escape.js';
+import { escapeHTML, escapeAttr, safeLinkUrl, safeImageUrl } from './escape.js';
 import { RuntimeContext, SET_KEYS, DEFAULT_CAPTION_PREFIX, DEFAULT_KEY_ATTRS, mergeCaptionPrefix } from './runtime.js';
 import { prepare } from './prepare.js';
 import { checkIntegrity, DIAG_ISSUE_TYPE } from './semantic.js';
+import { CitationEngine } from './citation.js';
 import katex from 'katex';
 import hljs from 'highlight.js/lib/core';
 import javascript from 'highlight.js/lib/languages/javascript';
@@ -51,36 +52,6 @@ const HLJS_LANGUAGES = {
   kotlin, swift, ruby, php, perl, yaml, dockerfile, diff,
 };
 for (const [name, lang] of Object.entries(HLJS_LANGUAGES)) hljs.registerLanguage(name, lang);
-
-// URL 白名单（allowlist，mslang 0.2.1）：链接与图片分开规则。
-// 链接：相对路径（#、/、./、../）或 http/https/mailto/ftp；
-// 图片：相对路径、data:image/、blob:、http/https。
-// 未命中白名单的协议（javascript:/data: 非图片等）拒绝（输出空 href/src）。
-function safeLinkUrl(value) {
-  const url = String(value == null ? '' : value).trim();
-  if (!url) return '';
-  if (url.startsWith('#') || url.startsWith('/') || url.startsWith('./') || url.startsWith('../')) {
-    return url;
-  }
-  try {
-    const parsed = new URL(url);
-    if (['http:', 'https:', 'mailto:', 'ftp:'].includes(parsed.protocol)) return url;
-  } catch { /* 无法解析即拒绝 */ }
-  return '';
-}
-
-function safeImageUrl(value) {
-  const url = String(value == null ? '' : value).trim();
-  if (!url) return '';
-  if (url.startsWith('/') || url.startsWith('./') || url.startsWith('../')) return url;
-  if (/^data:image\//i.test(url)) return url;
-  if (/^blob:/i.test(url)) return url;
-  try {
-    const parsed = new URL(url);
-    if (['http:', 'https:'].includes(parsed.protocol)) return url;
-  } catch { /* 无法解析即拒绝 */ }
-  return '';
-}
 
 // 宏展开递归深度上限（@use 模板内嵌 @use 的自引用防护）
 const MAX_MACRO_DEPTH = 32;
@@ -152,6 +123,9 @@ class HTMLRenderer {
       : new RuntimeContext({ functions: opts.functions, escapeHtml: opts.escapeHtml, pretty: opts.pretty });
     // HTML 内置函数注入（host/runtime builtin 覆盖 — host 可覆盖 cite 等既有行为）
     this.runtime.functions = { ...htmlBuiltins(this), ...this.runtime.functions };
+    // 引用格式化适配器（0.3）：options.citation = { style?, locale?, engine? }；
+    // style（CSL 样式如 'apa'）提供时自动启用 CSL 后端（宿主已安装 @citation-js，否则回退 lightweight）
+    this.citation = new CitationEngine({ ...(opts.citation || {}) });
     this._output = [];
   }
 
@@ -401,28 +375,10 @@ class HTMLRenderer {
     if (!this._termOrder.includes(name)) this._termOrder.push(name);
   }
 
-  /** 文献条目格式化：字符串原样转义；default 拼接 "authors (year) title journal"；
-   *  gbt7714 近似 "作者. 题名. 期刊, 年份."（GB/T 7714 风格点分隔，年份不带括号） */
+  /** 文献条目格式化：委托 CitationEngine（0.3 边界：引用格式化收口到 citation.js）。
+   *  lightweight 分支兼容旧模型与 CSL-JSON；提供 citation.style 且 CSL 可用时走 CSL 后端。 */
   _formatBibEntry(entry) {
-    if (typeof entry === 'string') return this._esc(entry);
-    const e = entry || {};
-    const title = e.title ? this._esc(String(e.title)) : '';
-    const titleHtml = e.url
-      ? `<a href="${this._escAttr(safeLinkUrl(e.url))}">${title}</a>` : title;
-    if (this._bibStyle === 'gbt7714') {
-      const parts = [];
-      if (e.authors) parts.push(this._esc(String(e.authors)));
-      if (titleHtml) parts.push(`${titleHtml}${titleHtml.endsWith('.') ? '' : '.'}`);
-      if (e.journal) parts.push(`${this._esc(String(e.journal))},`);
-      if (e.year !== undefined) parts.push(`${this._esc(String(e.year))}.`);
-      return parts.join(' ');
-    }
-    const parts = [];
-    if (e.authors) parts.push(this._esc(String(e.authors)));
-    if (e.year !== undefined) parts.push(`(${this._esc(String(e.year))})`);
-    if (titleHtml) parts.push(titleHtml);
-    if (e.journal) parts.push(this._esc(String(e.journal)));
-    return parts.join(' ');
+    return this.citation.formatBibliography(entry, { bibStyle: this._bibStyle, escapeHtml: this.escapeHtml });
   }
 
   // ================================================================
