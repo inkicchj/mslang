@@ -115,15 +115,29 @@ export function normalizeParts(doc) {
   doc.blocks = collect(0, true).blocks;
 }
 
-/** 脚注编号：引用按出现顺序编号（walkNodes 递归 content/children/blocks/items） */
+/**
+ * 脚注编号（0.3 语义）：label 唯一决定 number。
+ *   - 同 label 多引用共享同一编号；number 按 label 首次引用顺序分配
+ *   - doc.footnoteEntries = [{label, number, text}]（编号顺序；未引用的定义追加末尾）
+ *   - doc.footnotes 字典保留（兼容 renderer 哈希/外部消费）
+ */
 export function normalizeFootnotes(doc) {
-  let counter = 0;
+  const order = [];         // 引用中 label 首次出现顺序
+  const numByLabel = new Map();
   walkNodes(doc, (node) => {
-    if (node instanceof FootnoteRef) {
-      counter++;
-      node.number = counter;
+    if (node instanceof FootnoteRef && node.label && !numByLabel.has(node.label)) {
+      numByLabel.set(node.label, order.length + 1);
+      order.push(node.label);
     }
+    if (node instanceof FootnoteRef && node.label) node.number = numByLabel.get(node.label);
   });
+  const defs = doc.footnotes || {};
+  const entries = order.map((label, i) => ({ label, number: i + 1, text: defs[label] || '' }));
+  // 未被引用的脚注定义追加到末尾（跨文档合并语义一致）
+  for (const [label, text] of Object.entries(defs)) {
+    if (!numByLabel.has(label)) entries.push({ label, number: entries.length + 1, text });
+  }
+  doc.footnoteEntries = entries;
 }
 
 /**

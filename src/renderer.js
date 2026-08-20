@@ -19,7 +19,7 @@ import { htmlBuiltins } from './builtin.js';
 import { escapeHTML, escapeAttr, safeLinkUrl, safeImageUrl } from './escape.js';
 import { RuntimeContext, SET_KEYS, DEFAULT_CAPTION_PREFIX, DEFAULT_KEY_ATTRS, mergeCaptionPrefix } from './runtime.js';
 import { prepare } from './prepare.js';
-import { checkIntegrity, DIAG_ISSUE_TYPE } from './semantic.js';
+import { checkIntegrity, DIAG_ISSUE_TYPE, eachBlockInline } from './semantic.js';
 import { CitationEngine } from './citation.js';
 import katex from 'katex';
 import hljs from 'highlight.js/lib/core';
@@ -390,6 +390,22 @@ class HTMLRenderer {
   }
 
   visit_Document(doc) {
+    // 脚注引用计数（多 backlink 需要全量出现次数；PartBlock 递归穿透）
+    const fnCounts = {};
+    const countBlocks = (blocks) => {
+      for (const b of blocks) {
+        if (b instanceof PartBlock) { countBlocks(b.blocks); continue; }
+        if (b.content || b.items) {
+          eachBlockInline(b, (n) => {
+            if (n instanceof FootnoteRef && n.label) fnCounts[n.label] = (fnCounts[n.label] || 0) + 1;
+          });
+        }
+      }
+    };
+    countBlocks(doc.blocks);
+    this._fnCounts = fnCounts;
+    this._fnUsed = {};
+
     doc.blocks.forEach((block, i) => {
       if (this._blockMarkers) {
         this._write(`<!--mslang:${i}-->\n`);
@@ -402,8 +418,9 @@ class HTMLRenderer {
       if (this.pretty && i < doc.blocks.length - 1) this._write('\n');
     });
 
-    // 脚注区域
-    if (Object.keys(doc.footnotes).length > 0) {
+    // 脚注区域（0.3：编号顺序 + 同 label 共享编号 + 多 backlink）
+    const notes = doc.footnoteEntries || [];
+    if (notes.length > 0) {
       if (this.pretty) this._write('\n');
       if (this._blockMarkers) {
         this._write('<!--mslang:footnotes-->\n');
@@ -413,11 +430,15 @@ class HTMLRenderer {
       if (this.pretty) this._write('\n');
       this._write('<ol>');
       if (this.pretty) this._write('\n');
-      let idx = 0;
-      for (const [label, text] of Object.entries(doc.footnotes)) {
-        idx++;
-        this._write(`<li id="fn-${idx}">${this._esc(text)} ` +
-                    `<a href="#fnref-${idx}">&#8617;</a></li>`);
+      for (const { label, number, text } of notes) {
+        const total = this._fnCounts[label] || 1;
+        // 多引用 → 多个 backlink（↩︎¹ ↩︎²），单引用一个 ↩
+        const backlinks = Array.from({ length: total }, (_, k) => {
+          const occ = k + 1;
+          const mark = total > 1 ? `<sup>${occ}</sup>` : '';
+          return `<a href="#fnref-${number}-${occ}">&#8617;${mark}</a>`;
+        }).join(' ');
+        this._write(`<li id="fn-${number}">${this._esc(text)} ${backlinks}</li>`);
         if (this.pretty) this._write('\n');
       }
       this._write('</ol>');
@@ -830,7 +851,9 @@ class HTMLRenderer {
   }
 
   visit_FootnoteRef(node) {
-    this._write(`<sup><a href="#fn-${node.number}" id="fnref-${node.number}">` +
+    // 同 label 共享编号；多引用点用序号唯一 id（供 backlink 定位）
+    const occ = (this._fnUsed[node.label] = (this._fnUsed[node.label] || 0) + 1);
+    this._write(`<sup><a href="#fn-${node.number}" id="fnref-${node.number}-${occ}">` +
                 `[${node.number}]</a></sup>`);
   }
 

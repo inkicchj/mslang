@@ -735,7 +735,7 @@ function _isSpacer(node) {
 /**
  * 合并多个 Document 为一个，供跨文档连续编号 / 交叉引用 / 全局 @set：
  *   - blocks 按传入顺序拼接（顺序即编号顺序）
- *   - 脚注跨文档重编号：引用按出现顺序编号，footnotes 字典同步重排
+ *   - 脚注跨文档重编号：label 唯一决定 number（0.3 语义），footnotes 字典同步重排
  *   - 同名脚注 label 后者覆盖
  */
 function mergeDocuments(...docs) {
@@ -746,12 +746,10 @@ function mergeDocuments(...docs) {
     Object.assign(footnotes, doc.footnotes);
   }
   const ordered = {};
-  let counter = 0;
   for (const block of blocks) {
     walkNodes(block, (node) => {
-      if (node instanceof FootnoteRef && footnotes[node.label] !== undefined) {
-        counter++;
-        node.number = counter;
+      if (node instanceof FootnoteRef && node.label
+        && footnotes[node.label] !== undefined && !(node.label in ordered)) {
         ordered[node.label] = footnotes[node.label];
       }
     });
@@ -763,7 +761,10 @@ function mergeDocuments(...docs) {
   // 论文元数据合并：前序文档为基础，后续文档 @meta 覆盖（后面的标题/摘要优先）
   const meta = {};
   for (const doc of docs) if (doc.meta) Object.assign(meta, doc.meta);
-  return new Document(blocks, ordered, Object.keys(meta).length ? meta : null);
+  const merged = new Document(blocks, ordered, Object.keys(meta).length ? meta : null);
+  // 0.3：重建脚注编号（label 唯一）+ footnoteEntries（编号顺序）
+  normalizeFootnotes(merged);
+  return merged;
 }
 
 function _dumpInlines(nodes, indent, prefix) {

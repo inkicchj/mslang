@@ -87,12 +87,18 @@ test('diagnostics：节点级 span（@cite/@ref/[^n] 精确定位）', () => {
   assert.ok(rf.end > rf.start);
 });
 
-test('边界：脚注重复引用编号（记录现状，0.3 决策同 label 同编号）', () => {
+test('边界：脚注同 label 共享编号 + 多 backlink（0.3 决策）', () => {
   const src = '甲[^a] 乙[^a]\n\n[^a]: 定义';
   const h = render(src);
-  // 现状：每次引用独立编号（1、2）；学术语义"同 label 同编号"留 0.3 决策
-  assert.match(h, /id="fnref-1"/);
-  assert.match(h, /id="fnref-2"/);
+  // 同 label 共享编号：两处都显示 [1]，脚注定义只出现一次
+  assert.match(h, /id="fnref-1-1"[^>]*>\[1\]<\/a>/);
+  assert.match(h, /id="fnref-1-2"[^>]*>\[1\]<\/a>/);
+  assert.equal((h.match(/\[1\]/g) || []).length, 2);
+  assert.equal((h.match(/<ol>/g) || []).length, 1, '脚注正文只出现一次');
+  // 定义处多个 backlink（↩︎¹ ↩︎²）
+  assert.match(h, /href="#fnref-1-1"&gt;|href="#fnref-1-1">/);
+  assert.match(h, /href="#fnref-1-2"/);
+  assert.ok((h.match(/&#8617;/g) || []).length === 2, '两个 backlink');
 });
 
 test('边界：异常输入（数组元素非法类型抛 TypeError；空文档正常）', () => {

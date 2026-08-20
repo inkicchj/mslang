@@ -60,7 +60,7 @@
     "ast": "Document\n└── Paragraph\n    ├── Text \"::: right\"\n    ├── LineBreak\n    ├── Text \"右对齐内容\"\n    ├── LineBreak\n    └── Text \":::\""
   },
   "footnote": {
-    "html": "<div class=\"mslang\">\n<p>正文<sup><a href=\"#fn-1\" id=\"fnref-1\">[1]</a></sup></p>\n\n<hr>\n<ol>\n<li id=\"fn-1\">脚注内容 <a href=\"#fnref-1\">&#8617;</a></li>\n</ol>\n\n</div>",
+    "html": "<div class=\"mslang\">\n<p>正文<sup><a href=\"#fn-1\" id=\"fnref-1-1\">[1]</a></sup></p>\n\n<hr>\n<ol>\n<li id=\"fn-1\">脚注内容 <a href=\"#fnref-1-1\">&#8617;</a></li>\n</ol>\n\n</div>",
     "ast": "Document\n└── Paragraph\n    ├── Text \"正文\"\n    └── FootnoteRef [1] #1"
   },
   "esc": {
