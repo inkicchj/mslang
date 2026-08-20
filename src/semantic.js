@@ -11,6 +11,7 @@ import {
   FunctionCall, RawText, Image, PartBlock, Heading,
   Table, Equation, CodeBlock, Theorem, FootnoteRef,
 } from './nodes.js';
+import { walkNodes } from './ast-utils.js';
 
 // ================================================================
 // 遍历辅助（Renderer 的 _applySets / _checkIntegrity 与 分析器共用）
@@ -193,6 +194,16 @@ export class SemanticModel {
     this.termOrder = [];         // 术语键出现顺序
     this.headingSeq = [];        // 标题自动编号序列（渲染按序消费）
     this.diagnostics = [];       // Phase 5：诊断（code/severity/span/data）
+    // —— 0.3 论文分析模型（从已有 AST 推导，无新增语法）——
+    this.outline = [];           // [{id, text, number, level, block}] 标题大纲
+    this.sections = [];          // [{id, text, number, level, startBlock, endBlock, cites, figures, tables, equations, theorems}]
+    this.figures = [];           // [{label, number}]
+    this.tables = [];            // [{label, number}]
+    this.equations = [];         // [{label, number}]
+    this.theorems = [];          // [{label, number, type}]
+    this.footnotes = [];         // [{label, number, text}]（含未引用定义）
+    this.references = [];        // [{key, number, entry}]（被引用的文献明细）
+    this.stats = {};             // {words, citations, figures, tables, equations, theorems, sections, footnotes}
   }
 
   /** 文献键编号：首次出现分配顺序号（预收集 + 运行时动态 cite 共用） */
@@ -275,6 +286,7 @@ export class SemanticAnalyzer {
       if (n instanceof Image && n.label) {
         counters.fig++;
         sm.refs[n.label] = { kind: 'fig', number: counters.fig };
+        sm.figures.push({ label: n.label, number: counters.fig });
       }
       if (n instanceof FunctionCall) {
         handleCall(n);
@@ -294,8 +306,11 @@ export class SemanticAnalyzer {
       return out;
     };
 
+    // 0.3 论文分析模型：标题大纲 / 图/表/式/定理清单
+    const headingList = [];
+
     // 单一遍历：块 → 块内行内；PartBlock 递归进内部块（内部标题/图/表/式/定理照常收集）
-    const collectBlock = (block) => {
+    const collectBlock = (block, blockIndex) => {
       // 渲染依赖收集容器（块级编辑哈希：变量/宏/data 变化 → 引用块哈希变）
       const deps = { v: {}, m: {}, d: {} };
       block._deps = deps;
@@ -314,12 +329,16 @@ export class SemanticAnalyzer {
           if (display === undefined) display = text;
           sm.refs[block.id] = { kind: 'part', display };
         }
-        block.blocks.forEach(collectBlock);
+        block.blocks.forEach((b) => collectBlock(b, blockIndex));
         return;
       }
       if (block instanceof Heading) {
         const autoNum = runtime.headingNumbering ? nextSecNumber(block.level) : '';
         sm.headingSeq.push(autoNum);
+        headingList.push({
+          level: block.level, id: block.id || '',
+          text: headingText(block.content), number: autoNum, block: blockIndex,
+        });
         if (block.id) {
           counters.sec++;
           const text = headingText(block.content);
@@ -336,25 +355,81 @@ export class SemanticAnalyzer {
       if (block instanceof Table && block.label) {
         counters.tbl++;
         sm.refs[block.label] = { kind: 'tbl', number: counters.tbl };
+        sm.tables.push({ label: block.label, number: counters.tbl });
       }
       if (block instanceof Equation && block.label) {
         counters.eq++;
         sm.refs[block.label] = { kind: 'eq', number: counters.eq };
+        sm.equations.push({ label: block.label, number: counters.eq });
       }
       if (block instanceof CodeBlock && block.label && block.language === 'mermaid') {
         // mermaid 流程图与图片共享 fig 编号序列
         counters.fig++;
         sm.refs[block.label] = { kind: 'fig', number: counters.fig };
+        sm.figures.push({ label: block.label, number: counters.fig });
       }
       if (block instanceof Theorem && block.label) {
         // 定理/引理/定义共享编号序列，type 用于显示前缀
         counters.thm++;
         sm.refs[block.label] = { kind: 'thm', type: block.type, number: counters.thm };
+        sm.theorems.push({ label: block.label, number: counters.thm, type: block.type });
       }
       if (block.content || block.items) eachBlockInline(block, walkInlineList);
     };
-    doc.blocks.forEach(collectBlock);
+    doc.blocks.forEach((b, i) => collectBlock(b, i));
     currentDeps = null;
+
+    // —— 0.3：outline / sections / references / footnotes / stats ——
+    sm.outline = headingList;
+    sm.footnotes = Array.isArray(doc.footnoteEntries)
+      ? doc.footnoteEntries.map((e) => ({ ...e })) : [];
+    sm.references = sm.citeOrder.map((key, i) => ({
+      key, number: i + 1, entry: runtime.data.bibliography && runtime.data.bibliography[key],
+    }));
+
+    // sections：标题块区间 → 聚合该节引用的文献/图/表/式/定理（回答"哪节没引用/哪些图未引用"）
+    const sections = headingList.map((h, idx) => {
+      const end = idx + 1 < headingList.length ? headingList[idx + 1].block : doc.blocks.length;
+      const cites = new Set();
+      const figures = new Set();
+      const tables = new Set();
+      const equations = new Set();
+      const theorems = new Set();
+      for (let bi = h.block; bi < end; bi++) {
+        const b = doc.blocks[bi];
+        eachBlocksInline([b], (n) => {
+          if (n instanceof FunctionCall && n.name === 'cite') {
+            for (const a of n.args) if (a.type === 'string') cites.add(a.value);
+          }
+          if (n instanceof Image && n.label) figures.add(n.label);
+          if (n instanceof CodeBlock && n.label && n.language === 'mermaid') figures.add(n.label);
+        });
+        if (b instanceof Table && b.label) tables.add(b.label);
+        if (b instanceof Equation && b.label) equations.add(b.label);
+        if (b instanceof Theorem && b.label) theorems.add(b.label);
+      }
+      return {
+        id: h.id, text: h.text, number: h.number, level: h.level,
+        startBlock: h.block, endBlock: end,
+        cites: [...cites], figures: [...figures], tables: [...tables],
+        equations: [...equations], theorems: [...theorems],
+      };
+    });
+    sm.sections = sections;
+
+    // stats：确定性统计（总字数来自全文 RawText）
+    let words = 0;
+    walkNodes(doc, (n) => {
+      if (n instanceof RawText && n.text) {
+        words += (n.text.match(/[A-Za-z0-9\u4e00-\u9fff]+/g) || []).length;
+      }
+    });
+    sm.stats = {
+      words, citations: sm.citeOrder.length,
+      figures: sm.figures.length, tables: sm.tables.length,
+      equations: sm.equations.length, theorems: sm.theorems.length,
+      sections: sections.length, footnotes: sm.footnotes.length,
+    };
 
     // author-year 样式消歧：同年同作者按引用顺序加 a/b/c 后缀（收集完成后计算，cite/bibliography 共用）
     if (runtime.citeStyle !== 'numeric') {
