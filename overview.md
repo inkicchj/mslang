@@ -706,17 +706,30 @@ const doc2 = new Parser().parse(tokens);      // Token 流 → Document（需自
 ## 测试与构建
 
 ```bash
-npm test        # node:test 运行 test/ 下测试（零新依赖）
+npm test        # node:test 运行 test/ 下测试（devDependencies 含 @citation-js 用于 CSL 测试）
 npm run build   # esbuild 构建 dist/（esm / iife / iife.min）
 ```
 
-## 0.3 方向（0.2.2 后架构冻结）
+## 0.3：学术语义版本（已落地）
 
-0.2.2 后不再做架构优化。0.3 应转向**学术语义、AI 辅助与编辑器能力**。已记录待决策项：
+0.3 定位于"**mslang 如何知道自己正在描述一篇学术论文**"：Academic semantics first, syntax second。
+架构不再大改，仅在 Semantic 周围增加能力。已实现（对应重构文档优先级）：
 
-- **脚注重复引用编号**：现状为"每次引用独立编号"（`[^a]` 出现两次 → 1、2）。学术文档更自然的是"同 label → 同编号"，作为 0.3 语言语义决策（0.2.2 仅测试记录现状，不改）。
-- **include 后 source span**：跨文档嵌入后诊断 span 目前指向展开后文档的偏移；0.3 可按需引入 `{ source, start, end }` 跨文件定位。
-- 语言语法冻结（不新增 Markdown 语法 / 控制流 / 新 AST 类型）；`render` 返回 string 视为可信 HTML 的语义留给 0.3 决定（未来 `SafeHtml` 类型）。
+1. **学术数据模型**：`@meta({title, authors, keywords, ...})` 头部 / `options.meta` → `document.meta`；
+   bibliography 数据模型同时兼容旧模型与 CSL-JSON（`author:[{family,given}]` / `issued.date-parts` / `container-title`）
+2. **CitationEngine（citation.js）**：引用格式化收口单一适配器；自动探测 `@citation-js/core`+`plugin-csl`
+   （Node 同步，装了就用），`render(src, { citation: { style: 'apa', locale: 'en-US' } })` 走 CSL；
+   `options.citation.engine` 可注入替代。Semantic=meaning，Citation.js=formatting，SemanticAnalyzer 不 import citation.js
+3. **SourceMap**：include 展开逐行记录来源，诊断 span 附 `sourceId`（"打开 chapter2.msl 修改 832–850"）；
+   `analyze()` 返回 `sourceMap`（`locate(offset)` / `isIncluded(offset)`）
+4. **脚注语义**：label 唯一决定 number（`[^a]` 多次引用共享编号）；多 backlink（↩︎¹ ↩︎²）
+5. **SemanticModel 论文分析模型**：`outline` / `sections`（各节 cites/figures/tables/equations/theorems）/
+   `figures` / `tables` / `equations` / `theorems` / `references` / `stats`（words/citations/sections…）
+6. **学术一致性诊断**（确定性、无 AI 判断）：`unused-bibliography` / `unreferenced-figure` /
+   `unreferenced-table` / `unused-label` / `missing-title|abstract|keywords`（后者仅当已声明 meta）
+7. **实验性 LaTeXRenderer**：`renderLatex(source, options)` 复用 prepare 唯一管线，验证 AST 独立于 HTML
+
+未落地 / 不计划：不引入 AI 语法（`@ai`/`@generate`）；不做多 Renderer 大而全（DOCX/PDF/EPUB 留待后续）。
 
 ---
 

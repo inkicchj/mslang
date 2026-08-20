@@ -1,7 +1,7 @@
 {
   "name": "mslang",
-  "version": "0.2.1",
-  "description": "A lightweight academic markup language — parse/normalize/runtime/semantic → render, for browser and Node.js",
+  "version": "0.3.0",
+  "description": "A lightweight academic markup language — parse/normalize/runtime/semantic → render, academic semantics first (meta/source-map/CSL citations/analysis/LaTeX), for browser and Node.js",
   "type": "module",
   "main": "./src/index.js",
   "module": "./src/index.js",

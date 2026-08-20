@@ -43,6 +43,21 @@ export interface RenderOptions {
   mathFontsPath?: string;
   /** mermaid 渲染器（默认转义透传） */
   codeRenderer?: (source: string, language: string) => string;
+  /** 论文元数据（0.3）：与 @meta 合并，@meta 覆盖宿主 */
+  meta?: Record<string, any>;
+  /** include 根文档名（0.3 SourceMap 溯源：include 展开后 span.sourceId） */
+  sourceId?: string;
+  /**
+   * 引用格式化（0.3 CitationEngine）：
+   *   style: CSL 样式名（'apa' 等），提供且 @citation-js 可用时自动启用 CSL 后端
+   *   locale: CSL locale（默认 'en-US'）
+   *   engine: 宿主注入的 CSL 后端（替代自动探测；浏览器 bundle 走此入口）
+   */
+  citation?: {
+    style?: string;
+    locale?: string;
+    engine?: unknown;
+  };
 }
 
 export type RenderResult =
@@ -53,7 +68,10 @@ export type RenderResult =
 
 export interface Issue {
   type: 'missing_cite' | 'missing_term' | 'missing_ref' | 'missing_footnote'
-    | 'duplicate_label' | 'orphan_caption' | 'missing_include' | 'missing_part';
+    | 'duplicate_label' | 'orphan_caption' | 'missing_include' | 'missing_part'
+    // 0.3 学术一致性（type 直接用 code）
+    | 'unused-bibliography' | 'unreferenced-figure' | 'unreferenced-table'
+    | 'unused-label' | 'missing-title' | 'missing-abstract' | 'missing-keywords';
   key: string;
   count: number;
   /** 首次出现的块索引（文本层 issue 如 missing_include/missing_part 无块） */
@@ -66,22 +84,38 @@ export function render(source: string | string[] | Document, options?: RenderOpt
 /** 显式异步渲染：render(source, { async: true }) 别名 */
 export function renderAsync(source: string | string[] | Document, options?: RenderOptions): Promise<string>;
 
+/** 实验性 LaTeX 渲染（0.3 最小版）：复用 prepare 管线，返回 LaTeX 源码（不含 documentclass 外壳） */
+export function renderLatex(source: string, options?: RenderOptions): string | Promise<string>;
+
 /** 解析为 Stable AST：include 展开（可选）→ lex → parse → normalize */
 export function parse(source: string): Document;
 
-/** 语义分析入口（不渲染）：结构 + 编号/引用 + 完整诊断 */
+/** 语义分析入口（不渲染）：结构 + 编号/引用 + 学术分析 + 完整诊断 */
 export function analyze(source: string, options?: RenderOptions)
-  : { document: Document; semantic: SemanticModel; diagnostics: Diagnostic[] } | Promise<{ document: Document; semantic: SemanticModel; diagnostics: Diagnostic[] }>;
+  : { document: Document; semantic: SemanticModel; sourceMap: SourceMap | null; diagnostics: Diagnostic[] }
+  | Promise<{ document: Document; semantic: SemanticModel; sourceMap: SourceMap | null; diagnostics: Diagnostic[] }>;
 
 export interface Diagnostic {
   code: 'missing-citation' | 'missing-term' | 'missing-reference' | 'missing-footnote'
-    | 'duplicate-label' | 'orphan-caption' | 'missing-include' | 'missing-part';
-  severity: 'warning';
+    | 'duplicate-label' | 'orphan-caption' | 'missing-include' | 'missing-part'
+    // 0.3 学术一致性（确定性检查）
+    | 'unused-bibliography' | 'unreferenced-figure' | 'unreferenced-table'
+    | 'unused-label' | 'missing-title' | 'missing-abstract' | 'missing-keywords';
+  severity: 'warning' | 'info';
   message: string;
-  span?: { start: number; end: number };
+  /** include 溯源时带 sourceId */
+  span?: { start: number; end: number; sourceId?: string };
   data: { label: string };
   block: number;
   count: number;
+}
+
+export interface SourceMap {
+  /** 连续同源段（include 文件段 sourceId 非空；根文档段 null） */
+  segments: Array<{ sourceId: string | null; start: number; end: number }>;
+  /** 定位偏移所属来源段 */
+  locate(offset: number): { sourceId: string | null; start: number; end: number } | null;
+  isIncluded(offset: number): boolean;
 }
 
 export interface SemanticModel {
@@ -92,6 +126,25 @@ export interface SemanticModel {
   citeYearSuffix: Record<string, string>;
   termOrder: string[];
   headingSeq: string[];
+  // —— 0.3 论文分析模型 ——
+  /** 标题大纲 [{id,text,number,level,block}] */
+  outline: Array<{ id: string; text: string; number: string; level: number; block: number }>;
+  /** 按标题区间聚合各节引用/图/表/式/定理 */
+  sections: Array<{
+    id: string; text: string; number: string; level: number;
+    startBlock: number; endBlock: number;
+    cites: string[]; figures: string[]; tables: string[]; equations: string[]; theorems: string[];
+  }>;
+  figures: Array<{ label: string; number: number }>;
+  tables: Array<{ label: string; number: number }>;
+  equations: Array<{ label: string; number: number }>;
+  theorems: Array<{ label: string; number: number; type: string }>;
+  footnotes: Array<{ label: string; number: number; text: string }>;
+  references: Array<{ key: string; number: number; entry: any }>;
+  stats: {
+    words: number; citations: number; figures: number; tables: number;
+    equations: number; theorems: number; sections: number; footnotes: number;
+  };
 }
 
 /** 将 check issues 转为面向 LLM 的自查文本 */
@@ -117,6 +170,10 @@ export class Parser {
 export interface Document {
   blocks: any[];
   footnotes: Record<string, string>;
+  /** 论文元数据（0.3）：@meta / options.meta 合并结果 */
+  meta: Record<string, any> | null;
+  /** 脚注编号顺序条目（0.3：label 唯一编号） */
+  footnoteEntries?: Array<{ label: string; number: number; text: string }>;
 }
 
 /**

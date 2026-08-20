@@ -1,4 +1,4 @@
-/*! mslang v0.1.0 — Lightweight Markup Language | MIT License */
+/*! mslang v0.3.0 — Lightweight Academic Markup Language | Apache-2.0 License */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -2685,11 +2685,14 @@ var Document = class extends ASTNode {
   /**
    * @param {BlockNode[]} [blocks]
    * @param {Object<string, string>} [footnotes] - {label: definition_text}
+   * @param {Object} [meta] - 论文元数据（0.3：@meta 头部 / options.meta）
+   *   { title, authors, affiliations, abstract, keywords, language }
    */
-  constructor(blocks = [], footnotes = {}) {
+  constructor(blocks = [], footnotes = {}, meta = null) {
     super();
     this.blocks = blocks;
     this.footnotes = footnotes;
+    this.meta = meta;
   }
   accept(visitor) {
     return visitor.visit_Document(this);
@@ -3151,17 +3154,49 @@ function normalizeParts(doc) {
   doc.blocks = collect(0, true).blocks;
 }
 function normalizeFootnotes(doc) {
-  let counter = 0;
+  const order = [];
+  const numByLabel = /* @__PURE__ */ new Map();
   walkNodes(doc, (node) => {
-    if (node instanceof FootnoteRef) {
-      counter++;
-      node.number = counter;
+    if (node instanceof FootnoteRef && node.label && !numByLabel.has(node.label)) {
+      numByLabel.set(node.label, order.length + 1);
+      order.push(node.label);
     }
+    if (node instanceof FootnoteRef && node.label) node.number = numByLabel.get(node.label);
   });
+  const defs = doc.footnotes || {};
+  const entries = order.map((label, i) => ({ label, number: i + 1, text: defs[label] || "" }));
+  for (const [label, text2] of Object.entries(defs)) {
+    if (!numByLabel.has(label)) entries.push({ label, number: entries.length + 1, text: text2 });
+  }
+  doc.footnoteEntries = entries;
 }
 function normalizeDocument(doc) {
   normalizeTheorems(doc);
   normalizeParts(doc);
+}
+
+// src/meta.js
+function extractMetaBlocks(document2, evalCtx) {
+  const meta = {};
+  for (const b of document2.blocks) {
+    if (!(b instanceof Paragraph) || b.content.length !== 1) continue;
+    const fc = b.content[0];
+    if (!(fc instanceof FunctionCall) || fc.error || fc.name !== "meta") continue;
+    try {
+      const m = evaluate(fc.args[0], evalCtx);
+      if (m && typeof m === "object" && !Array.isArray(m)) Object.assign(meta, m);
+    } catch (e) {
+    }
+  }
+  return meta;
+}
+function applyDocMeta(document2, runtime, opts) {
+  const base = document2.meta && typeof document2.meta === "object" ? document2.meta : {};
+  document2.meta = {
+    ...base,
+    ...opts.meta || {},
+    ...extractMetaBlocks(document2, runtime.evalCtx)
+  };
 }
 
 // src/parser.js
@@ -3721,12 +3756,9 @@ function mergeDocuments(...docs) {
     Object.assign(footnotes, doc.footnotes);
   }
   const ordered = {};
-  let counter = 0;
   for (const block of blocks) {
     walkNodes(block, (node) => {
-      if (node instanceof FootnoteRef && footnotes[node.label] !== void 0) {
-        counter++;
-        node.number = counter;
+      if (node instanceof FootnoteRef && node.label && footnotes[node.label] !== void 0 && !(node.label in ordered)) {
         ordered[node.label] = footnotes[node.label];
       }
     });
@@ -3734,7 +3766,11 @@ function mergeDocuments(...docs) {
   for (const [label, text2] of Object.entries(footnotes)) {
     if (!(label in ordered)) ordered[label] = text2;
   }
-  return new Document(blocks, ordered);
+  const meta = {};
+  for (const doc of docs) if (doc.meta) Object.assign(meta, doc.meta);
+  const merged = new Document(blocks, ordered, Object.keys(meta).length ? meta : null);
+  normalizeFootnotes(merged);
+  return merged;
 }
 function _dumpInlines(nodes, indent, prefix) {
   const lines = [];
@@ -3886,6 +3922,7 @@ function finalizeDocument(document2, source2, footnoteDefs = {}, footnoteDefPosi
     document2.footnotes = { ...footnoteDefs };
     normalizeFootnotes(document2);
   }
+  document2.meta = document2.meta || extractMetaBlocks(document2, { functions: {}, variables: {} });
   return document2;
 }
 function toJSON(node) {
@@ -3925,6 +3962,8 @@ function runtimeBuiltins(runtime) {
       if (config && typeof config === "object") runtime.applySetConfig(config);
       return "";
     },
+    /** 论文元数据：@meta({title, authors, keywords, ...})，无输出（0.3 已归并到 document.meta） */
+    meta: () => "",
     /** 宏定义：@define("name", "模板")，无输出（预扫描注册，渲染时静默） */
     define: () => "",
     /** 宏展开：@use("name", { key: value }) 替换模板 {key} 占位符后按行内语法渲染。
@@ -3966,6 +4005,10 @@ function htmlBuiltins(renderer) {
     renderer._registerCite(key);
     const num = renderer._citeNumbers[key];
     const anchor = citeAnchor(key, entry, num);
+    if (renderer.citation.enabled) {
+      const text2 = renderer.citation.formatCitation([key], { bibliography: renderer._data.bibliography });
+      return text2 ? `<a ${anchor}>(${esc(text2)})</a>` : `<sup>[${esc(String(num))}]</sup>`;
+    }
     if (renderer._citeStyle !== "numeric") {
       const authors = entry && entry.authors ? String(entry.authors) : "";
       if (authors) {
@@ -3983,13 +4026,17 @@ function htmlBuiltins(renderer) {
     cite: (...keys) => {
       if (keys.length && typeof keys[keys.length - 1] === "object") keys = keys.slice(0, -1);
       if (keys.length === 1) return renderCiteOne(keys[0]);
-      if (renderer._citeStyle !== "numeric") {
+      if (renderer.citation.enabled || renderer._citeStyle !== "numeric") {
         const parts = keys.map((key) => {
           const entry = renderer._data.bibliography && renderer._data.bibliography[key];
           if (!entry) return `[${esc(String(key))}?]`;
           renderer._registerCite(key);
           const num = renderer._citeNumbers[key];
           const anchor = citeAnchor(key, entry, num);
+          if (renderer.citation.enabled) {
+            const text2 = renderer.citation.formatCitation([key], { bibliography: renderer._data.bibliography });
+            return text2 ? `<a ${anchor}>${esc(text2)}</a>` : `<sup><a ${anchor}>[${esc(String(num))}]</a></sup>`;
+          }
           const authors = entry && entry.authors ? String(entry.authors) : "";
           if (!authors) return `<sup><a ${anchor}>[${esc(String(num))}]</a></sup>`;
           const suffix = renderer._citeYearSuffix && renderer._citeYearSuffix[key] || "";
@@ -4120,6 +4167,32 @@ function escapeHTML(text2) {
 }
 function escapeAttr(text2) {
   return text2.replace(/[&<>"']/g, (ch) => ESC_ATTR_MAP[ch] || ch);
+}
+function safeLinkUrl(value) {
+  const url = String(value == null ? "" : value).trim();
+  if (!url) return "";
+  if (url.startsWith("#") || url.startsWith("/") || url.startsWith("./") || url.startsWith("../")) {
+    return url;
+  }
+  try {
+    const parsed = new URL(url);
+    if (["http:", "https:", "mailto:", "ftp:"].includes(parsed.protocol)) return url;
+  } catch {
+  }
+  return "";
+}
+function safeImageUrl(value) {
+  const url = String(value == null ? "" : value).trim();
+  if (!url) return "";
+  if (url.startsWith("/") || url.startsWith("./") || url.startsWith("../")) return url;
+  if (/^data:image\//i.test(url)) return url;
+  if (/^blob:/i.test(url)) return url;
+  try {
+    const parsed = new URL(url);
+    if (["http:", "https:"].includes(parsed.protocol)) return url;
+  } catch {
+  }
+  return "";
 }
 
 // src/runtime.js
@@ -4375,12 +4448,17 @@ var DIAG_MESSAGES = {
   "missing-include": "include \u52A0\u8F7D\u5931\u8D25\uFF08\u6587\u6863\u7F3A\u5931\uFF09",
   "missing-part": "\u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684 part\uFF08@part \u533A\u95F4\uFF09"
 };
-function checkIntegrity(doc, runtime, sm) {
+function checkIntegrity(doc, runtime, sm, sourceMap = null) {
   const diagnostics = [];
   const seen = /* @__PURE__ */ new Map();
   const seenLabels = /* @__PURE__ */ new Set();
   let currentBlock = -1;
   const blockAt = (i) => doc.blocks[i];
+  const locate = (base) => {
+    if (!sourceMap || !base) return base;
+    const s = sourceMap.locate(base.start);
+    return s && s.sourceId ? { ...base, sourceId: s.sourceId } : base;
+  };
   const report = (code, label, span) => {
     const id = `${code}|${label}`;
     if (seen.has(id)) {
@@ -4394,7 +4472,7 @@ function checkIntegrity(doc, runtime, sm) {
       severity: "warning",
       message: `${DIAG_MESSAGES[code] || code}\u300C${label}\u300D`,
       // 节点级 span（@cite/@ref/@term/[^n] 精确位置），缺失时回退块区间
-      span: span && span.start < span.end ? { start: span.start, end: span.end } : b ? { start: b.startPos != null ? b.startPos : 0, end: b.endPos != null ? b.endPos : 0 } : void 0,
+      span: span && span.start < span.end ? locate({ start: span.start, end: span.end }) : b ? locate({ start: b.startPos != null ? b.startPos : 0, end: b.endPos != null ? b.endPos : 0 }) : void 0,
       data: { label },
       block: currentBlock,
       count: 1
@@ -4447,6 +4525,51 @@ function checkIntegrity(doc, runtime, sm) {
   currentBlock = -1;
   return diagnostics;
 }
+function checkAcademic(doc, runtime, sm, sourceMap = null) {
+  const diagnostics = [];
+  const locate = (base) => {
+    if (!sourceMap || !base) return base;
+    const s = sourceMap.locate(base.start);
+    return s && s.sourceId ? { ...base, sourceId: s.sourceId } : base;
+  };
+  const push = (code, label, message, span) => {
+    diagnostics.push({
+      code,
+      severity: "info",
+      message,
+      span: span && span.start < span.end ? locate({ start: span.start, end: span.end }) : void 0,
+      data: { label },
+      block: -1,
+      count: 1
+    });
+  };
+  const refed = /* @__PURE__ */ new Set();
+  eachBlocksInline(doc.blocks, (n) => {
+    if (n instanceof FunctionCall && n.name === "ref" && n.args[0] && n.args[0].type === "string") {
+      refed.add(n.args[0].value);
+    }
+  });
+  for (const f of sm.figures || []) if (!refed.has(f.label)) push("unreferenced-figure", f.label, `\u56FE\u300C${f.label}\u300D\u672A\u88AB\u6B63\u6587\u5F15\u7528`);
+  for (const t of sm.tables || []) if (!refed.has(t.label)) push("unreferenced-table", t.label, `\u8868\u300C${t.label}\u300D\u672A\u88AB\u6B63\u6587\u5F15\u7528`);
+  for (const e of sm.equations || []) if (!refed.has(e.label)) push("unused-label", e.label, `\u516C\u5F0F\u300C${e.label}\u300D\u672A\u88AB\u5F15\u7528`);
+  for (const th of sm.theorems || []) if (!refed.has(th.label)) push("unused-label", th.label, `\u5B9A\u7406\u300C${th.label}\u300D\u672A\u88AB\u5F15\u7528`);
+  const bib = runtime.data && runtime.data.bibliography;
+  if (bib && typeof bib === "object") {
+    const cited = new Set(sm.citeOrder || []);
+    for (const key of Object.keys(bib)) {
+      if (!cited.has(key)) push("unused-bibliography", key, `\u6587\u732E\u300C${key}\u300D\u672A\u5728\u6B63\u6587\u4E2D\u88AB\u5F15\u7528`);
+    }
+  }
+  const meta = doc.meta;
+  if (meta && typeof meta === "object" && Object.keys(meta).length > 0) {
+    if (!meta.title) push("missing-title", "title", "\u7F3A\u5C11\u8BBA\u6587\u6807\u9898\uFF08meta.title\uFF09");
+    if (!meta.abstract) push("missing-abstract", "abstract", "\u7F3A\u5C11\u6458\u8981\uFF08meta.abstract\uFF09");
+    if (!Array.isArray(meta.keywords) || meta.keywords.length === 0) {
+      push("missing-keywords", "keywords", "\u7F3A\u5C11\u5173\u952E\u8BCD\uFF08meta.keywords\uFF09");
+    }
+  }
+  return diagnostics;
+}
 var SemanticModel = class {
   constructor() {
     this.refs = {};
@@ -4456,6 +4579,15 @@ var SemanticModel = class {
     this.termOrder = [];
     this.headingSeq = [];
     this.diagnostics = [];
+    this.outline = [];
+    this.sections = [];
+    this.figures = [];
+    this.tables = [];
+    this.equations = [];
+    this.theorems = [];
+    this.footnotes = [];
+    this.references = [];
+    this.stats = {};
   }
   /** 文献键编号：首次出现分配顺序号（预收集 + 运行时动态 cite 共用） */
   registerCite(key) {
@@ -4524,6 +4656,7 @@ var SemanticAnalyzer = class {
       if (n instanceof Image && n.label) {
         counters.fig++;
         sm.refs[n.label] = { kind: "fig", number: counters.fig };
+        sm.figures.push({ label: n.label, number: counters.fig });
       }
       if (n instanceof FunctionCall) {
         handleCall(n);
@@ -4540,7 +4673,8 @@ var SemanticAnalyzer = class {
       }
       return out;
     };
-    const collectBlock = (block) => {
+    const headingList = [];
+    const collectBlock = (block, blockIndex) => {
       const deps = { v: {}, m: {}, d: {} };
       block._deps = deps;
       currentDeps = deps;
@@ -4561,12 +4695,19 @@ var SemanticAnalyzer = class {
           if (display === void 0) display = text2;
           sm.refs[block.id] = { kind: "part", display };
         }
-        block.blocks.forEach(collectBlock);
+        block.blocks.forEach((b) => collectBlock(b, blockIndex));
         return;
       }
       if (block instanceof Heading) {
         const autoNum = runtime.headingNumbering ? nextSecNumber(block.level) : "";
         sm.headingSeq.push(autoNum);
+        headingList.push({
+          level: block.level,
+          id: block.id || "",
+          text: headingText(block.content),
+          number: autoNum,
+          block: blockIndex
+        });
         if (block.id) {
           counters.sec++;
           const text2 = headingText(block.content);
@@ -4582,23 +4723,85 @@ var SemanticAnalyzer = class {
       if (block instanceof Table && block.label) {
         counters.tbl++;
         sm.refs[block.label] = { kind: "tbl", number: counters.tbl };
+        sm.tables.push({ label: block.label, number: counters.tbl });
       }
       if (block instanceof Equation && block.label) {
         counters.eq++;
         sm.refs[block.label] = { kind: "eq", number: counters.eq };
+        sm.equations.push({ label: block.label, number: counters.eq });
       }
       if (block instanceof CodeBlock && block.label && block.language === "mermaid") {
         counters.fig++;
         sm.refs[block.label] = { kind: "fig", number: counters.fig };
+        sm.figures.push({ label: block.label, number: counters.fig });
       }
       if (block instanceof Theorem && block.label) {
         counters.thm++;
         sm.refs[block.label] = { kind: "thm", type: block.type, number: counters.thm };
+        sm.theorems.push({ label: block.label, number: counters.thm, type: block.type });
       }
       if (block.content || block.items) eachBlockInline(block, walkInlineList);
     };
-    doc.blocks.forEach(collectBlock);
+    doc.blocks.forEach((b, i) => collectBlock(b, i));
     currentDeps = null;
+    sm.outline = headingList;
+    sm.footnotes = Array.isArray(doc.footnoteEntries) ? doc.footnoteEntries.map((e) => ({ ...e })) : [];
+    sm.references = sm.citeOrder.map((key, i) => ({
+      key,
+      number: i + 1,
+      entry: runtime.data.bibliography && runtime.data.bibliography[key]
+    }));
+    const sections = headingList.map((h, idx) => {
+      const end = idx + 1 < headingList.length ? headingList[idx + 1].block : doc.blocks.length;
+      const cites = /* @__PURE__ */ new Set();
+      const figures = /* @__PURE__ */ new Set();
+      const tables = /* @__PURE__ */ new Set();
+      const equations = /* @__PURE__ */ new Set();
+      const theorems = /* @__PURE__ */ new Set();
+      for (let bi = h.block; bi < end; bi++) {
+        const b = doc.blocks[bi];
+        eachBlocksInline([b], (n) => {
+          if (n instanceof FunctionCall && n.name === "cite") {
+            for (const a of n.args) if (a.type === "string") cites.add(a.value);
+          }
+          if (n instanceof Image && n.label) figures.add(n.label);
+          if (n instanceof CodeBlock && n.label && n.language === "mermaid") figures.add(n.label);
+        });
+        if (b instanceof Table && b.label) tables.add(b.label);
+        if (b instanceof Equation && b.label) equations.add(b.label);
+        if (b instanceof Theorem && b.label) theorems.add(b.label);
+      }
+      return {
+        id: h.id,
+        text: h.text,
+        number: h.number,
+        level: h.level,
+        startBlock: h.block,
+        endBlock: end,
+        cites: [...cites],
+        figures: [...figures],
+        tables: [...tables],
+        equations: [...equations],
+        theorems: [...theorems]
+      };
+    });
+    sm.sections = sections;
+    let words = 0;
+    walkNodes(doc, (n) => {
+      if (n instanceof RawText && n.text) {
+        words += (n.text.match(/[A-Za-z0-9\u4e00-\u9fff]+/g) || []).length;
+      }
+    });
+    sm.stats = {
+      words,
+      citations: sm.citeOrder.length,
+      figures: sm.figures.length,
+      tables: sm.tables.length,
+      equations: sm.equations.length,
+      theorems: sm.theorems.length,
+      sections: sections.length,
+      footnotes: sm.footnotes.length
+    };
     if (runtime.citeStyle !== "numeric") {
       const counts = {};
       for (const key of sm.citeOrder) {
@@ -4617,6 +4820,71 @@ var SemanticAnalyzer = class {
       }
     }
     return sm;
+  }
+};
+
+// src/source-map.js
+var TextBuilder = class {
+  constructor(rootSourceId = null) {
+    this.rows = [];
+    this.rootSourceId = rootSourceId || null;
+  }
+  /** 追加一行（不含换行），来源默认当前层 */
+  line(text2, sourceId = this.rootSourceId) {
+    this.rows.push({ text: String(text2), sourceId });
+  }
+  /** 追加多行文本块（整体标记同一来源），如 include 展开/part 区间 */
+  block(text2, sourceId = this.rootSourceId) {
+    const lines = String(text2).split("\n");
+    for (const l of lines) this.line(l, sourceId);
+  }
+  /** 拼接为最终文档文本（行间 \n） */
+  get text() {
+    return this.rows.map((r) => r.text).join("\n");
+  }
+  /** 行级来源 → 连续同源合并段 [{ sourceId, start, end }] */
+  buildSegments() {
+    const segs = [];
+    let offset = 0;
+    for (let i = 0; i < this.rows.length; i++) {
+      const r = this.rows[i];
+      const start = offset;
+      const end = start + r.text.length;
+      const last = segs[segs.length - 1];
+      if (last && last.sourceId === r.sourceId) {
+        last.end = end;
+      } else {
+        segs.push({ sourceId: r.sourceId, start, end });
+      }
+      offset = end + 1;
+    }
+    return segs;
+  }
+};
+var SourceMap = class _SourceMap {
+  /** @param {Array<{sourceId: (string|null), start: number, end: number}>} segments */
+  constructor(segments = []) {
+    this.segments = segments;
+  }
+  static fromBuilder(builder) {
+    return new _SourceMap(builder ? builder.buildSegments() : []);
+  }
+  /**
+   * 定位偏移所属来源段。
+   * @param {number} offset
+   * @returns {{sourceId: (string|null), start: number, end: number}|null}
+   */
+  locate(offset) {
+    const o = Number(offset);
+    for (const s of this.segments) {
+      if (o >= s.start && o <= s.end) return s;
+    }
+    return null;
+  }
+  /** 该偏移处来源是否为 include 文件（sourceId 非空） */
+  isIncluded(offset) {
+    const s = this.locate(offset);
+    return !!(s && s.sourceId);
   }
 };
 
@@ -4653,6 +4921,13 @@ function extractPart(text2, id, ctx) {
   const inner2 = lines.slice(start + 1, end === -1 ? lines.length : end);
   return inner2.filter((l) => !PART_SETTER_RE.test(l)).join("\n");
 }
+function expandTarget(src, opts, stack, cache) {
+  const saved = opts.builder;
+  delete opts.builder;
+  const result = expandIncludes(src, opts, stack, cache);
+  opts.builder = saved;
+  return result;
+}
 function getTarget(path2, id, opts, ctx) {
   const inStack = ctx.stack.includes(path2);
   if (ctx.cache.has(path2)) {
@@ -4664,52 +4939,59 @@ function getTarget(path2, id, opts, ctx) {
   } catch (e) {
     loaded = null;
   }
+  const wrap = (reason) => `<!-- mslang: ${reason} "${path2}" -->`;
+  const finish = (expanded2) => extractPart(expanded2, id, ctx);
   if (loaded instanceof Promise) {
     return loaded.then((src) => {
       if (!src) {
         ctx.issues.push({ type: "missing_include", key: path2, count: 1, block: void 0 });
-        return `<!-- mslang: include \u52A0\u8F7D\u5931\u8D25 "${path2}" -->`;
+        return wrap("include \u52A0\u8F7D\u5931\u8D25");
       }
       ctx.cache.set(path2, src);
-      const expanded2 = expandIncludes(src, opts, [...ctx.stack, path2], ctx.cache);
-      return Promise.resolve(expanded2).then((e) => extractPart(e, id, ctx));
+      return Promise.resolve(expandTarget(src, opts, [...ctx.stack, path2], ctx.cache)).then(finish);
     });
   }
   if (!loaded) {
     ctx.issues.push({ type: "missing_include", key: path2, count: 1, block: void 0 });
-    return `<!-- mslang: include \u52A0\u8F7D\u5931\u8D25 "${path2}" -->`;
+    return wrap("include \u52A0\u8F7D\u5931\u8D25");
   }
   ctx.cache.set(path2, loaded);
-  if (inStack) return `<!-- mslang: \u5FAA\u73AF\u5F15\u7528 @include("${path2}") -->`;
-  const expanded = expandIncludes(loaded, opts, [...ctx.stack, path2], ctx.cache);
-  return expanded instanceof Promise ? expanded.then((e) => extractPart(e, id, ctx)) : extractPart(expanded, id, ctx);
+  if (inStack) return wrap("\u5FAA\u73AF\u5F15\u7528 @include");
+  const expanded = expandTarget(loaded, opts, [...ctx.stack, path2], ctx.cache);
+  return expanded instanceof Promise ? expanded.then(finish) : finish(expanded);
 }
 function expandIncludes(source2, opts, stack = [], cache = /* @__PURE__ */ new Map()) {
-  const ctx = { stack, issues: opts.issues || [], cache };
+  const builder = opts.builder || new TextBuilder(opts.sourceId || null);
+  const ctx = {
+    stack,
+    issues: opts.issues || [],
+    cache,
+    builder,
+    sourceId: opts.sourceId || null
+  };
   const lines = source2.split("\n");
-  const out = [];
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(INCLUDE_RE);
     if (!m) {
-      out.push(lines[i]);
+      builder.line(lines[i]);
       continue;
     }
     const path2 = parseStr(m[1]);
     const id = m[2] ? parseStr(m[2]) : null;
     if (!id) {
-      out.push("<!-- mslang: @include \u9700\u6307\u5B9A part id\uFF08\u6574\u6587\u6863\u5408\u5E76\u8BF7\u7528 render([...])) -->");
+      builder.line("<!-- mslang: @include \u9700\u6307\u5B9A part id\uFF08\u6574\u6587\u6863\u5408\u5E76\u8BF7\u7528 render([...])) -->");
       continue;
     }
     const replaced = getTarget(path2, id, opts, ctx);
     if (replaced instanceof Promise) {
       return replaced.then((text2) => {
-        const rest = expandIncludes(lines.slice(i + 1).join("\n"), opts, stack, cache);
-        return Promise.resolve(rest).then((r) => out.concat(text2, r).join("\n"));
+        builder.block(text2, path2);
+        return expandIncludes(lines.slice(i + 1).join("\n"), opts, stack, cache);
       });
     }
-    out.push(replaced);
+    builder.block(replaced, path2);
   }
-  return out.join("\n");
+  return builder.text;
 }
 
 // src/prepare.js
@@ -4732,7 +5014,7 @@ function toDocument(source2, options, issues) {
 }
 function prepare(source2, options = {}) {
   const issues = [];
-  const run = (effectiveSource) => {
+  const run = (effectiveSource, sourceMap = null) => {
     let document2 = toDocument(effectiveSource, options, issues);
     const runtime = new RuntimeContext({
       functions: options.functions,
@@ -4741,8 +5023,9 @@ function prepare(source2, options = {}) {
     });
     runtime.resetHost(options);
     applyDocConfig(runtime, document2.blocks);
+    applyDocMeta(document2, runtime, options);
     const semantic = new SemanticAnalyzer({ runtime }).analyze(document2);
-    return { document: document2, runtime, semantic, issues };
+    return { document: document2, runtime, semantic, issues, sourceMap };
   };
   if (Array.isArray(source2)) {
     const expandedList = source2.map((s) => typeof s === "string" && options.include ? expandIncludes(s, { include: options.include, issues }) : s);
@@ -4754,10 +5037,215 @@ function prepare(source2, options = {}) {
     return run(buildMerged(expandedList));
   }
   if (typeof source2 === "string" && options.include) {
-    const expanded = expandIncludes(source2, { include: options.include, issues });
-    return expanded instanceof Promise ? expanded.then(run) : run(expanded);
+    const builder = new TextBuilder(options.sourceId || null);
+    const expanded = expandIncludes(source2, {
+      include: options.include,
+      issues,
+      builder,
+      sourceId: options.sourceId
+    });
+    const finalize = (text2) => {
+      const sourceMap = SourceMap.fromBuilder(builder);
+      return run(text2, sourceMap);
+    };
+    return expanded instanceof Promise ? expanded.then(finalize) : finalize(expanded);
   }
   return run(source2);
+}
+
+// mslang-node-module:module
+var createRequire = () => null;
+
+// src/citation.js
+var _csl = null;
+function detectCSL() {
+  if (_csl !== null) return _csl;
+  try {
+    const core = createRequire(import.meta.url)("@citation-js/core");
+    createRequire(import.meta.url)("@citation-js/plugin-csl");
+    _csl = { Cite: core.Cite.bind ? core.Cite : core.Cite };
+  } catch (e) {
+    _csl = null;
+  }
+  return _csl;
+}
+function formatAuthors(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  if (typeof entry.authors === "string") return entry.authors;
+  const list = Array.isArray(entry.author) ? entry.author : null;
+  if (!list || !list.length) return "";
+  const name = (a) => {
+    if (typeof a === "string") return a;
+    if (!a) return "";
+    const family = a.family || a.name || "";
+    const given = a.given || "";
+    if (!given) return family;
+    const hasCJK = /[\u4e00-\u9fff]/.test(`${family}${given}`);
+    if (hasCJK) return `${family}${given}`;
+    const initials = given.split(/[\s-]+/).map((w) => `${w[0] || ""}.`).join(" ");
+    return `${family}, ${initials}`;
+  };
+  const names = list.map(name).filter(Boolean);
+  if (names.length <= 1) return names[0] || "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+function entryYear(entry) {
+  if (!entry || typeof entry !== "object") return void 0;
+  if (entry.year !== void 0) return entry.year;
+  const dp = entry.issued && entry.issued["date-parts"];
+  if (Array.isArray(dp) && dp[0] && dp[0][0] !== void 0) return dp[0][0];
+  return void 0;
+}
+function entryContainer(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  return entry["container-title"] || entry.journal || entry.booktitle || entry.publisher || "";
+}
+function normalizeEntry(entry) {
+  if (entry == null) return {};
+  if (typeof entry === "string") return { title: entry };
+  return {
+    id: entry.id || "",
+    type: entry.type || "",
+    authors: formatAuthors(entry),
+    year: entryYear(entry),
+    title: entry.title || "",
+    container: entryContainer(entry),
+    url: entry.URL || entry.url || "",
+    doi: entry.DOI || "",
+    volume: entry.volume,
+    issue: entry.issue,
+    page: entry.page
+  };
+}
+function cslEntryInner(html) {
+  if (typeof html !== "string") return html;
+  const m = html.match(/class="csl-entry">([\s\S]*?)<\/div>/);
+  return m ? m[1] : html;
+}
+var CSLFormatter = class {
+  /**
+   * @param {{ Cite: Function }} core - @citation-js/core（已含 plugin-csl）
+   * @param {string} [style] - CSL 样式名（'apa' | 'ieee' | ...）
+   * @param {string} [locale] - 如 'en-US' / 'zh-CN'
+   */
+  constructor(core, style = "apa", locale = "en-US") {
+    this.Cite = core.Cite;
+    this.style = style;
+    this.locale = locale;
+  }
+  /** 内联引用文本：@cite("a","b") → "(Smith, 2024; Doe, 2020)"（text 输出无括号则补括号）。
+   *  opts.bare = true 时返回无括号文本（供逐 key 锚点外层统一加括号） */
+  formatInline(entries, opts = {}) {
+    const Cite = this.Cite;
+    let txt;
+    try {
+      txt = new Cite(entries, { forceType: "@csl/list+object" }).format("citation", {
+        format: "text",
+        template: this.style,
+        lang: this.locale
+      });
+    } catch (e) {
+      return "";
+    }
+    const s = String(txt).trim();
+    if (opts.bare) {
+      return (s.startsWith("(") || s.startsWith("[") ? s.slice(1, -1) : s).trim();
+    }
+    return s.startsWith("(") || s.startsWith("[") ? s : `(${s})`;
+  }
+  /** 参考文献条目：单项 → csl-entry 内部 HTML（保留作者斜体等标签） */
+  formatEntry(entry) {
+    const Cite = this.Cite;
+    let html;
+    try {
+      html = new Cite([entry], { forceType: "@csl/list+object" }).format("bibliography", {
+        format: "html",
+        template: this.style,
+        lang: this.locale
+      });
+    } catch (e) {
+      return "";
+    }
+    return cslEntryInner(html);
+  }
+};
+var CitationEngine = class {
+  /**
+   * @param {{ style?: string, locale?: string, engine?: CSLFormatter }} opts
+   *   style: CSL 样式名（提供即启用 CSL 后端；未提供时用内置 lightweight）
+   *   engine: 宿主注入 CSLFormatter（替代自动探测）
+   */
+  constructor(opts = {}) {
+    this.cslStyle = opts.style || null;
+    this.locale = opts.locale || "en-US";
+    if (opts.engine instanceof CSLFormatter) {
+      this.csl = opts.engine;
+    } else if (opts.style) {
+      const core = opts.engine && opts.engine.Cite ? opts.engine : detectCSL();
+      this.csl = core ? new CSLFormatter(core, opts.style, this.locale) : null;
+    } else {
+      this.csl = null;
+    }
+  }
+  /** 是否使用 CSL 后端（style 指定且可用） */
+  get enabled() {
+    return !!this.csl;
+  }
+  /** 【文档建议接口】条目数据标准化：bib 条目对象 → 内部标准 */
+  normalize(entries) {
+    const out = {};
+    if (!entries || typeof entries !== "object") return out;
+    for (const [k, v] of Object.entries(entries)) out[k] = normalizeEntry(v);
+    return out;
+  }
+  /**
+   * 内联引用文本（author-year 族 / CSL）：@cite("a","b") 的格式化部分。
+   * numeric 由 Renderer 保留自己的上标逻辑，不调用本方法。
+   * @param {string[]} keys
+   * @param {{ bibliography: object }} context
+   */
+  formatCitation(keys, context = {}) {
+    if (this.csl) {
+      const entries = keys.map((k) => context.bibliography && context.bibliography[k]).filter((e) => e != null).map((e) => typeof e === "string" ? { title: e } : e);
+      if (!entries.length) return "";
+      return this.csl.formatInline(entries, { bare: true });
+    }
+    return keys.map((k) => {
+      const e = normalizeEntry(context.bibliography && context.bibliography[k]);
+      const authors = e.authors || String(k);
+      return `${authors}${e.year !== void 0 ? `, ${e.year}` : ""}`;
+    }).join("; ");
+  }
+  /**
+   * 参考文献条目格式化（单个 entry → HTML 文本；不含 <li>/包裹）。
+   * @param {object} entry - 原始条目（任意模型）
+   * @param {{ bibStyle?: string, escapeHtml?: boolean }} context
+   */
+  formatBibliography(entry, context = {}) {
+    if (this.csl) return this.csl.formatEntry(typeof entry === "string" ? { title: entry } : entry);
+    return formatLightweight(entry, context.bibStyle || "default", context.escapeHtml !== false);
+  }
+};
+function formatLightweight(entry, bibStyle = "default", escapeHtml = true) {
+  const e = normalizeEntry(entry);
+  const esc = (t) => escapeHtml ? String(t).replace(/[&<>"']/g, (c2) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c2]) : String(t);
+  const title = e.title ? esc(e.title) : "";
+  const titleHtml = e.url ? `<a href="${esc(safeLinkUrl(e.url))}">${title}</a>` : title;
+  if (bibStyle === "gbt7714") {
+    const parts2 = [];
+    if (e.authors) parts2.push(esc(e.authors));
+    let t = titleHtml;
+    if (t) parts2.push(`${t}${t.endsWith(".") ? "" : "."}`);
+    if (e.container) parts2.push(`${esc(e.container)},`);
+    if (e.year !== void 0) parts2.push(`${esc(String(e.year))}.`);
+    return parts2.join(" ");
+  }
+  const parts = [];
+  if (e.authors) parts.push(esc(e.authors));
+  if (e.year !== void 0) parts.push(`(${esc(String(e.year))})`);
+  if (titleHtml) parts.push(titleHtml);
+  if (e.container) parts.push(esc(e.container));
+  return parts.join(" ");
 }
 
 // node_modules/katex/dist/katex.mjs
@@ -27773,32 +28261,6 @@ var HLJS_LANGUAGES = {
   diff
 };
 for (const [name, lang] of Object.entries(HLJS_LANGUAGES)) core_default.registerLanguage(name, lang);
-function safeLinkUrl(value) {
-  const url = String(value == null ? "" : value).trim();
-  if (!url) return "";
-  if (url.startsWith("#") || url.startsWith("/") || url.startsWith("./") || url.startsWith("../")) {
-    return url;
-  }
-  try {
-    const parsed = new URL(url);
-    if (["http:", "https:", "mailto:", "ftp:"].includes(parsed.protocol)) return url;
-  } catch {
-  }
-  return "";
-}
-function safeImageUrl(value) {
-  const url = String(value == null ? "" : value).trim();
-  if (!url) return "";
-  if (url.startsWith("/") || url.startsWith("./") || url.startsWith("../")) return url;
-  if (/^data:image\//i.test(url)) return url;
-  if (/^blob:/i.test(url)) return url;
-  try {
-    const parsed = new URL(url);
-    if (["http:", "https:"].includes(parsed.protocol)) return url;
-  } catch {
-  }
-  return "";
-}
 var MAX_MACRO_DEPTH = 32;
 var MATH_CACHE = /* @__PURE__ */ new Map();
 var CODE_CACHE = /* @__PURE__ */ new Map();
@@ -27850,6 +28312,7 @@ var HTMLRenderer = class {
     this._hostFunctions = { ...opts.functions || {} };
     this.runtime = opts.runtime instanceof RuntimeContext ? opts.runtime : new RuntimeContext({ functions: opts.functions, escapeHtml: opts.escapeHtml, pretty: opts.pretty });
     this.runtime.functions = { ...htmlBuiltins(this), ...this.runtime.functions };
+    this.citation = new CitationEngine({ ...opts.citation || {} });
     this._output = [];
   }
   /**
@@ -28100,27 +28563,10 @@ ${body}
   _registerTerm(name) {
     if (!this._termOrder.includes(name)) this._termOrder.push(name);
   }
-  /** 文献条目格式化：字符串原样转义；default 拼接 "authors (year) title journal"；
-   *  gbt7714 近似 "作者. 题名. 期刊, 年份."（GB/T 7714 风格点分隔，年份不带括号） */
+  /** 文献条目格式化：委托 CitationEngine（0.3 边界：引用格式化收口到 citation.js）。
+   *  lightweight 分支兼容旧模型与 CSL-JSON；提供 citation.style 且 CSL 可用时走 CSL 后端。 */
   _formatBibEntry(entry) {
-    if (typeof entry === "string") return this._esc(entry);
-    const e = entry || {};
-    const title = e.title ? this._esc(String(e.title)) : "";
-    const titleHtml = e.url ? `<a href="${this._escAttr(safeLinkUrl(e.url))}">${title}</a>` : title;
-    if (this._bibStyle === "gbt7714") {
-      const parts2 = [];
-      if (e.authors) parts2.push(this._esc(String(e.authors)));
-      if (titleHtml) parts2.push(`${titleHtml}${titleHtml.endsWith(".") ? "" : "."}`);
-      if (e.journal) parts2.push(`${this._esc(String(e.journal))},`);
-      if (e.year !== void 0) parts2.push(`${this._esc(String(e.year))}.`);
-      return parts2.join(" ");
-    }
-    const parts = [];
-    if (e.authors) parts.push(this._esc(String(e.authors)));
-    if (e.year !== void 0) parts.push(`(${this._esc(String(e.year))})`);
-    if (titleHtml) parts.push(titleHtml);
-    if (e.journal) parts.push(this._esc(String(e.journal)));
-    return parts.join(" ");
+    return this.citation.formatBibliography(entry, { bibStyle: this._bibStyle, escapeHtml: this.escapeHtml });
   }
   // ================================================================
   // Visitor 实现
@@ -28129,6 +28575,23 @@ ${body}
     this._write(`<!-- unhandled: ${node.constructor.name} -->`);
   }
   visit_Document(doc) {
+    const fnCounts = {};
+    const countBlocks = (blocks) => {
+      for (const b of blocks) {
+        if (b instanceof PartBlock) {
+          countBlocks(b.blocks);
+          continue;
+        }
+        if (b.content || b.items) {
+          eachBlockInline(b, (n) => {
+            if (n instanceof FootnoteRef && n.label) fnCounts[n.label] = (fnCounts[n.label] || 0) + 1;
+          });
+        }
+      }
+    };
+    countBlocks(doc.blocks);
+    this._fnCounts = fnCounts;
+    this._fnUsed = {};
     doc.blocks.forEach((block, i) => {
       if (this._blockMarkers) {
         this._write(`<!--mslang:${i}-->
@@ -28140,7 +28603,8 @@ ${body}
       block.accept(this);
       if (this.pretty && i < doc.blocks.length - 1) this._write("\n");
     });
-    if (Object.keys(doc.footnotes).length > 0) {
+    const notes = doc.footnoteEntries || [];
+    if (notes.length > 0) {
       if (this.pretty) this._write("\n");
       if (this._blockMarkers) {
         this._write("<!--mslang:footnotes-->\n");
@@ -28150,10 +28614,14 @@ ${body}
       if (this.pretty) this._write("\n");
       this._write("<ol>");
       if (this.pretty) this._write("\n");
-      let idx = 0;
-      for (const [label, text2] of Object.entries(doc.footnotes)) {
-        idx++;
-        this._write(`<li id="fn-${idx}">${this._esc(text2)} <a href="#fnref-${idx}">&#8617;</a></li>`);
+      for (const { label, number, text: text2 } of notes) {
+        const total = this._fnCounts[label] || 1;
+        const backlinks = Array.from({ length: total }, (_, k) => {
+          const occ = k + 1;
+          const mark = total > 1 ? `<sup>${occ}</sup>` : "";
+          return `<a href="#fnref-${number}-${occ}">&#8617;${mark}</a>`;
+        }).join(" ");
+        this._write(`<li id="fn-${number}">${this._esc(text2)} ${backlinks}</li>`);
         if (this.pretty) this._write("\n");
       }
       this._write("</ol>");
@@ -28536,7 +29004,8 @@ ${body}
     this._write(node.html);
   }
   visit_FootnoteRef(node) {
-    this._write(`<sup><a href="#fn-${node.number}" id="fnref-${node.number}">[${node.number}]</a></sup>`);
+    const occ = this._fnUsed[node.label] = (this._fnUsed[node.label] || 0) + 1;
+    this._write(`<sup><a href="#fn-${node.number}" id="fnref-${node.number}-${occ}">[${node.number}]</a></sup>`);
   }
   // ================================================================
   // 辅助方法
@@ -28604,14 +29073,289 @@ function diffBlocks(oldHashes, newHashes) {
   });
 }
 function toLegacyIssues(prepared, _renderer) {
-  const fromDiag = checkIntegrity(prepared.document, prepared.runtime, prepared.semantic).map((d) => ({
+  const fromDiag = checkIntegrity(prepared.document, prepared.runtime, prepared.semantic, prepared.sourceMap).map((d) => ({
     type: DIAG_ISSUE_TYPE[d.code] || d.code,
     key: d.data.label,
     count: d.count,
     block: d.block
   }));
-  return [...prepared.issues || [], ...fromDiag];
+  const fromAcademic = checkAcademic(prepared.document, prepared.runtime, prepared.semantic, prepared.sourceMap).map((d) => ({ type: d.code, key: d.data.label, count: d.count, block: d.block }));
+  return [...prepared.issues || [], ...fromDiag, ...fromAcademic];
 }
+
+// src/renderer-latex.js
+function escLatex(text2) {
+  return String(text2).replace(/\\/g, "\\textbackslash{}").replace(/([{}%$#_&])/g, "\\$1").replace(/~/g, "\\textasciitilde{}").replace(/\^/g, "\\textasciicircum{}").replace(/\n/g, " ");
+}
+function plainText(nodes) {
+  let out = "";
+  for (const n of nodes) {
+    if (n instanceof RawText) out += n.text;
+    else if (n.content) out += plainText(n.content);
+  }
+  return out;
+}
+var LatexRenderer = class {
+  constructor() {
+    this._out = [];
+  }
+  /** @param {{document: object, semantic: object, runtime: object}} prepared */
+  render(prepared) {
+    this.semantic = prepared.semantic;
+    this.runtime = prepared.runtime;
+    this._currentDoc = prepared.document;
+    this._out = [];
+    (prepared.document.blocks || []).forEach((b) => this.visitBlock(b));
+    return this._out.join("");
+  }
+  _write(s) {
+    this._out.push(s);
+  }
+  _p() {
+    if (this._lastLine() !== "") this._write("\n");
+  }
+  _lastLine() {
+    return this._out[this._out.length - 1] || "";
+  }
+  // ============ 块级 ============
+  visitBlock(block) {
+    switch (block.constructor.name) {
+      case "Heading":
+        return this.blockHeading(block);
+      case "Paragraph":
+        return this.blockParagraph(block);
+      case "BlockQuote":
+        return this.blockQuote(block);
+      case "CodeBlock":
+        return this.blockCode(block);
+      case "UnorderedList":
+        return this.blockList(block, "itemize");
+      case "OrderedList":
+        return this.blockList(block, "enumerate");
+      case "Table":
+        return this.blockTable(block);
+      case "Equation":
+        return this.blockEquation(block);
+      case "Theorem":
+        return this.blockTheorem(block);
+      case "PartBlock":
+        return this.blockPart(block);
+      case "HorizontalRule":
+        return this._note("---");
+      case "AlignBlock":
+        return this.blockAlign(block);
+      case "AlignLeft":
+      case "AlignRight":
+        return this.blockAlign(block);
+      default:
+        return this._note(`\u5DF2\u5FFD\u7565\u5757 ${block.constructor.name}`);
+    }
+  }
+  blockHeading(b) {
+    const levels = ["section", "subsection", "subsubsection", "paragraph", "subparagraph"];
+    const tag = levels[Math.min(b.level - 1, levels.length - 1)] || "subparagraph";
+    const text2 = escLatex(plainText(b.content));
+    const label = b.id ? `
+\\label{${b.id}}` : "";
+    this._p();
+    this._write(`\\${tag}{${text2}}${label}`);
+  }
+  blockParagraph(b) {
+    this._p();
+    this._write(this.inline(b.content));
+    this._p();
+  }
+  blockQuote(b) {
+    this._p();
+    this._write("\\begin{quote}");
+    this._p();
+    this._write(this.inline(b.content));
+    this._p();
+    this._write("\\end{quote}");
+  }
+  blockCode(b) {
+    if (b.language === "mermaid") return this._note("mermaid \u6D41\u7A0B\u56FE\uFF08HTML \u6E32\u67D3\u5668\uFF09");
+    this._p();
+    this._write("\\begin{verbatim}");
+    this._p();
+    this._write(b.code.replace(/\n$/, ""));
+    this._p();
+    this._write("\\end{verbatim}");
+  }
+  blockList(b, env) {
+    this._p();
+    this._write(`\\begin{${env}}`);
+    for (const item of b.items) {
+      this._write("\n\\item ");
+      this._write(this.inline(item.content));
+      if (item.children && item.children.length) {
+        const nested = item.children.filter((c2) => ["UnorderedList", "OrderedList"].includes(c2.constructor.name));
+        for (const sub2 of nested) this.blockList(sub2, sub2.constructor.name === "OrderedList" ? "enumerate" : "itemize");
+      }
+    }
+    this._write("\n\\end{" + env + "}");
+  }
+  blockTable(b) {
+    this._p();
+    const cols = Math.max((b.headers || [{}]).length, 1);
+    this._write("\\begin{table}[h]\n\\centering\n\\begin{tabular}{" + "l".repeat(cols) + "}");
+    if (b.headers && b.headers.length) {
+      const cells = b.headers.map((c2) => escLatex(plainText(Array.isArray(c2) ? c2 : [c2])));
+      this._write(cells.join(" & ") + " \\\\ \\hline");
+    }
+    for (const row of b.rows || []) {
+      const cells = row.map((c2) => escLatex(plainText(Array.isArray(c2) ? c2 : [c2])));
+      this._write(`
+${cells.join(" & ")} \\\\`);
+    }
+    this._write("\n\\end{tabular}");
+    if (b.caption && b.caption.length) this._write(`
+\\caption{${escLatex(plainText(b.caption))}}`);
+    if (b.label) this._write(`
+\\label{${b.label}}`);
+    this._write("\n\\end{table}");
+  }
+  blockEquation(b) {
+    this._p();
+    this._write(b.inline ? `$${b.source}$` : `\\[${b.source}\\]`);
+    if (!b.inline && b.label) this._write(`\\label{${b.label}}`);
+  }
+  blockTheorem(b) {
+    const env = ["lemma", "definition", "remark", "example"].includes(b.type) ? b.type : "theorem";
+    this._p();
+    this._write(`\\begin{${env}}`);
+    if (b.title && b.title.length) this._write(`[${escLatex(plainText(b.title))}]`);
+    this._write("\n");
+    this._write(this.inline(b.content));
+    if (b.label) this._write(`
+\\label{${b.label}}`);
+    this._write(`
+\\end{${env}}`);
+  }
+  blockPart(b) {
+    if (b.id) this._write(`
+% part ${b.id}`);
+    (b.blocks || []).forEach((c2) => this.visitBlock(c2));
+  }
+  blockAlign(b) {
+    this._p();
+    this._write("\\begin{center}");
+    this._p();
+    this._write(this.inline(b.content));
+    this._p();
+    this._write("\\end{center}");
+  }
+  /** 未支持节点输出注释（可读、不破坏编译） */
+  _note(msg) {
+    this._p();
+    this._write(`% mslang: \u672A\u8986\u76D6 ${msg}`);
+  }
+  // ============ 行内 ============
+  inline(nodes) {
+    return (nodes || []).map((n) => this.inlineNode(n)).join("");
+  }
+  inlineNode(n) {
+    switch (n.constructor.name) {
+      case "RawText":
+        return n.text;
+      case "Bold":
+        return this._inlineEnv("textbf", n.content);
+      case "Italic":
+        return this._inlineEnv("textit", n.content);
+      case "Strikethrough":
+        return this._inlineEnv("sout", n.content);
+      case "InlineCode":
+        return `\\texttt{${escLatex(n.code)}}`;
+      case "LineBreak":
+        return " \\newline{} ";
+      case "Link":
+        return `\\url{${escLatex(n.url)}}`;
+      case "Superscript":
+        return `\\textsuperscript{${this.inline(n.content)}}`;
+      case "Subscript":
+        return `\\textsubscript{${this.inline(n.content)}}`;
+      case "Image":
+        return this._note(`\u56FE\u7247 ${n.alt}\uFF08\u8BF7\u7528\u72EC\u7ACB\u6BB5\u843D\u653E\u7F6E\uFF09`);
+      case "FootnoteRef":
+        return `\\footnote{${escLatex(this.footnoteText(n.label))}}`;
+      case "FunctionCall":
+        return this.call(n);
+      case "Color":
+        return escLatex(n.text);
+      case "RawHtml":
+        return "";
+      default:
+        return "";
+    }
+  }
+  _inlineEnv(env, content) {
+    return `\\${env}{${this.inline(content)}}`;
+  }
+  /** 脚注文本（label → 定义文本；缺失时占位） */
+  footnoteText(label) {
+    const doc = this._currentDoc;
+    const defs = doc && doc.footnotes ? doc.footnotes : {};
+    return defs[label] != null ? defs[label] : `[\u7F3A\u5C11\u811A\u6CE8 ${label}]`;
+  }
+  // ============ 函数调用 ============
+  call(node) {
+    const strArgs = (n) => n.args.filter((a) => a && a.type === "string").map((a) => a.value);
+    switch (node.name) {
+      case "cite":
+        return `\\cite{${strArgs(node).join(",")}}`;
+      case "ref":
+        return `\\ref{${strArgs(node)[0] || ""}}`;
+      case "term":
+        return this.termText(strArgs(node)[0] || "");
+      case "bibliography":
+        return this.bibliography();
+      case "glossary":
+        return "";
+      case "if":
+      case "not":
+      case "and":
+      case "or":
+      case "set":
+      case "let":
+      case "define":
+      case "use":
+      case "plugin":
+      case "meta":
+      case "has_cite":
+      case "has_term":
+        return "";
+      // 表达式/配置/功能类函数不产生 LaTeX 文本
+      default:
+        return this._note(`\u672A\u77E5\u51FD\u6570 @${node.name}`);
+    }
+  }
+  /** 术语显示文本（runtime.data.terms） */
+  termText(name) {
+    const terms = this.runtime && this.runtime.data && this.runtime.data.terms;
+    const entry = terms && terms[name];
+    if (typeof entry === "string") return escLatex(entry);
+    if (entry && entry.label) return escLatex(entry.label);
+    return escLatex(name);
+  }
+  /** @bibliography() → thebibliography（按引用顺序；条目文本简化自数据字段） */
+  bibliography() {
+    const bib = this.runtime && this.runtime.data && this.runtime.data.bibliography || {};
+    const keys = (this.semantic && this.semantic.citeOrder || []).filter((k) => bib[k] !== void 0);
+    if (!keys.length) return "";
+    const lines = keys.map((key, i) => {
+      const e = normalizeEntry(bib[key]);
+      const parts = [];
+      if (e.authors) parts.push(e.authors);
+      if (e.year !== void 0) parts.push(`(${e.year})`);
+      if (e.title) parts.push(e.title);
+      if (e.container) parts.push(e.container);
+      return `\\bibitem{${key}} ${parts.join(" ").replace(/[{}%$#_&]/g, "\\$1")}`;
+    });
+    return `\\begin{thebibliography}{9}
+${lines.join("\n")}
+\\end{thebibliography}`;
+  }
+};
 
 // src/blockeditor.js
 var FULL_REBUILD_THRESHOLD = 3;
@@ -28724,7 +29468,7 @@ function parse(source2, ...args) {
 }
 function analyze(source2, options = {}) {
   const gather = (prepared2) => {
-    const { document: document2, runtime, semantic, issues } = prepared2;
+    const { document: document2, runtime, semantic, issues, sourceMap } = prepared2;
     const typeToCode = Object.fromEntries(Object.entries(DIAG_ISSUE_TYPE).map(([c2, t]) => [t, c2]));
     const includeDiags = issues.map((i) => ({
       code: typeToCode[i.type] || i.type,
@@ -28735,8 +29479,12 @@ function analyze(source2, options = {}) {
       block: i.block,
       count: i.count
     }));
-    const diagnostics = [...includeDiags, ...checkIntegrity(document2, runtime, semantic)];
-    return { document: document2, semantic, diagnostics };
+    const diagnostics = [
+      ...includeDiags,
+      ...checkIntegrity(document2, runtime, semantic, sourceMap),
+      ...checkAcademic(document2, runtime, semantic, sourceMap)
+    ];
+    return { document: document2, semantic, sourceMap, diagnostics };
   };
   const prepared = prepare(source2, options);
   return prepared instanceof Promise ? prepared.then(gather) : gather(prepared);
@@ -28747,6 +29495,11 @@ function render3(source2, options = {}) {
 function renderAsync(source2, options = {}) {
   return render3(source2, { ...options, async: true });
 }
+function renderLatex(source2, options = {}) {
+  const prepared = prepare(source2, options);
+  const run = (p) => new LatexRenderer().render(p, options);
+  return prepared instanceof Promise ? prepared.then(run) : run(prepared);
+}
 export {
   BlockEditor,
   Parser,
@@ -28756,6 +29509,7 @@ export {
   parse,
   render3 as render,
   renderAsync,
+  renderLatex,
   toJSON
 };
-/*! built: 2026-08-19T19:11:33.196Z */
+/*! built: 2026-08-20T07:32:53.565Z */

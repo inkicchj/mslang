@@ -31,8 +31,21 @@ const shared = {
     KATEX_CSS: JSON.stringify(katexCss),
     HIGHLIGHT_CSS: JSON.stringify(highlightCss),
   },
+  // Node 内建 'module'（citation.js 用于同步探测 @citation-js）：
+  // 浏览器 bundle 中以空桩替换 → createRequire 返回 null → 自动探测回退 lightweight，
+  // Node 直连 src 时仍走真实 createRequire（同步探测不变）。
+  plugins: [{
+    name: 'node-module-stub',
+    setup(build) {
+      build.onResolve({ filter: /^module$/ }, () => ({ path: 'module', namespace: 'mslang-node-module' }));
+      build.onLoad({ filter: /^module$/, namespace: 'mslang-node-module' }, () => ({
+        contents: 'export const createRequire = () => null;',
+        loader: 'js',
+      }));
+    },
+  }],
   banner: {
-    js: `/*! mslang v0.1.0 — Lightweight Markup Language | MIT License */`,
+    js: `/*! mslang v0.3.0 — Lightweight Academic Markup Language | Apache-2.0 License */`,
   },
   footer: {
     js: `/*! built: ${new Date().toISOString()} */`,
