@@ -3179,7 +3179,7 @@ function normalizeDocument(doc) {
 function extractMetaBlocks(document2, evalCtx) {
   const meta = {};
   for (const b of document2.blocks) {
-    if (!(b instanceof Paragraph) || b.content.length !== 1) continue;
+    if (!(b instanceof Paragraph)) continue;
     const fc = b.content[0];
     if (!(fc instanceof FunctionCall) || fc.error || fc.name !== "meta") continue;
     try {
@@ -29512,4 +29512,4 @@ export {
   renderLatex,
   toJSON
 };
-/*! built: 2026-08-20T07:32:53.565Z */
+/*! built: 2026-08-20T07:40:33.079Z */

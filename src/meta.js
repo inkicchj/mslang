@@ -9,11 +9,12 @@
 import { FunctionCall, Paragraph } from './nodes.js';
 import { evaluate } from './expression.js';
 
-/** 扫描文档顶层 @meta 头部并求值合并（@meta 只接受字面量对象；求值失败忽略） */
+/** 扫描文档顶层 @meta 头部并求值合并（@meta 只接受字面量对象；求值失败忽略）。
+ *  段首为 @meta 调用的段落即视为头部（`@meta({...})` 独占行或段首均可）。 */
 export function extractMetaBlocks(document, evalCtx) {
   const meta = {};
   for (const b of document.blocks) {
-    if (!(b instanceof Paragraph) || b.content.length !== 1) continue;
+    if (!(b instanceof Paragraph)) continue;
     const fc = b.content[0];
     if (!(fc instanceof FunctionCall) || fc.error || fc.name !== 'meta') continue;
     try {
