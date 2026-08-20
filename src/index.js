@@ -31,6 +31,7 @@
 
 import { Parser, dumpAST, mergeDocuments, toJSON } from './parser.js';
 import { HTMLRenderer, llmReport } from './renderer.js';
+import { LatexRenderer } from './renderer-latex.js';
 import { BlockEditor } from './blockeditor.js';
 import { prepare } from './prepare.js';
 import { DIAG_ISSUE_TYPE, checkIntegrity, checkAcademic } from './semantic.js';
@@ -114,4 +115,18 @@ export function render(source, options = {}) {
 /** 显式异步渲染：render(source, { async: true }) 的别名 */
 export function renderAsync(source, options = {}) {
   return render(source, { ...options, async: true });
+}
+
+/**
+ * 实验性 LaTeX 渲染（0.3 第七阶段最小版）：复用 prepare() 唯一管线（含 include
+ * 展开/SourceMap/Semantic），验证 AST 独立于 HTML。覆盖论文主结构，未覆盖节点输出
+ * % mslang 注释。返回 LaTeX 源码字符串（不含 \documentclass 外壳，宿主自行包裹）。
+ * @param {string|string[]|Document} source
+ * @param {object} [options] - 与 render() 相同的解析/数据选项（渲染相关选项忽略）
+ * @returns {string|Promise<string>}
+ */
+export function renderLatex(source, options = {}) {
+  const prepared = prepare(source, options);
+  const run = (p) => new LatexRenderer().render(p, options);
+  return prepared instanceof Promise ? prepared.then(run) : run(prepared);
 }
