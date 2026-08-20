@@ -33,7 +33,7 @@ import { Parser, dumpAST, mergeDocuments, toJSON } from './parser.js';
 import { HTMLRenderer, llmReport } from './renderer.js';
 import { BlockEditor } from './blockeditor.js';
 import { prepare } from './prepare.js';
-import { DIAG_ISSUE_TYPE, checkIntegrity } from './semantic.js';
+import { DIAG_ISSUE_TYPE, checkIntegrity, checkAcademic } from './semantic.js';
 
 // 公共导出：render/renderAsync（渲染）/ Parser/parse/dumpAST/toJSON（AST）
 // analyze（语义 + 诊断）/ BlockEditor（块编辑）/ llmReport（自查文本）
@@ -66,7 +66,11 @@ export function analyze(source, options = {}) {
       block: i.block,
       count: i.count,
     }));
-    const diagnostics = [...includeDiags, ...checkIntegrity(document, runtime, semantic, sourceMap)];
+    const diagnostics = [
+      ...includeDiags,
+      ...checkIntegrity(document, runtime, semantic, sourceMap),
+      ...checkAcademic(document, runtime, semantic, sourceMap),
+    ];
     return { document, semantic, sourceMap, diagnostics };
   };
   const prepared = prepare(source, options);

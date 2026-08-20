@@ -19,7 +19,7 @@ import { htmlBuiltins } from './builtin.js';
 import { escapeHTML, escapeAttr, safeLinkUrl, safeImageUrl } from './escape.js';
 import { RuntimeContext, SET_KEYS, DEFAULT_CAPTION_PREFIX, DEFAULT_KEY_ATTRS, mergeCaptionPrefix } from './runtime.js';
 import { prepare } from './prepare.js';
-import { checkIntegrity, DIAG_ISSUE_TYPE, eachBlockInline } from './semantic.js';
+import { checkIntegrity, DIAG_ISSUE_TYPE, checkAcademic, eachBlockInline } from './semantic.js';
 import { CitationEngine } from './citation.js';
 import katex from 'katex';
 import hljs from 'highlight.js/lib/core';
@@ -947,7 +947,10 @@ export function toLegacyIssues(prepared, _renderer) {
       count: d.count,
       block: d.block,
     }));
-  return [...((prepared.issues || [])), ...fromDiag];
+  // 学术一致性提示（0.3）：type 直接用 code（未入 DIAG_ISSUE_TYPE 映射）
+  const fromAcademic = checkAcademic(prepared.document, prepared.runtime, prepared.semantic, prepared.sourceMap)
+    .map((d) => ({ type: d.code, key: d.data.label, count: d.count, block: d.block }));
+  return [...((prepared.issues || [])), ...fromDiag, ...fromAcademic];
 }
 
 export { HTMLRenderer, escapeHTML, escapeAttr };

@@ -185,6 +185,62 @@ export function checkIntegrity(doc, runtime, sm, sourceMap = null) {
   return diagnostics;
 }
 
+/**
+ * 学术一致性诊断（0.3 确定性检查；原则：语言核心只做确定性检查，主观学术评价交 AI 工作台）。
+ *   - unreferenced-figure / unreferenced-table / unused-label（式/定理）：label 未被 @ref 引用
+ *   - unused-bibliography：bibliography 条目从未被 @cite 引用
+ *   - missing-title / missing-abstract / missing-keywords：仅当文档已声明 meta（@meta/options.meta）
+ * 全部由 AST/数据推导，无 AI 判断；severity 定为 info（一致性提示，非语法错误）。
+ * @param {Document} doc
+ * @param {import('./runtime.js').RuntimeContext} runtime
+ * @param {SemanticModel} sm
+ * @param {object} [sourceMap]
+ */
+export function checkAcademic(doc, runtime, sm, sourceMap = null) {
+  const diagnostics = [];
+  const locate = (base) => {
+    if (!sourceMap || !base) return base;
+    const s = sourceMap.locate(base.start);
+    return s && s.sourceId ? { ...base, sourceId: s.sourceId } : base;
+  };
+  const push = (code, label, message, span) => {
+    diagnostics.push({
+      code, severity: 'info', message,
+      span: span && span.start < span.end ? locate({ start: span.start, end: span.end }) : undefined,
+      data: { label }, block: -1, count: 1,
+    });
+  };
+  // 已被 @ref 引用的 label 集合
+  const refed = new Set();
+  eachBlocksInline(doc.blocks, (n) => {
+    if (n instanceof FunctionCall && n.name === 'ref' && n.args[0] && n.args[0].type === 'string') {
+      refed.add(n.args[0].value);
+    }
+  });
+  for (const f of sm.figures || []) if (!refed.has(f.label)) push('unreferenced-figure', f.label, `图「${f.label}」未被正文引用`);
+  for (const t of sm.tables || []) if (!refed.has(t.label)) push('unreferenced-table', t.label, `表「${t.label}」未被正文引用`);
+  for (const e of sm.equations || []) if (!refed.has(e.label)) push('unused-label', e.label, `公式「${e.label}」未被引用`);
+  for (const th of sm.theorems || []) if (!refed.has(th.label)) push('unused-label', th.label, `定理「${th.label}」未被引用`);
+  // 未使用文献条目
+  const bib = runtime.data && runtime.data.bibliography;
+  if (bib && typeof bib === 'object') {
+    const cited = new Set(sm.citeOrder || []);
+    for (const key of Object.keys(bib)) {
+      if (!cited.has(key)) push('unused-bibliography', key, `文献「${key}」未在正文中被引用`);
+    }
+  }
+  // 元数据完整性：仅当文档已声明论文元数据时才检查缺失项（避免常规文档刷 missing-*）
+  const meta = doc.meta;
+  if (meta && typeof meta === 'object' && Object.keys(meta).length > 0) {
+    if (!meta.title) push('missing-title', 'title', '缺少论文标题（meta.title）');
+    if (!meta.abstract) push('missing-abstract', 'abstract', '缺少摘要（meta.abstract）');
+    if (!Array.isArray(meta.keywords) || meta.keywords.length === 0) {
+      push('missing-keywords', 'keywords', '缺少关键词（meta.keywords）');
+    }
+  }
+  return diagnostics;
+}
+
 export class SemanticModel {
   constructor() {
     this.refs = {};              // label -> { kind, number|display, type? }
