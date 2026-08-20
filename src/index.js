@@ -54,7 +54,7 @@ export function parse(source, ...args) {
  */
 export function analyze(source, options = {}) {
   const gather = (prepared) => {
-    const { document, runtime, semantic, issues } = prepared;
+    const { document, runtime, semantic, issues, sourceMap } = prepared;
     // include 层 issues（{type,key,count,block}）→ 标准诊断 {code,message,span,data}
     const typeToCode = Object.fromEntries(Object.entries(DIAG_ISSUE_TYPE).map(([c, t]) => [t, c]));
     const includeDiags = issues.map((i) => ({
@@ -66,8 +66,8 @@ export function analyze(source, options = {}) {
       block: i.block,
       count: i.count,
     }));
-    const diagnostics = [...includeDiags, ...checkIntegrity(document, runtime, semantic)];
-    return { document, semantic, diagnostics };
+    const diagnostics = [...includeDiags, ...checkIntegrity(document, runtime, semantic, sourceMap)];
+    return { document, semantic, sourceMap, diagnostics };
   };
   const prepared = prepare(source, options);
   return prepared instanceof Promise ? prepared.then(gather) : gather(prepared);

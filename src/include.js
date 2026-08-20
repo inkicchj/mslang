@@ -11,7 +11,10 @@
  *   - 提取 @part 区间行文本（剥 @part/@end 标记行），剥离块级 @set 行（配置防污染），
  *     @let/@define 保留（内容依赖）
  *   - 失败容错：加载失败/part 缺失 → 占位 HTML 注释 + check issue（missing_include/missing_part）
+ *   - SourceMap（0.3）：opts.builder（TextBuilder）逐行记录来源文件，诊断 span 可溯源
  */
+
+import { TextBuilder } from './source-map.js';
 
 const INCLUDE_RE = /^\s*@include\(\s*("(?:\\.|[^"])*")\s*(?:,\s*("(?:\\.|[^"])*")\s*)?\)\s*$/;
 const PART_OPEN_RE = /^\s*@part\(\s*("(?:\\.|[^"])*")\s*(?:,\s*("(?:\\.|[^"])*")\s*)?\)\s*$/;
@@ -44,6 +47,15 @@ function extractPart(text, id, ctx) {
   return inner.filter((l) => !PART_SETTER_RE.test(l)).join('\n');
 }
 
+/** 展开一份源文本（不写入外部 builder；供 getTarget 提取 part 用） */
+function expandTarget(src, opts, stack, cache) {
+  const saved = opts.builder;
+  delete opts.builder;
+  const result = expandIncludes(src, opts, stack, cache);
+  opts.builder = saved;
+  return result;
+}
+
 /** 获取 path 展开后的文本（缓存 + 循环检测 + 递归嵌套展开） */
 function getTarget(path, id, opts, ctx) {
   const inStack = ctx.stack.includes(path);
@@ -54,60 +66,65 @@ function getTarget(path, id, opts, ctx) {
   }
   let loaded;
   try { loaded = opts.include(path); } catch (e) { loaded = null; }
+  const wrap = (reason) => `<!-- mslang: ${reason} "${path}" -->`;
+  const finish = (expanded) => extractPart(expanded, id, ctx);
   if (loaded instanceof Promise) {
     return loaded.then((src) => {
       if (!src) {
         ctx.issues.push({ type: 'missing_include', key: path, count: 1, block: undefined });
-        return `<!-- mslang: include 加载失败 "${path}" -->`;
+        return wrap('include 加载失败');
       }
       ctx.cache.set(path, src);
-      const expanded = expandIncludes(src, opts, [...ctx.stack, path], ctx.cache);
-      return Promise.resolve(expanded).then((e) => extractPart(e, id, ctx));
+      return Promise.resolve(expandTarget(src, opts, [...ctx.stack, path], ctx.cache)).then(finish);
     });
   }
   if (!loaded) {
     ctx.issues.push({ type: 'missing_include', key: path, count: 1, block: undefined });
-    return `<!-- mslang: include 加载失败 "${path}" -->`;
+    return wrap('include 加载失败');
   }
   ctx.cache.set(path, loaded);
-  if (inStack) return `<!-- mslang: 循环引用 @include("${path}") -->`;
-  const expanded = expandIncludes(loaded, opts, [...ctx.stack, path], ctx.cache);
+  if (inStack) return wrap('循环引用 @include');
+  const expanded = expandTarget(loaded, opts, [...ctx.stack, path], ctx.cache);
   return expanded instanceof Promise
-    ? expanded.then((e) => extractPart(e, id, ctx))
-    : extractPart(expanded, id, ctx);
+    ? expanded.then(finish)
+    : finish(expanded);
 }
 
 /**
  * 展开 source 中的全部 @include 行。
  * loader 全同步时同步返回 string；任一 loader 返回 Promise 时返回 Promise<string>。
+ * opts.builder（TextBuilder）提供时逐行记录来源（SourceMap 溯源）。
  * @param {string} source
- * @param {{ include: (path: string) => string|Promise<string>, issues: Array }} opts
+ * @param {{ include: (path: string) => string|Promise<string>, issues: Array, builder?: TextBuilder, sourceId?: string|null }} opts
  * @param {string[]} [stack] - 当前 include 路径栈（循环检测）
  * @param {Map} [cache] - 已加载文档缓存（同一渲染去重）
  * @returns {string|Promise<string>}
  */
 export function expandIncludes(source, opts, stack = [], cache = new Map()) {
-  const ctx = { stack, issues: opts.issues || [], cache };
+  const builder = opts.builder || new TextBuilder(opts.sourceId || null);
+  const ctx = {
+    stack, issues: opts.issues || [], cache,
+    builder, sourceId: opts.sourceId || null,
+  };
   const lines = source.split('\n');
-  const out = [];
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(INCLUDE_RE);
-    if (!m) { out.push(lines[i]); continue; }
+    if (!m) { builder.line(lines[i]); continue; }
     const path = parseStr(m[1]);
     const id = m[2] ? parseStr(m[2]) : null;
     if (!id) {
-      out.push('<!-- mslang: @include 需指定 part id（整文档合并请用 render([...])) -->');
+      builder.line('<!-- mslang: @include 需指定 part id（整文档合并请用 render([...])) -->');
       continue;
     }
     const replaced = getTarget(path, id, opts, ctx);
     if (replaced instanceof Promise) {
       // 首个异步信号：剩余行转为异步路径（保持输出顺序）
       return replaced.then((text) => {
-        const rest = expandIncludes(lines.slice(i + 1).join('\n'), opts, stack, cache);
-        return Promise.resolve(rest).then((r) => out.concat(text, r).join('\n'));
+        builder.block(text, path);
+        return expandIncludes(lines.slice(i + 1).join('\n'), opts, stack, cache);
       });
     }
-    out.push(replaced);
+    builder.block(replaced, path);
   }
-  return out.join('\n');
+  return builder.text;
 }

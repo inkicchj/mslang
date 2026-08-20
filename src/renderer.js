@@ -917,7 +917,7 @@ export function diffBlocks(oldHashes, newHashes) {
  * @returns {Array<{type: string, key: string, count: number, block: number}>}
  */
 export function toLegacyIssues(prepared, _renderer) {
-  const fromDiag = checkIntegrity(prepared.document, prepared.runtime, prepared.semantic)
+  const fromDiag = checkIntegrity(prepared.document, prepared.runtime, prepared.semantic, prepared.sourceMap)
     .map((d) => ({
       type: DIAG_ISSUE_TYPE[d.code] || d.code,
       key: d.data.label,

@@ -98,17 +98,25 @@ const DIAG_MESSAGES = {
 /**
  * 引用完整性诊断（opts.check 时）：缺失文献/术语/交叉引用/脚注、
  * 重复标签、孤立 caption。按 code+label 去重计数，附首次出现块索引与源码区间。
+ * sourceMap（可选，0.3 include 溯源）命中 include 段时 span 附加 sourceId。
  * @param {Document} doc
  * @param {import('./runtime.js').RuntimeContext} runtime
  * @param {SemanticModel} sm - analyze() 产出（前向引用已完整）
- * @returns {Array<{code: string, severity: string, message: string, span: {start: number, end: number}, data: {label: string}, block: number, count: number}>}
+ * @param {object} [sourceMap] - prepare 产物（include 展开的来源映射）
+ * @returns {Array<{code: string, severity: string, message: string, span: {start: number, end: number, sourceId?: string}, data: {label: string}, block: number, count: number}>}
  */
-export function checkIntegrity(doc, runtime, sm) {
+export function checkIntegrity(doc, runtime, sm, sourceMap = null) {
   const diagnostics = [];
   const seen = new Map();
   const seenLabels = new Set();
   let currentBlock = -1;
   const blockAt = (i) => doc.blocks[i];
+  // include 溯源：span 命中 include 段时附加 sourceId（"打开 chapter2.msl 修改 832–850"）
+  const locate = (base) => {
+    if (!sourceMap || !base) return base;
+    const s = sourceMap.locate(base.start);
+    return s && s.sourceId ? { ...base, sourceId: s.sourceId } : base;
+  };
   const report = (code, label, span) => {
     const id = `${code}|${label}`;
     if (seen.has(id)) { diagnostics[seen.get(id)].count++; return; }
@@ -119,8 +127,8 @@ export function checkIntegrity(doc, runtime, sm) {
       message: `${DIAG_MESSAGES[code] || code}「${label}」`,
       // 节点级 span（@cite/@ref/@term/[^n] 精确位置），缺失时回退块区间
       span: span && span.start < span.end
-        ? { start: span.start, end: span.end }
-        : (b ? { start: b.startPos != null ? b.startPos : 0, end: b.endPos != null ? b.endPos : 0 } : undefined),
+        ? locate({ start: span.start, end: span.end })
+        : (b ? locate({ start: b.startPos != null ? b.startPos : 0, end: b.endPos != null ? b.endPos : 0 }) : undefined),
       data: { label }, block: currentBlock, count: 1,
     });
   };
