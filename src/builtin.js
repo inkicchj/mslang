@@ -36,6 +36,9 @@ export function runtimeBuiltins(runtime) {
       return '';
     },
 
+    /** 论文元数据：@meta({title, authors, keywords, ...})，无输出（0.3 已归并到 document.meta） */
+    meta: () => '',
+
     /** 宏定义：@define("name", "模板")，无输出（预扫描注册，渲染时静默） */
     define: () => '',
 

@@ -25,11 +25,14 @@ class Document extends ASTNode {
   /**
    * @param {BlockNode[]} [blocks]
    * @param {Object<string, string>} [footnotes] - {label: definition_text}
+   * @param {Object} [meta] - 论文元数据（0.3：@meta 头部 / options.meta）
+   *   { title, authors, affiliations, abstract, keywords, language }
    */
-  constructor(blocks = [], footnotes = {}) {
+  constructor(blocks = [], footnotes = {}, meta = null) {
     super();
     this.blocks = blocks;
     this.footnotes = footnotes;
+    this.meta = meta;
   }
 
   accept(visitor) {

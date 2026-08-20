@@ -9,6 +9,7 @@ import { Parser, finalizeDocument, mergeDocuments } from './parser.js';
 import { RuntimeContext } from './runtime.js';
 import { SemanticAnalyzer, eachBlocksInline } from './semantic.js';
 import { expandIncludes } from './include.js';
+import { applyDocMeta } from './meta.js';
 import { FunctionCall, Document } from './nodes.js';
 
 /** 文档配置应用（@set/@let/@define 预扫描；@plugin 属渲染期，analyze 不注册） */
@@ -47,6 +48,7 @@ export function prepare(source, options = {}) {
     });
     runtime.resetHost(options);
     applyDocConfig(runtime, document.blocks);
+    applyDocMeta(document, runtime, options);
     const semantic = new SemanticAnalyzer({ runtime }).analyze(document);
     return { document, runtime, semantic, issues };
   };

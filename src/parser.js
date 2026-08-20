@@ -25,6 +25,7 @@ import {
 
 import { normalizeDocument, normalizeFootnotes } from './normalize.js';
 import { walkNodes } from './ast-utils.js';
+import { extractMetaBlocks } from './meta.js';
 
 // 会终止段落/引用的块级 Token 类型
 const BLOCK_BOUNDARY_TYPES = new Set([
@@ -759,7 +760,10 @@ function mergeDocuments(...docs) {
   for (const [label, text] of Object.entries(footnotes)) {
     if (!(label in ordered)) ordered[label] = text;
   }
-  return new Document(blocks, ordered);
+  // 论文元数据合并：前序文档为基础，后续文档 @meta 覆盖（后面的标题/摘要优先）
+  const meta = {};
+  for (const doc of docs) if (doc.meta) Object.assign(meta, doc.meta);
+  return new Document(blocks, ordered, Object.keys(meta).length ? meta : null);
 }
 
 function _dumpInlines(nodes, indent, prefix) {
@@ -941,6 +945,8 @@ export function finalizeDocument(document, source, footnoteDefs = {}, footnoteDe
     document.footnotes = { ...footnoteDefs };
     normalizeFootnotes(document);
   }
+  // 论文元数据（@meta 头部；parse 阶段无 runtime，按字面量对象求值）
+  document.meta = document.meta || extractMetaBlocks(document, { functions: {}, variables: {} });
   return document;
 }
 
